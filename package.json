@@ -1,0 +1,21 @@
+{
+  "name": "arma-attendance-web",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @arma-attendance/api dev",
+    "dev:api": "pnpm --filter @arma-attendance/api dev",
+    "dev:web": "pnpm --filter @arma-attendance/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "smoke:local": "bash scripts/dev-smoke.sh"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
