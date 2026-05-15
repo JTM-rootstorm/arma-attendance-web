@@ -70,6 +70,78 @@ CREATE TABLE IF NOT EXISTS ingest_requests (
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE ingest_requests
+    ADD COLUMN IF NOT EXISTS operation_id UUID,
+    ADD COLUMN IF NOT EXISTS endpoint TEXT NOT NULL DEFAULT 'legacy',
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS response JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+            AND table_name = 'ingest_requests'
+            AND column_name = 'request_id'
+    ) THEN
+        RAISE EXCEPTION 'Existing ingest_requests table is missing required request_id column; manual compatibility migration required.';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'public.ingest_requests'::regclass
+            AND (
+                conname = 'ingest_requests_operation_id_fkey'
+                OR (
+                    contype = 'f'
+                    AND confrelid = 'public.operations'::regclass
+                    AND conkey = ARRAY[
+                        (
+                            SELECT attnum::smallint
+                            FROM pg_attribute
+                            WHERE attrelid = 'public.ingest_requests'::regclass
+                                AND attname = 'operation_id'
+                        )
+                    ]
+                )
+            )
+    ) THEN
+        ALTER TABLE ingest_requests
+            ADD CONSTRAINT ingest_requests_operation_id_fkey
+            FOREIGN KEY (operation_id) REFERENCES operations(id) ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
+UPDATE ingest_requests
+SET endpoint = 'legacy'
+WHERE endpoint IS NULL;
+
+UPDATE ingest_requests
+SET payload = '{}'::jsonb
+WHERE payload IS NULL;
+
+UPDATE ingest_requests
+SET response = '{}'::jsonb
+WHERE response IS NULL;
+
+UPDATE ingest_requests
+SET received_at = now()
+WHERE received_at IS NULL;
+
+ALTER TABLE ingest_requests
+    ALTER COLUMN endpoint SET DEFAULT 'legacy',
+    ALTER COLUMN endpoint SET NOT NULL,
+    ALTER COLUMN payload SET DEFAULT '{}'::jsonb,
+    ALTER COLUMN payload SET NOT NULL,
+    ALTER COLUMN response SET DEFAULT '{}'::jsonb,
+    ALTER COLUMN response SET NOT NULL,
+    ALTER COLUMN received_at SET DEFAULT now(),
+    ALTER COLUMN received_at SET NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_ingest_requests_operation_id
     ON ingest_requests (operation_id);
 

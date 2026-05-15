@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$ROOT/sql/migrations}"
+MIGRATION_PREFLIGHT_DIR="${MIGRATION_PREFLIGHT_DIR:-$ROOT/sql/migration-preflight}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -18,6 +19,33 @@ if [[ ! -d "$MIGRATIONS_DIR" ]]; then
   echo "[db:migrate] Migration directory not found: $MIGRATIONS_DIR" >&2
   exit 1
 fi
+
+run_pending_migration_preflight() {
+  local filename="$1"
+  local preflight_file="$MIGRATION_PREFLIGHT_DIR/$filename"
+
+  # Compatibility hooks are for pending migrations that may encounter objects
+  # from an older manual or failed schema attempt. Keep these hooks idempotent,
+  # and keep the durable schema repair in the migration SQL itself.
+  case "$filename" in
+    0002_raw_operations_ingest.sql)
+      psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+  IF to_regclass('public.ingest_requests') IS NOT NULL THEN
+    RAISE NOTICE 'Existing ingest_requests table found; 0002 migration will reconcile required columns.';
+  END IF;
+END
+$$;
+SQL
+      ;;
+  esac
+
+  if [[ -f "$preflight_file" ]]; then
+    echo "[db:migrate] Running compatibility preflight for $filename"
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$preflight_file"
+  fi
+}
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -59,6 +87,7 @@ for migration in "${migrations[@]}"; do
   fi
 
   echo "[db:migrate] Applying $filename"
+  run_pending_migration_preflight "$filename"
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
 
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
