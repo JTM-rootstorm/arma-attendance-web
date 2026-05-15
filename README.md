@@ -201,6 +201,8 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
+Migration files should be forward-only and idempotent enough to reconcile older manual table shapes when practical. If a migration uses `CREATE TABLE IF NOT EXISTS`, add explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, default, constraint, and validation steps before creating dependent indexes. The migration runner has a preflight hook for pending migrations that need compatibility checks before applying their SQL. Future migrations can also add optional compatibility SQL at `sql/migration-preflight/<migration-filename>.sql`; it will run only while that migration is pending.
+
 Run these only where `DATABASE_URL` points at the intended PostgreSQL database:
 
 ```bash
