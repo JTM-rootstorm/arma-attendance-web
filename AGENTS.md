@@ -14,7 +14,9 @@ Phase 0 is intentionally smaller: prove that the Arma extension can poke the API
 - Do not work directly on `main`.
 - Create a feature branch before making changes:
   - Recommended: `codex/phase-0-web-skeleton`
+- Create feature branches named like `codex/<short-task-name>` when the local ref layout allows it.
 - Do not force-push protected branches.
+- Prefer small, reviewable PRs.
 - Do not commit generated dependency folders such as `node_modules/`.
 - Do not commit built output unless a future plan explicitly asks for release artifacts.
 - Do not commit real secrets or production `.env` files.
@@ -104,9 +106,14 @@ DATABASE_URL=postgres://arma_attendance:change-me@localhost:5432/arma_attendance
 
 Config loading must validate required values and fail fast with a clear error when production secrets are missing or unsafe.
 
+Root `.env` is the canonical production env location on the Debian LXC. The API must be able to load root `.env` whether it starts from the repo root, `apps/api`, a pnpm filter command, or built output under `apps/api/dist`.
+
+Do not require `apps/api/.env` for normal operation.
+
 ## Security rules
 
 - Never log `API_TOKEN`.
+- Never log `DATABASE_URL`.
 - Never echo the Authorization header.
 - `/health` must not expose secrets.
 - `/v1/debug/poke` may echo sanitized request body fields, but not headers.

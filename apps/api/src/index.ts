@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 
-import { config } from "./config.js";
+import { config, loadedEnvFiles } from "./config.js";
 import { registerDebugRoutes } from "./routes/debug.js";
 import { registerHealthRoutes } from "./routes/health.js";
 
@@ -9,6 +9,16 @@ const app = Fastify({
     level: config.logLevel
   }
 });
+
+app.log.info(
+  {
+    nodeEnv: config.nodeEnv,
+    envFilesLoaded: loadedEnvFiles.filter((envFile) => envFile.loaded).length,
+    apiTokenPresent: Boolean(config.apiToken),
+    databaseUrlPresent: Boolean(config.databaseUrl)
+  },
+  "configuration loaded"
+);
 
 function getStatusCode(error: unknown) {
   if (typeof error !== "object" || error === null || !("statusCode" in error)) {
