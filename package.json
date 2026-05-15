@@ -13,7 +13,10 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "smoke:local": "bash scripts/dev-smoke.sh"
+    "smoke:local": "bash scripts/dev-smoke.sh",
+    "db:migrate": "bash scripts/db-migrate.sh",
+    "db:status": "bash scripts/db-status.sh",
+    "smoke:db": "bash scripts/db-smoke.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]
