@@ -1,7 +1,9 @@
 import Fastify from "fastify";
 
 import { config, loadedEnvFiles } from "./config.js";
+import { closeDbPool } from "./db/pool.js";
 import { registerDebugRoutes } from "./routes/debug.js";
+import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
 
 const app = Fastify({
@@ -55,6 +57,10 @@ app.setNotFoundHandler((_request, reply) =>
   })
 );
 
+app.addHook("onClose", async () => {
+  await closeDbPool();
+});
+
 app.get("/", async (_request, reply) =>
   reply.type("text/html; charset=utf-8").send(`<!doctype html>
 <html lang="en">
@@ -72,6 +78,7 @@ app.get("/", async (_request, reply) =>
 );
 
 await registerHealthRoutes(app);
+await registerHealthDbRoutes(app);
 await registerDebugRoutes(app);
 
 try {

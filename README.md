@@ -2,7 +2,7 @@
 
 Phase 0 skeleton for the Arma 3 Attendance Tracker web/API service.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. It intentionally does not include attendance persistence, player stats, dashboards, authentication, queues, or Docker.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. It intentionally does not include attendance persistence, player stats, dashboards, authentication, queues, or Docker.
 
 ## Stack
 
@@ -39,6 +39,8 @@ In another terminal:
 pnpm smoke:local
 ```
 
+`pnpm smoke:local` does not require PostgreSQL. It verifies the basic API, auth rejection, and validation rejection. Use `pnpm smoke:db` only when a reachable `DATABASE_URL` has been configured and migrations have been applied.
+
 The web shell can be run separately:
 
 ```bash
@@ -61,11 +63,14 @@ pnpm typecheck
 
 ```http
 GET  /health
+GET  /health/db
 GET  /
 POST /v1/debug/poke
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
+
+`GET /health/db` requires bearer auth and checks PostgreSQL connectivity without exposing secrets.
 
 `POST /v1/debug/poke` requires:
 
@@ -80,7 +85,7 @@ Example:
 curl -fsS -X POST http://127.0.0.1:3000/v1/debug/poke \
   -H "Authorization: Bearer dev-token" \
   -H "Content-Type: application/json" \
-  -d '{"message":"hello from curl","server_key":"dev-machine"}'
+  -d '{"request_id":"optional-id","message":"hello from curl","server_key":"dev-machine"}'
 ```
 
 Expected success shape:
@@ -89,8 +94,12 @@ Expected success shape:
 {
   "ok": true,
   "received": true,
+  "persisted": true,
   "reply": "poke accepted",
+  "debug_poke_id": "uuid",
+  "created_at": "2026-05-15T00:00:00.000Z",
   "echo": {
+    "request_id": "optional-id",
     "message": "hello from curl",
     "server_key": "dev-machine"
   }
@@ -126,9 +135,23 @@ cp .env.example /opt/arma-attendance/.env
 openssl rand -hex 32
 ```
 
-Replace `API_TOKEN`, `PUBLIC_BASE_URL`, and any real database password before starting the service. `DATABASE_URL` is reserved for later phases and is not used by Phase 0.
+Replace `API_TOKEN`, `PUBLIC_BASE_URL`, and any real database password before starting the service. Phase 0.5 uses `DATABASE_URL` for DB-backed debug pokes, `/health/db`, and migration scripts.
 
 Never commit real `.env` files.
+
+## Database Migrations
+
+SQL migrations live in `sql/migrations/` and use numeric prefixes such as `0001_debug_pokes.sql`. Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
+
+Run these only where `DATABASE_URL` points at the intended PostgreSQL database:
+
+```bash
+pnpm db:status
+pnpm db:migrate
+pnpm smoke:db
+```
+
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly.
 
 ## Debian 13 LXC Setup
 
@@ -258,6 +281,14 @@ pnpm typecheck
 cp .env.local.example .env
 pnpm dev:api
 pnpm smoke:local
+```
+
+When a database is available, also run:
+
+```bash
+pnpm db:status
+pnpm db:migrate
+pnpm smoke:db
 ```
 
 Also verify no real env files are staged before opening a pull request.
