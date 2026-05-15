@@ -1,7 +1,8 @@
-import dotenv from "dotenv";
 import { z } from "zod";
 
-dotenv.config();
+import { loadEnv } from "./config/loadEnv.js";
+
+export const loadedEnvFiles = loadEnv();
 
 const logLevelSchema = z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
 
