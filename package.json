@@ -16,7 +16,8 @@
     "smoke:local": "bash scripts/dev-smoke.sh",
     "db:migrate": "bash scripts/db-migrate.sh",
     "db:status": "bash scripts/db-status.sh",
-    "smoke:db": "bash scripts/db-smoke.sh"
+    "smoke:db": "bash scripts/db-smoke.sh",
+    "smoke:operations": "bash scripts/operations-smoke.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]
