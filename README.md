@@ -1,8 +1,10 @@
 # Arma Attendance Web
 
-Phase 0 skeleton for the Arma 3 Attendance Tracker web/API service.
+Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. It intentionally does not include attendance persistence, player stats, dashboards, authentication, queues, or Docker.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads before normalized attendance/stat tables are designed.
+
+The service intentionally does not include normalized player stats, dashboards, user authentication, queues, Redis, or Docker yet.
 
 ## Stack
 
@@ -59,25 +61,32 @@ pnpm typecheck
 - `apps/api/dist/index.js`
 - `apps/web/dist/`
 
-## Phase 0 Endpoints
+## API Endpoints
 
 ```http
 GET  /health
 GET  /health/db
 GET  /
 POST /v1/debug/poke
+POST /v1/operations/start
+POST /v1/operations/:operation_id/finish
+GET  /v1/operations/:operation_id
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
 
 `GET /health/db` requires bearer auth and checks PostgreSQL connectivity without exposing secrets.
 
-`POST /v1/debug/poke` requires:
+All `/v1/*` endpoints require:
 
 ```http
 Authorization: Bearer <API_TOKEN>
 Content-Type: application/json
 ```
+
+## Debug Poke
+
+`POST /v1/debug/poke` stores a DB-backed debug row and returns its ID.
 
 Example:
 
@@ -105,6 +114,50 @@ Expected success shape:
   }
 }
 ```
+
+## Operation Ingest
+
+Phase 1-A stores raw operation start/finish JSON. It does not normalize players or stats yet.
+
+Start an operation:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:3000/v1/operations/start \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "server-01:test-op:start",
+    "server_key": "server-01",
+    "mission": {
+      "mission_uid": "test-op",
+      "mission_name": "Operation Test",
+      "world_name": "VR"
+    },
+    "players": []
+  }'
+```
+
+Finish an operation:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:3000/v1/operations/<operation_id>/finish \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "server-01:test-op:finish",
+    "server_key": "server-01",
+    "players": []
+  }'
+```
+
+Fetch an operation:
+
+```bash
+curl -fsS http://127.0.0.1:3000/v1/operations/<operation_id> \
+  -H "Authorization: Bearer dev-token"
+```
+
+Operation ingest requests require `request_id` and `server_key`. Extra payload fields are accepted and stored as raw JSON. Reusing the same `request_id` returns the saved response with `idempotent: true`.
 
 Errors use:
 
@@ -141,7 +194,12 @@ Never commit real `.env` files.
 
 ## Database Migrations
 
-SQL migrations live in `sql/migrations/` and use numeric prefixes such as `0001_debug_pokes.sql`. Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
+SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migrations:
+
+- `0001_debug_pokes.sql`
+- `0002_raw_operations_ingest.sql`
+
+Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
 Run these only where `DATABASE_URL` points at the intended PostgreSQL database:
 
@@ -149,9 +207,10 @@ Run these only where `DATABASE_URL` points at the intended PostgreSQL database:
 pnpm db:status
 pnpm db:migrate
 pnpm smoke:db
+pnpm smoke:operations
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. It requires the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
 
 ## Debian 13 LXC Setup
 
@@ -289,6 +348,7 @@ When a database is available, also run:
 pnpm db:status
 pnpm db:migrate
 pnpm smoke:db
+pnpm smoke:operations
 ```
 
 Also verify no real env files are staged before opening a pull request.

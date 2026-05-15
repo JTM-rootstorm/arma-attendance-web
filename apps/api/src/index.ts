@@ -5,6 +5,7 @@ import { closeDbPool } from "./db/pool.js";
 import { registerDebugRoutes } from "./routes/debug.js";
 import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerOperationRoutes } from "./routes/operations.js";
 
 const app = Fastify({
   logger: {
@@ -80,6 +81,7 @@ app.get("/", async (_request, reply) =>
 await registerHealthRoutes(app);
 await registerHealthDbRoutes(app);
 await registerDebugRoutes(app);
+await registerOperationRoutes(app);
 
 try {
   await app.listen({
