@@ -37,6 +37,14 @@ const operationParamsSchema = z.object({
   operation_id: z.string().uuid()
 });
 
+const operationListQuerySchema = z.object({
+  server_key: z.string().max(128).optional(),
+  status: z.enum(["started", "finished", "abandoned"]).optional(),
+  mission_uid: z.string().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0)
+});
+
 type OperationStatus = "started" | "finished" | "abandoned";
 
 type OperationIngestResponse = {
@@ -58,6 +66,26 @@ type OperationRow = {
   ended_at: Date | null;
   raw_start_payload: unknown;
   raw_end_payload: unknown;
+};
+
+type OperationListRow = {
+  id: string;
+  server_key: string;
+  status: OperationStatus;
+  mission_uid: string | null;
+  mission_name: string | null;
+  world_name: string | null;
+  started_at: Date;
+  ended_at: Date | null;
+  payload_count: number;
+};
+
+type OperationPayloadRow = {
+  id: string;
+  kind: "start" | "finish";
+  request_id: string;
+  received_at: Date;
+  payload: unknown;
 };
 
 class OperationRouteError extends Error {
@@ -174,6 +202,77 @@ function getMissionField(
 }
 
 export async function registerOperationRoutes(app: FastifyInstance) {
+  app.get("/v1/operations", { preHandler: requireBearerToken }, async (request, reply) => {
+    const parsedQuery = operationListQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const query = parsedQuery.data;
+    const where: string[] = [];
+    const values: unknown[] = [];
+
+    if (query.server_key) {
+      values.push(query.server_key);
+      where.push(`o.server_key = $${values.length}`);
+    }
+
+    if (query.status) {
+      values.push(query.status);
+      where.push(`o.status = $${values.length}`);
+    }
+
+    if (query.mission_uid) {
+      values.push(query.mission_uid);
+      where.push(`o.mission_uid = $${values.length}`);
+    }
+
+    values.push(query.limit);
+    const limitParam = values.length;
+    values.push(query.offset);
+    const offsetParam = values.length;
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+
+    try {
+      const operationsResult = await queryDb<OperationListRow>(
+        `
+        SELECT
+          o.id,
+          o.server_key,
+          o.status,
+          o.mission_uid,
+          o.mission_name,
+          o.world_name,
+          o.started_at,
+          o.ended_at,
+          COUNT(op.id)::int AS payload_count
+        FROM operations o
+        LEFT JOIN operation_payloads op ON op.operation_id = o.id
+        ${whereClause}
+        GROUP BY o.id
+        ORDER BY o.started_at DESC
+        LIMIT $${limitParam} OFFSET $${offsetParam}
+        `,
+        values
+      );
+
+      return {
+        ok: true,
+        operations: operationsResult.rows,
+        pagination: {
+          limit: query.limit,
+          offset: query.offset,
+          count: operationsResult.rows.length
+        }
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list operations");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
   app.post("/v1/operations/start", { preHandler: requireBearerToken }, async (request, reply) => {
     const parsed = operationStartBodySchema.safeParse(request.body);
 
@@ -343,6 +442,50 @@ export async function registerOperationRoutes(app: FastifyInstance) {
       }
 
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to finish operation ingest");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/v1/operations/:operation_id/payloads", { preHandler: requireBearerToken }, async (request, reply) => {
+    const parsedParams = operationParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const { operation_id: operationId } = parsedParams.data;
+
+    try {
+      const operationResult = await queryDb<{ id: string }>("SELECT id FROM operations WHERE id = $1", [operationId]);
+      const operation = operationResult.rows[0];
+
+      if (!operation) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "operation_not_found",
+            message: "Operation was not found."
+          }
+        });
+      }
+
+      const payloadResult = await queryDb<OperationPayloadRow>(
+        `
+        SELECT id, kind, request_id, received_at, payload
+        FROM operation_payloads
+        WHERE operation_id = $1
+        ORDER BY received_at ASC
+        `,
+        [operationId]
+      );
+
+      return {
+        ok: true,
+        operation_id: operationId,
+        payloads: payloadResult.rows
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation payloads");
       return sendDatabaseUnavailable(reply);
     }
   });

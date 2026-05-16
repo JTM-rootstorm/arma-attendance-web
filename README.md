@@ -2,9 +2,9 @@
 
 Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads before normalized attendance/stat tables are designed.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads before normalized attendance/stat tables are designed. Phase 1-B adds authenticated raw-operation observability endpoints.
 
-The service intentionally does not include normalized player stats, dashboards, user authentication, queues, Redis, or Docker yet.
+The service intentionally does not include normalized player attendance, player stats, dashboards, user authentication, queues, Redis, or Docker yet.
 
 ## Stack
 
@@ -68,9 +68,12 @@ GET  /health
 GET  /health/db
 GET  /
 POST /v1/debug/poke
+GET  /v1/operations
 POST /v1/operations/start
 POST /v1/operations/:operation_id/finish
 GET  /v1/operations/:operation_id
+GET  /v1/operations/:operation_id/payloads
+GET  /v1/ingest-requests/:request_id
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
@@ -81,6 +84,11 @@ All `/v1/*` endpoints require:
 
 ```http
 Authorization: Bearer <API_TOKEN>
+```
+
+JSON request bodies also require:
+
+```http
 Content-Type: application/json
 ```
 
@@ -159,6 +167,41 @@ curl -fsS http://127.0.0.1:3000/v1/operations/<operation_id> \
 
 Operation ingest requests require `request_id` and `server_key`. Extra payload fields are accepted and stored as raw JSON. Reusing the same `request_id` returns the saved response with `idempotent: true`.
 
+## Operation Observability
+
+Phase 1-B remains raw-operation observability only. It intentionally does not normalize player attendance, stats, or identity records.
+
+List recent operations:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/operations?server_key=server-01&status=finished&limit=25" \
+  -H "Authorization: Bearer dev-token"
+```
+
+Supported query parameters:
+
+- `server_key`
+- `status`: `started`, `finished`, or `abandoned`
+- `mission_uid`
+- `limit`: default `50`, max `200`
+- `offset`: default `0`
+
+Fetch raw operation payload rows:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/operations/<operation_id>/payloads" \
+  -H "Authorization: Bearer dev-token"
+```
+
+Fetch the saved ingest request and response for idempotency debugging:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/ingest-requests/$(python3 -c 'import urllib.parse; print(urllib.parse.quote("server-01:test-op:start", safe=""))')" \
+  -H "Authorization: Bearer dev-token"
+```
+
+`request_id` path parameters should be URL-encoded because request IDs may contain characters such as `:` or `/`.
+
 Errors use:
 
 ```json
@@ -210,9 +253,10 @@ pnpm db:status
 pnpm db:migrate
 pnpm smoke:db
 pnpm smoke:operations
+pnpm smoke:operations:observability
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. It requires the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
 
 ## Debian 13 LXC Setup
 
@@ -351,6 +395,7 @@ pnpm db:status
 pnpm db:migrate
 pnpm smoke:db
 pnpm smoke:operations
+pnpm smoke:operations:observability
 ```
 
 Also verify no real env files are staged before opening a pull request.
