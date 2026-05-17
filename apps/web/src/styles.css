@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Aurebesh AF Canon";
+  src: url("/fonts/aurebesh/AurebeshAF-Canon.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color: #eaf6ff;
   background: #050814;
@@ -11,6 +19,7 @@
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  --font-aurebesh-canon: "Aurebesh AF Canon", "Orbitron", "Rajdhani", system-ui, sans-serif;
   --bg-deep: #050814;
   --bg-navy: #08111f;
   --panel: rgba(12, 27, 47, 0.84);
@@ -199,7 +208,15 @@ h3 {
 
 .console-glyphs {
   color: rgba(158, 234, 255, 0.42);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aurebesh-label,
+.console-glyphs,
+.tactical-microtext,
+.panel-index-code {
+  font-family: var(--font-aurebesh-canon);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .status-strip,
@@ -344,6 +361,22 @@ h3 {
   justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.9rem;
+}
+
+.panel-header > div:first-child {
+  min-width: 0;
+}
+
+.panel-index-code {
+  display: block;
+  max-width: 14rem;
+  margin-top: 0.3rem;
+  overflow: hidden;
+  color: rgba(158, 234, 255, 0.26);
+  font-size: 0.7rem;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-sweep {

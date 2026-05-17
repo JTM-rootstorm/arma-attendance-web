@@ -49,6 +49,29 @@ The web shell can be run separately:
 pnpm dev:web
 ```
 
+## Front-end Font Assets
+
+The dashboard vendors the AurekFonts `Aurebesh AF` package under:
+
+`apps/web/public/fonts/aurebesh/`
+
+The default decorative font is `AurebeshAF-Canon.otf`, loaded as `Aurebesh AF Canon`.
+
+To refresh the package:
+
+```bash
+pnpm fonts:aurebesh
+```
+
+Source:
+https://aurekfonts.github.io/?font=AurebeshAF
+
+The AurekFonts catalog lists the package license as:
+
+> Free for all personal and commercial uses.
+
+Aurebesh is used only for decorative tactical-console labels and microtext. Do not use it as the primary UI/body font.
+
 ## Build And Typecheck
 
 ```bash

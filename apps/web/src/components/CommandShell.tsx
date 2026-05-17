@@ -41,7 +41,7 @@ export function CommandShell({
       <header className="command-bar">
         <div>
           <p className="console-glyphs" aria-hidden="true">
-            AUREK BESH CRESH DORN
+            command telemetry
           </p>
           <p className="eyebrow">Command Console</p>
           <h1>Arma Attendance Tracker</h1>

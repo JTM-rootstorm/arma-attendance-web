@@ -20,6 +20,9 @@ export function CommandPanel({
         <div>
           {eyebrow ? <p className="panel-eyebrow">{eyebrow}</p> : null}
           <h2>{title}</h2>
+          <span className="panel-index-code" aria-hidden="true">
+            {title}
+          </span>
         </div>
         {actions ? <div className="panel-actions">{actions}</div> : null}
       </header>

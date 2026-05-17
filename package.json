@@ -10,6 +10,7 @@
     "dev": "pnpm --filter @arma-attendance/api dev",
     "dev:api": "pnpm --filter @arma-attendance/api dev",
     "dev:web": "pnpm --filter @arma-attendance/web dev",
+    "fonts:aurebesh": "bash scripts/fetch-aurebeshaf-fonts.sh",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
