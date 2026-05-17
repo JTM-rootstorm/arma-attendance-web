@@ -25,6 +25,7 @@
     "smoke:dashboard": "bash scripts/dashboard-smoke.sh",
     "smoke:exports": "bash scripts/exports-smoke.sh",
     "smoke:data-quality": "bash scripts/data-quality-smoke.sh",
+    "smoke:discord": "bash scripts/discord-smoke.sh",
     "release:check": "bash scripts/release-check.sh"
   },
   "pnpm": {

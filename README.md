@@ -2,7 +2,7 @@
 
 Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard. Discord readiness adds DB/API/admin surfaces for a future bot to sync guild roles and evaluate attendance-based role actions.
 
 Raw payloads remain the source of truth. The service intentionally does not include user accounts, Steam login, role-based permissions, queues, Redis, or required Docker deployment yet.
 
@@ -108,6 +108,20 @@ GET  /v1/players
 GET  /v1/players.csv
 GET  /v1/players/:player_uid
 GET  /v1/players/:player_uid/summary
+POST /v1/discord/guilds/sync
+GET  /v1/discord/guilds
+GET  /v1/discord/guilds/:guild_id
+GET  /v1/discord/guilds/:guild_id/roles
+GET  /v1/discord/player-links
+POST /v1/discord/player-links
+DELETE /v1/discord/player-links/:discord_user_id
+GET  /v1/discord/guilds/:guild_id/rules
+POST /v1/discord/guilds/:guild_id/rules
+PATCH /v1/discord/guilds/:guild_id/rules/:rule_id
+DELETE /v1/discord/guilds/:guild_id/rules/:rule_id
+GET  /v1/discord/guilds/:guild_id/role-actions
+POST /v1/discord/guilds/:guild_id/role-action-results
+GET  /v1/discord/guilds/:guild_id/role-action-audits
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
@@ -315,6 +329,28 @@ pnpm db:backfill:attendance -- --operation-id <operation_id>
 
 The backfill script is safe to rerun. It does not delete raw payload rows and does not mutate raw ingest tables.
 
+## Discord Integration Readiness
+
+Discord readiness provides the database schema, authenticated API contracts, deterministic role evaluation, and the COMMS admin tab needed before a separate bot is built. The app does not store a Discord bot token and does not run a Discord client process.
+
+Bot-facing endpoints accept the normal `API_TOKEN`. If `BOT_API_TOKEN` is set, those same endpoints also accept that token:
+
+- `POST /v1/discord/guilds/sync`
+- `GET /v1/discord/guilds/:guild_id/role-actions`
+- `POST /v1/discord/guilds/:guild_id/role-action-results`
+
+Admin endpoints use the normal bearer token and cover guild/role snapshots, player links, attendance rules, evaluations, and audit history. The COMMS dashboard tab is an internal operator surface for the same data.
+
+Role evaluation is dry-run by default. It scores finished operations unless a rule opts into started operations, supports lookback/server/mission filters, and emits only planned `grant`, `skip`, and preview-only `revoke_preview` actions. Persisted evaluations create `discord_role_action_audits` rows so a future bot can report action results back.
+
+Synthetic Discord validation:
+
+```bash
+pnpm smoke:discord
+```
+
+`pnpm smoke:discord` requires the API to be running against a migrated PostgreSQL database. It creates synthetic attendance, syncs a fake guild and role, links a player, creates a rule, dry-runs role actions, persists an audit, reports a bot result, and fetches the audit trail.
+
 Errors use:
 
 ```json
@@ -346,6 +382,8 @@ openssl rand -hex 32
 
 Replace `API_TOKEN`, `PUBLIC_BASE_URL`, and any real database password before starting the service. Phase 0.5 uses `DATABASE_URL` for DB-backed debug pokes, `/health/db`, and migration scripts.
 
+Set `BOT_API_TOKEN` only if the future Discord bot should authenticate with a token separate from `API_TOKEN`. Leave it blank to use the normal API token for smoke tests and manual readiness checks.
+
 Never commit real `.env` files.
 
 ## Database Migrations
@@ -355,6 +393,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0001_debug_pokes.sql`
 - `0002_raw_operations_ingest.sql`
 - `0003_normalized_attendance.sql`
+- `0004_discord_integration.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -372,9 +411,10 @@ pnpm smoke:attendance
 pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
+pnpm smoke:discord
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
 
 Normalized attendance tables:
 
@@ -389,7 +429,7 @@ pnpm release:check
 RUN_DB_SMOKE=1 pnpm release:check
 ```
 
-The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including dashboard, exports, and data quality.
+The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including dashboard, exports, data quality, and Discord readiness.
 
 ## Debian 13 LXC Setup
 
@@ -535,6 +575,7 @@ pnpm smoke:attendance
 pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
+pnpm smoke:discord
 ```
 
 Also verify no real env files are staged before opening a pull request.

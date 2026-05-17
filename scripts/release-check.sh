@@ -20,6 +20,7 @@ if [[ "${RUN_DB_SMOKE:-0}" == "1" ]]; then
   run pnpm smoke:dashboard
   run pnpm smoke:exports
   run pnpm smoke:data-quality
+  run pnpm smoke:discord
 fi
 
 echo "[release:check] OK"
