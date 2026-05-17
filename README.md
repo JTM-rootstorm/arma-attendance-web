@@ -49,6 +49,8 @@ The web shell can be run separately:
 pnpm dev:web
 ```
 
+The Vite dev server proxies `/health` and `/v1/*` to the local API at `http://127.0.0.1:3000`, so leave `VITE_API_BASE_URL` unset for normal local dashboard development. Use `VITE_API_BASE_URL` only when intentionally testing against a separately configured API origin.
+
 ## Front-end Font Assets
 
 The dashboard vendors the AurekFonts `Aurebesh AF` package under:
