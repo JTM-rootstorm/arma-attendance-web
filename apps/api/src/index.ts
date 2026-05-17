@@ -2,12 +2,16 @@ import Fastify from "fastify";
 
 import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
+import { registerDataQualityRoutes } from "./routes/dataQuality.js";
 import { registerDebugRoutes } from "./routes/debug.js";
+import { registerExportRoutes } from "./routes/exports.js";
 import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerIngestRequestRoutes } from "./routes/ingestRequests.js";
 import { registerOperationRoutes } from "./routes/operations.js";
 import { registerPlayerRoutes } from "./routes/players.js";
+import { registerSummaryRoutes } from "./routes/summaries.js";
+import { registerWebRoutes } from "./routes/web.js";
 
 const app = Fastify({
   logger: {
@@ -64,28 +68,16 @@ app.addHook("onClose", async () => {
   await closeDbPool();
 });
 
-app.get("/", async (_request, reply) =>
-  reply.type("text/html; charset=utf-8").send(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Arma Attendance Tracker</title>
-  </head>
-  <body>
-    <h1>Arma Attendance Tracker</h1>
-    <p>API: online</p>
-    <p>Version: ${config.appVersion}</p>
-  </body>
-</html>`)
-);
-
 await registerHealthRoutes(app);
 await registerHealthDbRoutes(app);
 await registerDebugRoutes(app);
+await registerSummaryRoutes(app);
+await registerExportRoutes(app);
+await registerDataQualityRoutes(app);
 await registerOperationRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
+await registerWebRoutes(app);
 
 try {
   await app.listen({

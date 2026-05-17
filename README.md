@@ -2,9 +2,9 @@
 
 Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard.
 
-Raw payloads remain the source of truth. The service intentionally does not include dashboards, user authentication, queues, Redis, or Docker yet.
+Raw payloads remain the source of truth. The service intentionally does not include user accounts, Steam login, role-based permissions, queues, Redis, or required Docker deployment yet.
 
 ## Stack
 
@@ -13,7 +13,7 @@ Raw payloads remain the source of truth. The service intentionally does not incl
 - TypeScript
 - Fastify API
 - Zod config and request validation
-- Vite + React web shell
+- Vite + React internal dashboard
 - systemd deployment on Debian 13 LXC
 - Existing reverse proxy for HTTPS/TLS
 
@@ -68,15 +68,21 @@ GET  /health
 GET  /health/db
 GET  /
 POST /v1/debug/poke
+GET  /v1/dashboard/summary
+GET  /v1/data-quality
 GET  /v1/operations
 POST /v1/operations/start
 POST /v1/operations/:operation_id/finish
 GET  /v1/operations/:operation_id
 GET  /v1/operations/:operation_id/attendance
+GET  /v1/operations/:operation_id/attendance.csv
 GET  /v1/operations/:operation_id/payloads
+GET  /v1/operations/:operation_id/summary
 GET  /v1/ingest-requests/:request_id
 GET  /v1/players
+GET  /v1/players.csv
 GET  /v1/players/:player_uid
+GET  /v1/players/:player_uid/summary
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
@@ -234,6 +240,56 @@ curl -fsS "http://127.0.0.1:3000/v1/players/<player_uid>" \
 
 This does not require Arma manual testing. The new normalization layer is verified with synthetic HTTP payloads. Real Arma payload collection and extension-side operation modules remain future work.
 
+## Dashboard, Summaries, And Exports
+
+The built Vite dashboard is served by Fastify from `apps/web/dist` when `pnpm build` has run. If the web build is missing, `GET /` falls back to a minimal HTML status page. API routes under `/v1/*` and `/health*` remain API-only and are not swallowed by the dashboard fallback.
+
+The dashboard is an internal operator surface. It uses the existing bearer token only:
+
+- enter the token in the browser,
+- it is stored in `sessionStorage`,
+- use "Forget token" to clear it.
+
+Summary endpoints:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/dashboard/summary" \
+  -H "Authorization: Bearer dev-token"
+
+curl -fsS "http://127.0.0.1:3000/v1/operations/<operation_id>/summary" \
+  -H "Authorization: Bearer dev-token"
+
+curl -fsS "http://127.0.0.1:3000/v1/players/<player_uid>/summary" \
+  -H "Authorization: Bearer dev-token"
+```
+
+CSV export endpoints:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/operations/<operation_id>/attendance.csv" \
+  -H "Authorization: Bearer dev-token"
+
+curl -fsS "http://127.0.0.1:3000/v1/players.csv?q=Smoke" \
+  -H "Authorization: Bearer dev-token"
+```
+
+Data-quality checks:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/data-quality" \
+  -H "Authorization: Bearer dev-token"
+```
+
+Backfill/reprocess normalized attendance from existing raw payload rows:
+
+```bash
+pnpm db:backfill:attendance
+pnpm db:backfill:attendance -- --dry-run
+pnpm db:backfill:attendance -- --operation-id <operation_id>
+```
+
+The backfill script is safe to rerun. It does not delete raw payload rows and does not mutate raw ingest tables.
+
 Errors use:
 
 ```json
@@ -288,15 +344,27 @@ pnpm smoke:db
 pnpm smoke:operations
 pnpm smoke:operations:observability
 pnpm smoke:attendance
+pnpm smoke:dashboard
+pnpm smoke:exports
+pnpm smoke:data-quality
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
 
 Normalized attendance tables:
 
 - `players`: one row per identifiable player UID with the latest seen name and raw player object.
 - `operation_players`: one row per operation/player pair with start/end presence and role metadata.
 - `operation_player_stats`: optional finish stats per operation/player pair.
+
+Release preflight:
+
+```bash
+pnpm release:check
+RUN_DB_SMOKE=1 pnpm release:check
+```
+
+The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including dashboard, exports, and data quality.
 
 ## Debian 13 LXC Setup
 
@@ -373,6 +441,8 @@ Build:
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
+pnpm db:status
+pnpm db:migrate
 pnpm build
 ```
 
@@ -437,6 +507,9 @@ pnpm smoke:db
 pnpm smoke:operations
 pnpm smoke:operations:observability
 pnpm smoke:attendance
+pnpm smoke:dashboard
+pnpm smoke:exports
+pnpm smoke:data-quality
 ```
 
 Also verify no real env files are staged before opening a pull request.
