@@ -5,6 +5,7 @@ import { CommandShell } from "./components/CommandShell";
 import { PayloadInspector } from "./components/PayloadInspector";
 import { emptyResult, resultError } from "./format";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DiscordPage } from "./pages/DiscordPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { PlayersPage } from "./pages/PlayersPage";
 import type {
@@ -339,7 +340,7 @@ export function App() {
         onRefresh={() => void loadOperations()}
         onExportAttendance={(operationId) => void exportCsv(`/v1/operations/${operationId}/attendance.csv`, `operation-${operationId}-attendance.csv`)}
       />
-    ) : (
+    ) : view === "players" ? (
       <PlayersPage
         players={players}
         playerDetail={playerDetail}
@@ -351,6 +352,8 @@ export function App() {
         onSelectPlayer={setSelectedPlayerUid}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
+    ) : (
+      <DiscordPage hasToken={hasToken} token={token} />
     );
 
   return (

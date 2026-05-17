@@ -159,7 +159,7 @@ h3 {
 .console-shell {
   position: relative;
   display: grid;
-  grid-template-columns: 7rem minmax(0, 1fr) minmax(18rem, 23rem);
+  grid-template-columns: 7.75rem minmax(0, 1fr) minmax(18rem, 23rem);
   grid-template-rows: auto auto auto;
   align-content: start;
   gap: 1rem;
@@ -540,6 +540,14 @@ tbody tr.selected {
   grid-template-columns: minmax(12rem, 1fr) auto;
 }
 
+.filters.discord-link-form {
+  grid-template-columns: repeat(3, minmax(8rem, 1fr)) auto;
+}
+
+.filters.discord-rule-form {
+  grid-template-columns: repeat(3, minmax(8rem, 1fr)) auto;
+}
+
 .message {
   margin: 0.25rem 0 0.75rem;
   color: var(--text-secondary);
@@ -601,6 +609,12 @@ tbody tr.selected {
   grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1.2fr);
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.discord-selector,
+.discord-meta,
+.discord-eval-metrics {
+  margin-bottom: 0.85rem;
 }
 
 .drilldown-stage {
@@ -794,7 +808,7 @@ pre {
 
 @media (max-width: 1180px) {
   .console-shell {
-    grid-template-columns: 6.5rem minmax(0, 1fr);
+    grid-template-columns: 7.25rem minmax(0, 1fr);
   }
 
   .inspection-pane {
@@ -829,7 +843,7 @@ pre {
   }
 
   .nav-rail {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .nav-rail button {
@@ -839,6 +853,8 @@ pre {
   .token-gate,
   .filters,
   .filters.roster-filter,
+  .filters.discord-link-form,
+  .filters.discord-rule-form,
   .view-grid,
   .metric-grid,
   .metric-grid.compact {

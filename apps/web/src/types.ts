@@ -201,4 +201,140 @@ export type DataQualityResponse = {
   checks: Record<string, unknown[]>;
 };
 
-export type ViewName = "dashboard" | "operations" | "players";
+export type DiscordGuild = {
+  guild_id: string;
+  name: string;
+  icon_url: string | null;
+  bot_user_id: string | null;
+  bot_present: boolean;
+  last_role_sync_at: string | null;
+  created_at: string;
+  updated_at: string;
+  role_count?: number;
+  linked_player_count?: number;
+  enabled_rule_count?: number;
+};
+
+export type DiscordRole = {
+  guild_id: string;
+  role_id: string;
+  name: string;
+  color: number | null;
+  position: number | null;
+  managed: boolean;
+  assignable: boolean;
+  is_deleted: boolean;
+  last_seen_at: string;
+  updated_at: string;
+};
+
+export type DiscordPlayerLink = {
+  player_uid: string;
+  player_name: string | null;
+  discord_user_id: string;
+  discord_username: string | null;
+  discord_display_name: string | null;
+  source: "manual" | "bot" | "import";
+  verified_at: string | null;
+  updated_at: string;
+};
+
+export type DiscordAttendanceRule = {
+  id: string;
+  guild_id: string;
+  role_id: string;
+  role_name?: string;
+  name: string;
+  description: string | null;
+  is_enabled: boolean;
+  min_attendance_points: number;
+  min_operation_count: number;
+  min_attendance_percent: string | number | null;
+  lookback_days: number | null;
+  server_key: string | null;
+  mission_uid_pattern: string | null;
+  require_present_at_end: boolean;
+  include_started_operations: boolean;
+  grant_mode: "grant_only" | "grant_and_revoke_preview";
+  updated_at: string;
+};
+
+export type DiscordRuleScore = {
+  attendance_points: number;
+  operation_count: number;
+  attendance_percent: number;
+};
+
+export type DiscordRoleAction = {
+  audit_id?: string;
+  action: "grant" | "revoke_preview" | "skip";
+  rule_id: string;
+  rule_name: string;
+  role_id: string;
+  role_name: string;
+  player_uid: string;
+  player_name: string | null;
+  discord_user_id: string | null;
+  discord_display_name: string | null;
+  score: DiscordRuleScore;
+  reason: string;
+};
+
+export type DiscordRoleAudit = {
+  id: string;
+  guild_id: string;
+  rule_id: string;
+  player_uid: string | null;
+  discord_user_id: string | null;
+  role_id: string;
+  action: "grant" | "revoke_preview" | "skip";
+  status: "planned" | "reported_success" | "reported_failure" | "skipped";
+  reason: string;
+  evaluation_id: string;
+  error_message: string | null;
+  created_at: string;
+  reported_at: string | null;
+};
+
+export type DiscordGuildsResponse = {
+  ok: true;
+  guilds: DiscordGuild[];
+};
+
+export type DiscordRolesResponse = {
+  ok: true;
+  roles: DiscordRole[];
+};
+
+export type DiscordPlayerLinksResponse = {
+  ok: true;
+  links: DiscordPlayerLink[];
+};
+
+export type DiscordRulesResponse = {
+  ok: true;
+  rules: DiscordAttendanceRule[];
+};
+
+export type DiscordRoleActionsResponse = {
+  ok: true;
+  guild_id: string;
+  evaluation_id: string;
+  dry_run: boolean;
+  actions: DiscordRoleAction[];
+  skipped: DiscordRoleAction[];
+  summary: {
+    rules_evaluated: number;
+    players_evaluated: number;
+    grant_count: number;
+    skip_count: number;
+    revoke_preview_count: number;
+  };
+};
+
+export type DiscordAuditsResponse = {
+  ok: true;
+  audits: DiscordRoleAudit[];
+};
+
+export type ViewName = "dashboard" | "operations" | "players" | "discord";

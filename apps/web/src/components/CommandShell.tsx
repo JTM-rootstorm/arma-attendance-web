@@ -8,7 +8,8 @@ import { TokenGate } from "./TokenGate";
 const navigation: Array<{ view: ViewName; label: string; code: string }> = [
   { view: "dashboard", label: "Command", code: "CMD" },
   { view: "operations", label: "Operations", code: "OPS" },
-  { view: "players", label: "Roster", code: "RST" }
+  { view: "players", label: "Roster", code: "RST" },
+  { view: "discord", label: "Comms", code: "COM" }
 ];
 
 export function CommandShell({

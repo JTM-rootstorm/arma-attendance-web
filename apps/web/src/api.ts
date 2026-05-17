@@ -31,8 +31,10 @@ export function buildUrl(path: string, params?: Record<string, string | undefine
 export async function apiFetch<T>(
   path: string,
   options: {
+    method?: "GET" | "POST" | "PATCH" | "DELETE";
     token?: string;
     params?: Record<string, string | undefined>;
+    body?: unknown;
   } = {}
 ): Promise<T> {
   const headers = new Headers();
@@ -41,7 +43,17 @@ export async function apiFetch<T>(
     headers.set("Authorization", `Bearer ${options.token}`);
   }
 
-  const response = await fetch(buildUrl(path, options.params), { headers });
+  const init: RequestInit = {
+    method: options.method ?? "GET",
+    headers
+  };
+
+  if (options.body !== undefined) {
+    headers.set("Content-Type", "application/json");
+    init.body = JSON.stringify(options.body);
+  }
+
+  const response = await fetch(buildUrl(path, options.params), init);
   const data = (await response.json()) as T | { ok: false; error: ApiError };
 
   if (!response.ok) {
