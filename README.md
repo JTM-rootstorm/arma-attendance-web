@@ -2,9 +2,9 @@
 
 Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads before normalized attendance/stat tables are designed. Phase 1-B adds authenticated raw-operation observability endpoints.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present.
 
-The service intentionally does not include normalized player attendance, player stats, dashboards, user authentication, queues, Redis, or Docker yet.
+Raw payloads remain the source of truth. The service intentionally does not include dashboards, user authentication, queues, Redis, or Docker yet.
 
 ## Stack
 
@@ -72,8 +72,11 @@ GET  /v1/operations
 POST /v1/operations/start
 POST /v1/operations/:operation_id/finish
 GET  /v1/operations/:operation_id
+GET  /v1/operations/:operation_id/attendance
 GET  /v1/operations/:operation_id/payloads
 GET  /v1/ingest-requests/:request_id
+GET  /v1/players
+GET  /v1/players/:player_uid
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
@@ -125,7 +128,7 @@ Expected success shape:
 
 ## Operation Ingest
 
-Phase 1-A stores raw operation start/finish JSON. It does not normalize players or stats yet.
+Phase 1-A stores raw operation start/finish JSON. Phase 1-C/1-D also normalizes identifiable player rows and finish stats when a payload includes a `players` array.
 
 Start an operation:
 
@@ -167,9 +170,15 @@ curl -fsS http://127.0.0.1:3000/v1/operations/<operation_id> \
 
 Operation ingest requests require `request_id` and `server_key`. Extra payload fields are accepted and stored as raw JSON. Reusing the same `request_id` returns the saved response with `idempotent: true`.
 
+Normalization is tolerant:
+
+- Missing `players` arrays are accepted.
+- Player entries without `player_uid`, `arma_uid`, `steam_id`, or `uid` are ignored by normalized tables but kept in raw JSON.
+- Weird or missing stat values default to `0` in normalized stats while raw stats remain inspectable.
+
 ## Operation Observability
 
-Phase 1-B remains raw-operation observability only. It intentionally does not normalize player attendance, stats, or identity records.
+Phase 1-B exposes raw-operation observability. Phase 1-C/1-D adds normalized read APIs beside it.
 
 List recent operations:
 
@@ -201,6 +210,29 @@ curl -fsS "http://127.0.0.1:3000/v1/ingest-requests/$(python3 -c 'import urllib.
 ```
 
 `request_id` path parameters should be URL-encoded because request IDs may contain characters such as `:` or `/`.
+
+Fetch normalized attendance for an operation:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/operations/<operation_id>/attendance" \
+  -H "Authorization: Bearer dev-token"
+```
+
+List normalized players:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/players?q=Smoke&limit=50" \
+  -H "Authorization: Bearer dev-token"
+```
+
+Fetch one normalized player and recent operations:
+
+```bash
+curl -fsS "http://127.0.0.1:3000/v1/players/<player_uid>" \
+  -H "Authorization: Bearer dev-token"
+```
+
+This does not require Arma manual testing. The new normalization layer is verified with synthetic HTTP payloads. Real Arma payload collection and extension-side operation modules remain future work.
 
 Errors use:
 
@@ -241,6 +273,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 
 - `0001_debug_pokes.sql`
 - `0002_raw_operations_ingest.sql`
+- `0003_normalized_attendance.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -254,9 +287,16 @@ pnpm db:migrate
 pnpm smoke:db
 pnpm smoke:operations
 pnpm smoke:operations:observability
+pnpm smoke:attendance
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
+
+Normalized attendance tables:
+
+- `players`: one row per identifiable player UID with the latest seen name and raw player object.
+- `operation_players`: one row per operation/player pair with start/end presence and role metadata.
+- `operation_player_stats`: optional finish stats per operation/player pair.
 
 ## Debian 13 LXC Setup
 
@@ -396,6 +436,7 @@ pnpm db:migrate
 pnpm smoke:db
 pnpm smoke:operations
 pnpm smoke:operations:observability
+pnpm smoke:attendance
 ```
 
 Also verify no real env files are staged before opening a pull request.
