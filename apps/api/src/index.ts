@@ -7,6 +7,7 @@ import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerIngestRequestRoutes } from "./routes/ingestRequests.js";
 import { registerOperationRoutes } from "./routes/operations.js";
+import { registerPlayerRoutes } from "./routes/players.js";
 
 const app = Fastify({
   logger: {
@@ -84,6 +85,7 @@ await registerHealthDbRoutes(app);
 await registerDebugRoutes(app);
 await registerOperationRoutes(app);
 await registerIngestRequestRoutes(app);
+await registerPlayerRoutes(app);
 
 try {
   await app.listen({

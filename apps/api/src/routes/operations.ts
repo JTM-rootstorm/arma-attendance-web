@@ -5,6 +5,7 @@ import { requireBearerToken } from "../auth.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
+import { persistOperationAttendance, type NormalizationSummary } from "../normalization/operationAttendance.js";
 
 const missionSchema = z
   .object({
@@ -53,6 +54,7 @@ type OperationIngestResponse = {
   status: OperationStatus;
   accepted: true;
   idempotent: boolean;
+  normalized?: NormalizationSummary;
 };
 
 type OperationRow = {
@@ -86,6 +88,31 @@ type OperationPayloadRow = {
   request_id: string;
   received_at: Date;
   payload: unknown;
+};
+
+type OperationAttendanceRow = {
+  player_uid: string;
+  name_at_start: string | null;
+  name_at_end: string | null;
+  side_at_start: string | null;
+  side_at_end: string | null;
+  group_at_start: string | null;
+  group_at_end: string | null;
+  role_at_start: string | null;
+  role_at_end: string | null;
+  unit_class_at_start: string | null;
+  unit_class_at_end: string | null;
+  vehicle_class_at_start: string | null;
+  vehicle_class_at_end: string | null;
+  present_at_start: boolean;
+  present_at_end: boolean;
+  stats_player_uid: string | null;
+  infantry_kills: number | null;
+  vehicle_kills: number | null;
+  player_kills: number | null;
+  ai_kills: number | null;
+  friendly_kills: number | null;
+  deaths: number | null;
 };
 
 class OperationRouteError extends Error {
@@ -321,13 +348,15 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         }
 
         await insertOperationPayload(tx, operation.id, payload.request_id, "start", payload);
+        const normalized = await persistOperationAttendance(tx, operation.id, "start", payload);
 
         const response: OperationIngestResponse = {
           ok: true,
           operation_id: operation.id,
           status: operation.status,
           accepted: true,
-          idempotent: false
+          idempotent: false,
+          normalized
         };
 
         await insertIngestRequest(tx, payload.request_id, operation.id, "/v1/operations/start", payload, response);
@@ -416,13 +445,15 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         }
 
         await insertOperationPayload(tx, operationId, payload.request_id, "finish", payload);
+        const normalized = await persistOperationAttendance(tx, operationId, "finish", payload);
 
         const response: OperationIngestResponse = {
           ok: true,
           operation_id: updatedOperation.id,
           status: updatedOperation.status,
           accepted: true,
-          idempotent: false
+          idempotent: false,
+          normalized
         };
 
         await insertIngestRequest(
@@ -486,6 +517,102 @@ export async function registerOperationRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation payloads");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/v1/operations/:operation_id/attendance", { preHandler: requireBearerToken }, async (request, reply) => {
+    const parsedParams = operationParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const { operation_id: operationId } = parsedParams.data;
+
+    try {
+      const operationResult = await queryDb<{ id: string }>("SELECT id FROM operations WHERE id = $1", [operationId]);
+      const operation = operationResult.rows[0];
+
+      if (!operation) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "operation_not_found",
+            message: "Operation was not found."
+          }
+        });
+      }
+
+      const attendanceResult = await queryDb<OperationAttendanceRow>(
+        `
+        SELECT
+          op.player_uid,
+          op.name_at_start,
+          op.name_at_end,
+          op.side_at_start,
+          op.side_at_end,
+          op.group_at_start,
+          op.group_at_end,
+          op.role_at_start,
+          op.role_at_end,
+          op.unit_class_at_start,
+          op.unit_class_at_end,
+          op.vehicle_class_at_start,
+          op.vehicle_class_at_end,
+          op.present_at_start,
+          op.present_at_end,
+          ops.player_uid AS stats_player_uid,
+          ops.infantry_kills,
+          ops.vehicle_kills,
+          ops.player_kills,
+          ops.ai_kills,
+          ops.friendly_kills,
+          ops.deaths
+        FROM operation_players op
+        LEFT JOIN operation_player_stats ops
+          ON ops.operation_id = op.operation_id
+          AND ops.player_uid = op.player_uid
+        WHERE op.operation_id = $1
+        ORDER BY COALESCE(op.name_at_end, op.name_at_start, op.player_uid), op.player_uid
+        `,
+        [operationId]
+      );
+
+      return {
+        ok: true,
+        operation_id: operationId,
+        attendance: attendanceResult.rows.map((row) => ({
+          player_uid: row.player_uid,
+          name_at_start: row.name_at_start,
+          name_at_end: row.name_at_end,
+          side_at_start: row.side_at_start,
+          side_at_end: row.side_at_end,
+          group_at_start: row.group_at_start,
+          group_at_end: row.group_at_end,
+          role_at_start: row.role_at_start,
+          role_at_end: row.role_at_end,
+          unit_class_at_start: row.unit_class_at_start,
+          unit_class_at_end: row.unit_class_at_end,
+          vehicle_class_at_start: row.vehicle_class_at_start,
+          vehicle_class_at_end: row.vehicle_class_at_end,
+          present_at_start: row.present_at_start,
+          present_at_end: row.present_at_end,
+          stats:
+            row.stats_player_uid === null
+              ? null
+              : {
+                  infantry_kills: row.infantry_kills ?? 0,
+                  vehicle_kills: row.vehicle_kills ?? 0,
+                  player_kills: row.player_kills ?? 0,
+                  ai_kills: row.ai_kills ?? 0,
+                  friendly_kills: row.friendly_kills ?? 0,
+                  deaths: row.deaths ?? 0
+                }
+        }))
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation attendance");
       return sendDatabaseUnavailable(reply);
     }
   });
