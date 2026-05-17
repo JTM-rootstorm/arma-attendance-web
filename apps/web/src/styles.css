@@ -43,11 +43,13 @@
 html,
 body,
 #root {
+  min-height: 100%;
   min-width: 320px;
   margin: 0;
 }
 
 body {
+  min-height: 100dvh;
   color: var(--text-primary);
   background:
     linear-gradient(rgba(135, 196, 255, 0.045) 1px, transparent 1px),
@@ -65,6 +67,10 @@ body {
     56px 56px,
     160px 160px,
     auto;
+}
+
+#root {
+  min-height: 100dvh;
 }
 
 button,
@@ -163,6 +169,7 @@ h3 {
   grid-template-rows: auto auto auto;
   align-content: start;
   gap: 1rem;
+  min-height: 100dvh;
   padding: 1rem;
   overflow: clip;
 }
@@ -275,7 +282,7 @@ h3 {
 }
 
 .status-chip.pulse {
-  animation: status-pulse 2.6s ease-in-out infinite;
+  box-shadow: none;
 }
 
 .nav-rail {
@@ -323,7 +330,6 @@ h3 {
   height: 2px;
   content: "";
   background: linear-gradient(90deg, transparent, var(--holo-cyan), transparent);
-  animation: nav-confirm 1.8s ease-in-out infinite;
 }
 
 .token-station {
@@ -358,29 +364,7 @@ h3 {
 
 .viewport::before,
 .viewport::after {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  content: "";
-  pointer-events: none;
-}
-
-.viewport::before {
-  background: linear-gradient(180deg, transparent, rgba(158, 234, 255, 0.16), transparent);
-  mix-blend-mode: screen;
-  transform: translateY(-110%);
-  animation: viewport-scan 460ms ease-out both;
-}
-
-.viewport::after {
-  border: 1px solid rgba(158, 234, 255, 0.2);
-  opacity: 0;
-  clip-path: polygon(0 0, 42% 0, 44% 10px, 100% 10px, 100% 100%, 0 100%);
-  animation: viewport-acquire 520ms ease-out both;
-}
-
-.view-transition-layer {
-  animation: view-boot 260ms ease-out both;
+  content: none;
 }
 
 .inspection-pane {
@@ -418,12 +402,7 @@ h3 {
 }
 
 .panel-sweep {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(158, 234, 255, 0.12), transparent);
-  transform: translateX(-120%);
-  animation: panel-sweep 8s ease-in-out infinite;
+  display: none;
 }
 
 .metric-grid {
@@ -654,7 +633,6 @@ tbody tr.selected {
     0 0 36px rgba(103, 199, 255, 0.16);
   clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
   scrollbar-color: rgba(103, 199, 255, 0.42) rgba(3, 12, 24, 0.65);
-  animation: drilldown-open 220ms ease-out both;
 }
 
 .drilldown-header {
@@ -695,105 +673,6 @@ pre {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.78rem;
   white-space: pre-wrap;
-}
-
-@keyframes panel-sweep {
-  0%,
-  58% {
-    transform: translateX(-120%);
-  }
-
-  75%,
-  100% {
-    transform: translateX(120%);
-  }
-}
-
-@keyframes status-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 rgba(103, 199, 255, 0);
-  }
-
-  50% {
-    box-shadow: 0 0 18px rgba(103, 199, 255, 0.26);
-  }
-}
-
-@keyframes view-boot {
-  0% {
-    opacity: 0;
-    transform: translateY(0.35rem) scale(0.992);
-    filter: brightness(1.35) saturate(1.15);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: brightness(1) saturate(1);
-  }
-}
-
-@keyframes viewport-scan {
-  0% {
-    opacity: 0;
-    transform: translateY(-110%);
-  }
-
-  20% {
-    opacity: 1;
-  }
-
-  100% {
-    opacity: 0;
-    transform: translateY(110%);
-  }
-}
-
-@keyframes viewport-acquire {
-  0% {
-    opacity: 0;
-    transform: scale(0.988);
-  }
-
-  40% {
-    opacity: 1;
-  }
-
-  100% {
-    opacity: 0;
-    transform: scale(1);
-  }
-}
-
-@keyframes nav-confirm {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: translateX(-38%);
-  }
-
-  50% {
-    opacity: 1;
-    transform: translateX(38%);
-  }
-}
-
-@keyframes drilldown-open {
-  0% {
-    opacity: 0;
-    transform: translateY(0.45rem) scale(0.985);
-    clip-path: polygon(0 0, 30% 0, 32% 12px, 100% 12px, 100% 100%, 0 100%);
-  }
-
-  55% {
-    opacity: 1;
-  }
-
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
