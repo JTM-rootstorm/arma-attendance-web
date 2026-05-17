@@ -20,7 +20,11 @@
     "smoke:db": "bash scripts/db-smoke.sh",
     "smoke:operations": "bash scripts/operations-smoke.sh",
     "smoke:operations:observability": "bash scripts/operations-observability-smoke.sh",
-    "smoke:attendance": "bash scripts/normalized-attendance-smoke.sh"
+    "smoke:attendance": "bash scripts/normalized-attendance-smoke.sh",
+    "smoke:dashboard": "bash scripts/dashboard-smoke.sh",
+    "smoke:exports": "bash scripts/exports-smoke.sh",
+    "smoke:data-quality": "bash scripts/data-quality-smoke.sh",
+    "release:check": "bash scripts/release-check.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]
