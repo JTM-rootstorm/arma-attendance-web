@@ -134,7 +134,7 @@ export function OperationsPage({
   return (
     <div className="view-grid">
       <CommandPanel title="Operations" eyebrow="Mission telemetry" wide actions={<button type="button" onClick={onRefresh}>Refresh</button>}>
-        <div className="drilldown-stage">
+        <div className={isDetailOpen ? "drilldown-stage is-open" : "drilldown-stage"}>
           <div className={isDetailOpen ? "drilldown-base is-obscured" : "drilldown-base"}>
             <form className="filters" onSubmit={(event) => event.preventDefault()}>
               <input

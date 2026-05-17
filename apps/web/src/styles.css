@@ -212,8 +212,7 @@ h3 {
 
 .aurebesh-label,
 .console-glyphs,
-.tactical-microtext,
-.panel-index-code {
+.tactical-microtext {
   font-family: var(--font-aurebesh-canon);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -422,18 +421,6 @@ h3 {
   min-width: 0;
 }
 
-.panel-index-code {
-  display: block;
-  max-width: 14rem;
-  margin-top: 0.3rem;
-  overflow: hidden;
-  color: rgba(158, 234, 255, 0.26);
-  font-size: 0.7rem;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .panel-sweep {
   position: absolute;
   inset: 0;
@@ -621,11 +608,13 @@ tbody tr.selected {
 }
 
 .drilldown-stage {
+  display: grid;
   position: relative;
-  min-height: 32rem;
+  min-height: 0;
 }
 
 .drilldown-base {
+  grid-area: 1 / 1;
   transition:
     filter 180ms ease,
     opacity 180ms ease,
@@ -640,14 +629,12 @@ tbody tr.selected {
 }
 
 .drilldown-overlay {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  grid-area: 1 / 1;
   z-index: 4;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   gap: 0.85rem;
   padding: 1rem;
-  overflow: auto;
   border: 1px solid var(--line-bright);
   background:
     linear-gradient(135deg, rgba(8, 20, 36, 0.98), rgba(11, 35, 62, 0.95)),
@@ -864,10 +851,6 @@ pre {
 
   .status-strip {
     justify-content: flex-start;
-  }
-
-  .drilldown-stage {
-    min-height: 34rem;
   }
 
   .drilldown-overlay {

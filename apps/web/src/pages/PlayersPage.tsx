@@ -45,7 +45,7 @@ export function PlayersPage({
   return (
     <div className="view-grid">
       <CommandPanel title="Player Registry" eyebrow="Roster uplink" wide actions={<button type="button" onClick={onExportPlayers}>Players CSV</button>}>
-        <div className="drilldown-stage">
+        <div className={isDetailOpen ? "drilldown-stage is-open" : "drilldown-stage"}>
           <div className={isDetailOpen ? "drilldown-base is-obscured" : "drilldown-base"}>
             <form className="filters roster-filter" onSubmit={(event) => event.preventDefault()}>
               <input value={playerSearch} onChange={(event) => onSearchChange(event.target.value)} placeholder="Search players" aria-label="Search players" />
