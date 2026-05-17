@@ -2,6 +2,7 @@ import Fastify from "fastify";
 
 import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
+import { registerDataQualityRoutes } from "./routes/dataQuality.js";
 import { registerDebugRoutes } from "./routes/debug.js";
 import { registerExportRoutes } from "./routes/exports.js";
 import { registerHealthDbRoutes } from "./routes/healthDb.js";
@@ -87,6 +88,7 @@ await registerHealthDbRoutes(app);
 await registerDebugRoutes(app);
 await registerSummaryRoutes(app);
 await registerExportRoutes(app);
+await registerDataQualityRoutes(app);
 await registerOperationRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
