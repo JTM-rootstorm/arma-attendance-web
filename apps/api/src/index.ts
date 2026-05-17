@@ -4,6 +4,7 @@ import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
 import { registerDebugRoutes } from "./routes/debug.js";
+import { registerDiscordRoutes } from "./routes/discord.js";
 import { registerExportRoutes } from "./routes/exports.js";
 import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -24,6 +25,7 @@ app.log.info(
     nodeEnv: config.nodeEnv,
     envFilesLoaded: loadedEnvFiles.filter((envFile) => envFile.loaded).length,
     apiTokenPresent: Boolean(config.apiToken),
+    botApiTokenPresent: Boolean(config.botApiToken),
     databaseUrlPresent: Boolean(config.databaseUrl)
   },
   "configuration loaded"
@@ -74,6 +76,7 @@ await registerDebugRoutes(app);
 await registerSummaryRoutes(app);
 await registerExportRoutes(app);
 await registerDataQualityRoutes(app);
+await registerDiscordRoutes(app);
 await registerOperationRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);

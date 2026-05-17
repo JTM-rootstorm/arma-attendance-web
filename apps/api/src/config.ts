@@ -14,6 +14,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535),
   PUBLIC_BASE_URL: z.string().url(),
   API_TOKEN: z.string().min(1),
+  BOT_API_TOKEN: z.string().optional(),
   LOG_LEVEL: logLevelSchema,
   DATABASE_URL: z.string().optional()
 });
@@ -41,6 +42,7 @@ export const config = {
   port: env.PORT,
   publicBaseUrl: env.PUBLIC_BASE_URL,
   apiToken: env.API_TOKEN,
+  botApiToken: env.BOT_API_TOKEN && env.BOT_API_TOKEN.length > 0 ? env.BOT_API_TOKEN : undefined,
   logLevel: env.LOG_LEVEL,
   databaseUrl: env.DATABASE_URL
 } as const;
