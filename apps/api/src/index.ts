@@ -8,6 +8,7 @@ import { registerHealthRoutes } from "./routes/health.js";
 import { registerIngestRequestRoutes } from "./routes/ingestRequests.js";
 import { registerOperationRoutes } from "./routes/operations.js";
 import { registerPlayerRoutes } from "./routes/players.js";
+import { registerSummaryRoutes } from "./routes/summaries.js";
 
 const app = Fastify({
   logger: {
@@ -83,6 +84,7 @@ app.get("/", async (_request, reply) =>
 await registerHealthRoutes(app);
 await registerHealthDbRoutes(app);
 await registerDebugRoutes(app);
+await registerSummaryRoutes(app);
 await registerOperationRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
