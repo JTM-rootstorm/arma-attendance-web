@@ -5,6 +5,7 @@ import { requireBearerToken } from "../auth.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
+import { persistOperationAttendance, type NormalizationSummary } from "../normalization/operationAttendance.js";
 
 const missionSchema = z
   .object({
@@ -53,6 +54,7 @@ type OperationIngestResponse = {
   status: OperationStatus;
   accepted: true;
   idempotent: boolean;
+  normalized?: NormalizationSummary;
 };
 
 type OperationRow = {
@@ -321,13 +323,15 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         }
 
         await insertOperationPayload(tx, operation.id, payload.request_id, "start", payload);
+        const normalized = await persistOperationAttendance(tx, operation.id, "start", payload);
 
         const response: OperationIngestResponse = {
           ok: true,
           operation_id: operation.id,
           status: operation.status,
           accepted: true,
-          idempotent: false
+          idempotent: false,
+          normalized
         };
 
         await insertIngestRequest(tx, payload.request_id, operation.id, "/v1/operations/start", payload, response);
@@ -416,13 +420,15 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         }
 
         await insertOperationPayload(tx, operationId, payload.request_id, "finish", payload);
+        const normalized = await persistOperationAttendance(tx, operationId, "finish", payload);
 
         const response: OperationIngestResponse = {
           ok: true,
           operation_id: updatedOperation.id,
           status: updatedOperation.status,
           accepted: true,
-          idempotent: false
+          idempotent: false,
+          normalized
         };
 
         await insertIngestRequest(
