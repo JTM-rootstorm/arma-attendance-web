@@ -155,10 +155,10 @@ h3 {
 .console-shell {
   position: relative;
   display: grid;
-  grid-template-columns: 6rem minmax(0, 1fr) minmax(18rem, 23rem);
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: 7rem minmax(0, 1fr) minmax(18rem, 23rem);
+  grid-template-rows: auto auto auto;
+  align-content: start;
   gap: 1rem;
-  min-height: 100vh;
   padding: 1rem;
 }
 
@@ -284,6 +284,7 @@ h3 {
 .nav-rail button {
   position: relative;
   display: grid;
+  align-content: center;
   gap: 0.2rem;
   min-height: 4.2rem;
   padding: 0.45rem;
@@ -300,7 +301,9 @@ h3 {
 
 .nav-rail button strong {
   font-size: 0.72rem;
+  line-height: 1.1;
   text-transform: uppercase;
+  white-space: normal;
 }
 
 .nav-rail button.active {
@@ -368,19 +371,6 @@ h3 {
   opacity: 0;
   clip-path: polygon(0 0, 42% 0, 44% 10px, 100% 10px, 100% 100%, 0 100%);
   animation: viewport-acquire 520ms ease-out both;
-}
-
-.viewport-transition-code {
-  position: absolute;
-  top: 0.7rem;
-  right: 0.85rem;
-  z-index: 3;
-  color: rgba(158, 234, 255, 0.34);
-  font-family: var(--font-aurebesh-canon);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  pointer-events: none;
 }
 
 .view-transition-layer {
@@ -798,7 +788,7 @@ pre {
 
 @media (max-width: 1180px) {
   .console-shell {
-    grid-template-columns: 5.5rem minmax(0, 1fr);
+    grid-template-columns: 6.5rem minmax(0, 1fr);
   }
 
   .inspection-pane {

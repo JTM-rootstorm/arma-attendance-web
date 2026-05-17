@@ -36,8 +36,6 @@ export function CommandShell({
   children: ReactNode;
   inspector: ReactNode;
 }) {
-  const activeNav = navigation.find((item) => item.view === view);
-
   return (
     <main className="console-shell">
       <header className="command-bar">
@@ -83,10 +81,7 @@ export function CommandShell({
         />
       </section>
 
-      <section className="viewport" data-view={view} data-view-code={activeNav?.code ?? "CMD"}>
-        <span className="viewport-transition-code" aria-hidden="true">
-          {activeNav?.code ?? "CMD"} uplink
-        </span>
+      <section className="viewport" data-view={view}>
         <div key={view} className="view-transition-layer">
           {children}
         </div>
