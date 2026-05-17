@@ -69,7 +69,7 @@ function OperationsTable({
 
 function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendance"] }) {
   return (
-    <TacticalTable label="Operation attendance">
+    <TacticalTable label="Operation attendance" maxVisibleRows={10}>
       <thead>
         <tr>
           <th>Player UID</th>
@@ -129,78 +129,90 @@ export function OperationsPage({
   const detail = operationDetail.status === "ready" ? operationDetail.data : null;
   const summary = operationSummary.status === "ready" ? operationSummary.data : null;
   const attendance = operationAttendance.status === "ready" ? operationAttendance.data : null;
+  const isDetailOpen = selectedOperationId.length > 0;
 
   return (
     <div className="view-grid">
       <CommandPanel title="Operations" eyebrow="Mission telemetry" wide actions={<button type="button" onClick={onRefresh}>Refresh</button>}>
-        <form className="filters" onSubmit={(event) => event.preventDefault()}>
-          <input
-            value={operationFilters.server_key}
-            onChange={(event) => onFiltersChange({ ...operationFilters, server_key: event.target.value })}
-            placeholder="server_key"
-            aria-label="Server key filter"
-          />
-          <select
-            value={operationFilters.status}
-            onChange={(event) => onFiltersChange({ ...operationFilters, status: event.target.value })}
-            aria-label="Status filter"
-          >
-            <option value="">any status</option>
-            <option value="started">started</option>
-            <option value="finished">finished</option>
-            <option value="abandoned">abandoned</option>
-          </select>
-          <input
-            value={operationFilters.mission_uid}
-            onChange={(event) => onFiltersChange({ ...operationFilters, mission_uid: event.target.value })}
-            placeholder="mission_uid"
-            aria-label="Mission UID filter"
-          />
-        </form>
-        <DataMessage result={operations} />
-        {operations.status === "ready" ? (
-          <OperationsTable operations={operations.data.operations} selectedId={selectedOperationId} onSelect={onSelectOperation} />
-        ) : null}
-      </CommandPanel>
-
-      <CommandPanel
-        title="Operation Detail"
-        eyebrow="Selected signal"
-        wide
-        actions={
-          detail ? (
-            <button type="button" onClick={() => onExportAttendance(detail.operation.id)}>
-              Attendance CSV
-            </button>
-          ) : null
-        }
-      >
-        <DataMessage result={operationDetail} />
-        <DataMessage result={operationSummary} />
-        <DataMessage result={operationAttendance} />
-        {!selectedOperationId ? <p className="message">Select an operation row to inspect attendance and payloads.</p> : null}
-        {detail && summary ? (
-          <div className="detail-grid">
-            <div>
-              <h3>{displayValue(detail.operation.mission_name)}</h3>
-              <p className="mono">{detail.operation.id}</p>
-              <div className="detail-meta">
-                <StatusChip label={detail.operation.status} tone={detail.operation.status === "abandoned" ? "danger" : "info"} />
-                <span>{displayValue(detail.operation.world_name)}</span>
-                <span>{formatDate(detail.operation.started_at)}</span>
-              </div>
-            </div>
-            <div className="metric-grid compact">
-              <MetricTile label="Payloads" value={summary.payloads.total} detail={`${summary.payloads.start} start / ${summary.payloads.finish} end`} />
-              <MetricTile label="Start present" value={summary.attendance.present_at_start} />
-              <MetricTile label="End present" value={summary.attendance.present_at_end} />
-              <MetricTile label="Both" value={summary.attendance.both_start_and_end} />
-              <MetricTile label="AI kills" value={summary.stats.ai_kills} />
-              <MetricTile label="Deaths" value={summary.stats.deaths} />
-            </div>
+        <div className="drilldown-stage">
+          <div className={isDetailOpen ? "drilldown-base is-obscured" : "drilldown-base"}>
+            <form className="filters" onSubmit={(event) => event.preventDefault()}>
+              <input
+                value={operationFilters.server_key}
+                onChange={(event) => onFiltersChange({ ...operationFilters, server_key: event.target.value })}
+                placeholder="server_key"
+                aria-label="Server key filter"
+              />
+              <select
+                value={operationFilters.status}
+                onChange={(event) => onFiltersChange({ ...operationFilters, status: event.target.value })}
+                aria-label="Status filter"
+              >
+                <option value="">any status</option>
+                <option value="started">started</option>
+                <option value="finished">finished</option>
+                <option value="abandoned">abandoned</option>
+              </select>
+              <input
+                value={operationFilters.mission_uid}
+                onChange={(event) => onFiltersChange({ ...operationFilters, mission_uid: event.target.value })}
+                placeholder="mission_uid"
+                aria-label="Mission UID filter"
+              />
+            </form>
+            <DataMessage result={operations} />
+            {operations.status === "ready" ? (
+              <OperationsTable operations={operations.data.operations} selectedId={selectedOperationId} onSelect={onSelectOperation} />
+            ) : null}
           </div>
-        ) : null}
-        {attendance ? <AttendanceTable rows={attendance.attendance} /> : null}
+
+          {isDetailOpen ? (
+            <section className="drilldown-overlay" aria-label="Operation detail">
+              <div className="drilldown-header">
+                <div>
+                  <p className="panel-eyebrow">Selected signal</p>
+                  <h3>Operation Detail</h3>
+                </div>
+                <div className="panel-actions">
+                  {detail ? (
+                    <button type="button" onClick={() => onExportAttendance(detail.operation.id)}>
+                      Attendance CSV
+                    </button>
+                  ) : null}
+                  <button type="button" className="secondary" onClick={() => onSelectOperation("")}>
+                    Return to operations table
+                  </button>
+                </div>
+              </div>
+
+              <DataMessage result={operationDetail} />
+              <DataMessage result={operationSummary} />
+              <DataMessage result={operationAttendance} />
+              {detail && summary ? (
+                <div className="detail-grid">
+                  <div>
+                    <h3>{displayValue(detail.operation.mission_name)}</h3>
+                    <p className="mono">{detail.operation.id}</p>
+                    <div className="detail-meta">
+                      <StatusChip label={detail.operation.status} tone={detail.operation.status === "abandoned" ? "danger" : "info"} />
+                      <span>{displayValue(detail.operation.world_name)}</span>
+                      <span>{formatDate(detail.operation.started_at)}</span>
+                    </div>
+                  </div>
+                  <div className="metric-grid compact">
+                    <MetricTile label="Payloads" value={summary.payloads.total} detail={`${summary.payloads.start} start / ${summary.payloads.finish} end`} />
+                    <MetricTile label="Start present" value={summary.attendance.present_at_start} />
+                    <MetricTile label="End present" value={summary.attendance.present_at_end} />
+                    <MetricTile label="Both" value={summary.attendance.both_start_and_end} />
+                    <MetricTile label="AI kills" value={summary.stats.ai_kills} />
+                    <MetricTile label="Deaths" value={summary.stats.deaths} />
+                  </div>
+                </div>
+              ) : null}
+              {attendance ? <AttendanceTable rows={attendance.attendance} /> : null}
+            </section>
+          ) : null}
+        </div>
       </CommandPanel>
     </div>
   );
