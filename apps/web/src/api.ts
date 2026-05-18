@@ -31,7 +31,7 @@ export function buildUrl(path: string, params?: Record<string, string | undefine
 export async function apiFetch<T>(
   path: string,
   options: {
-    method?: "GET" | "POST" | "PATCH" | "DELETE";
+    method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     token?: string;
     params?: Record<string, string | undefined>;
     body?: unknown;
@@ -45,7 +45,8 @@ export async function apiFetch<T>(
 
   const init: RequestInit = {
     method: options.method ?? "GET",
-    headers
+    headers,
+    credentials: "include"
   };
 
   if (options.body !== undefined) {

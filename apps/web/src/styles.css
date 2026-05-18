@@ -339,17 +339,35 @@ h3 {
 
 .token-gate {
   display: grid;
-  grid-template-columns: auto minmax(12rem, 1fr) auto;
+  grid-template-columns: minmax(9rem, 0.7fr) minmax(12rem, 1fr) auto;
   align-items: end;
   gap: 0.75rem;
 }
 
-.token-gate label {
+.token-field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.token-gate label,
+.session-summary span,
+.identity-stack span {
   align-self: center;
   color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.session-summary,
+.identity-stack > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.session-summary strong,
+.identity-stack strong {
+  overflow-wrap: anywhere;
 }
 
 .viewport,
@@ -527,6 +545,10 @@ tbody tr.selected {
   grid-template-columns: repeat(3, minmax(8rem, 1fr)) auto;
 }
 
+.filters.identity-role-form {
+  grid-template-columns: minmax(12rem, 1fr) minmax(8rem, 0.4fr) repeat(3, auto);
+}
+
 .message {
   margin: 0.25rem 0 0.75rem;
   color: var(--text-secondary);
@@ -594,6 +616,17 @@ tbody tr.selected {
 .discord-meta,
 .discord-eval-metrics {
   margin-bottom: 0.85rem;
+}
+
+.identity-account-grid {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.identity-stack {
+  display: grid;
+  gap: 0.75rem;
 }
 
 .drilldown-stage {
@@ -722,7 +755,7 @@ pre {
   }
 
   .nav-rail {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .nav-rail button {
@@ -734,6 +767,8 @@ pre {
   .filters.roster-filter,
   .filters.discord-link-form,
   .filters.discord-rule-form,
+  .filters.identity-role-form,
+  .identity-account-grid,
   .view-grid,
   .metric-grid,
   .metric-grid.compact {

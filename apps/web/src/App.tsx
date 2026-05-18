@@ -6,14 +6,17 @@ import { PayloadInspector } from "./components/PayloadInspector";
 import { emptyResult, resultError } from "./format";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DiscordPage } from "./pages/DiscordPage";
+import { IdentityPage } from "./pages/IdentityPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { PlayersPage } from "./pages/PlayersPage";
 import type {
+  AdminUsersResponse,
   ApiResult,
   DashboardSummaryResponse,
   DataQualityResponse,
   DbHealthResponse,
   HealthResponse,
+  MeResponse,
   OperationAttendanceResponse,
   OperationDetailResponse,
   OperationsResponse,
@@ -58,6 +61,8 @@ export function App() {
   const [view, setView] = useState<ViewName>("dashboard");
   const [health, setHealth] = useState<ApiResult<HealthResponse>>(emptyResult);
   const [dbHealth, setDbHealth] = useState<ApiResult<DbHealthResponse>>(emptyResult);
+  const [me, setMe] = useState<ApiResult<MeResponse>>(emptyResult);
+  const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
   const [dataQuality, setDataQuality] = useState<ApiResult<DataQualityResponse>>(emptyResult);
   const [operations, setOperations] = useState<ApiResult<OperationsResponse>>(emptyResult);
@@ -74,6 +79,8 @@ export function App() {
   const [exportMessage, setExportMessage] = useState("");
 
   const hasToken = token.trim().length > 0;
+  const sessionUser = me.status === "ready" ? me.data.user : null;
+  const canAdmin = Boolean(sessionUser?.roles.some((role) => role === "owner" || role === "admin"));
 
   const selectedOperationDetail = useMemo(
     () => (operationDetail.status === "ready" ? operationDetail.data : null),
@@ -106,6 +113,40 @@ export function App() {
       setDbHealth(errorResult(error, "DB health failed."));
     }
   }, [hasToken, token]);
+
+  const loadMe = useCallback(async () => {
+    setMe({ status: "loading", data: null, error: null });
+
+    try {
+      setMe({ status: "ready", data: await apiFetch<MeResponse>("/v1/me"), error: null });
+    } catch (error) {
+      const parsed = resultError(error, "No active session.");
+      if (parsed.code === "unauthorized") {
+        setMe(emptyResult);
+      } else {
+        setMe(errorResult(error, "Session check failed."));
+      }
+    }
+  }, []);
+
+  const loadAdminUsers = useCallback(async () => {
+    if (!canAdmin) {
+      setAdminUsers(emptyResult);
+      return;
+    }
+
+    setAdminUsers({ status: "loading", data: null, error: null });
+
+    try {
+      setAdminUsers({
+        status: "ready",
+        data: await apiFetch<AdminUsersResponse>("/v1/admin/users"),
+        error: null
+      });
+    } catch (error) {
+      setAdminUsers(errorResult(error, "Admin users failed."));
+    }
+  }, [canAdmin]);
 
   const loadSummary = useCallback(async () => {
     if (!hasToken) {
@@ -249,7 +290,8 @@ export function App() {
 
   useEffect(() => {
     void loadHealth();
-  }, [loadHealth]);
+    void loadMe();
+  }, [loadHealth, loadMe]);
 
   useEffect(() => {
     void loadDbHealth();
@@ -258,6 +300,10 @@ export function App() {
     void loadOperations();
     void loadPlayers();
   }, [loadDataQuality, loadDbHealth, loadOperations, loadPlayers, loadSummary]);
+
+  useEffect(() => {
+    void loadAdminUsers();
+  }, [loadAdminUsers]);
 
   useEffect(() => {
     if (selectedOperationId) {
@@ -293,6 +339,21 @@ export function App() {
     setPlayerSummary(emptyResult);
     setSelectedOperationId("");
     setSelectedPlayerUid("");
+  }
+
+  async function logout() {
+    try {
+      await apiFetch("/auth/logout", { method: "POST" });
+    } catch {
+      // Clearing local session state is still useful if the server session is gone.
+    }
+
+    setMe(emptyResult);
+    setAdminUsers(emptyResult);
+  }
+
+  function loginDiscord() {
+    window.location.href = `/auth/discord/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
   }
 
   function selectOperation(operationId: string) {
@@ -352,8 +413,17 @@ export function App() {
         onSelectPlayer={setSelectedPlayerUid}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
-    ) : (
+    ) : view === "discord" ? (
       <DiscordPage hasToken={hasToken} token={token} />
+    ) : (
+      <IdentityPage
+        me={me}
+        adminUsers={adminUsers}
+        onLoginDiscord={loginDiscord}
+        onLogout={() => void logout()}
+        onRefreshMe={() => void loadMe()}
+        onRefreshAdminUsers={() => void loadAdminUsers()}
+      />
     );
 
   return (
@@ -363,10 +433,13 @@ export function App() {
       dbHealth={dbHealth}
       hasToken={hasToken}
       tokenDraft={tokenDraft}
+      sessionUser={sessionUser}
       onViewChange={setView}
       onTokenDraftChange={setTokenDraft}
       onTokenSave={saveToken}
       onTokenForget={forgetToken}
+      onLoginDiscord={loginDiscord}
+      onLogout={() => void logout()}
       inspector={<PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />}
     >
       {content}

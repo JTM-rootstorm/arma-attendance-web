@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { statusLabel } from "../format";
-import type { ApiResult, DbHealthResponse, HealthResponse, ViewName } from "../types";
+import type { ApiResult, AuthUser, DbHealthResponse, HealthResponse, ViewName } from "../types";
 import { StatusChip } from "./StatusChip";
 import { TokenGate } from "./TokenGate";
 
@@ -9,7 +9,8 @@ const navigation: Array<{ view: ViewName; label: string; code: string }> = [
   { view: "dashboard", label: "Command", code: "CMD" },
   { view: "operations", label: "Operations", code: "OPS" },
   { view: "players", label: "Roster", code: "RST" },
-  { view: "discord", label: "Comms", code: "COM" }
+  { view: "discord", label: "Comms", code: "COM" },
+  { view: "admin", label: "Identity", code: "ID" }
 ];
 
 export function CommandShell({
@@ -18,10 +19,13 @@ export function CommandShell({
   dbHealth,
   hasToken,
   tokenDraft,
+  sessionUser,
   onViewChange,
   onTokenDraftChange,
   onTokenSave,
   onTokenForget,
+  onLoginDiscord,
+  onLogout,
   children,
   inspector
 }: {
@@ -30,10 +34,13 @@ export function CommandShell({
   dbHealth: ApiResult<DbHealthResponse>;
   hasToken: boolean;
   tokenDraft: string;
+  sessionUser: AuthUser | null;
   onViewChange: (view: ViewName) => void;
   onTokenDraftChange: (value: string) => void;
   onTokenSave: React.FormEventHandler<HTMLFormElement>;
   onTokenForget: () => void;
+  onLoginDiscord: () => void;
+  onLogout: () => void;
   children: ReactNode;
   inspector: ReactNode;
 }) {
@@ -76,9 +83,13 @@ export function CommandShell({
         <TokenGate
           tokenDraft={tokenDraft}
           hasToken={hasToken}
+          sessionUser={sessionUser}
           onDraftChange={onTokenDraftChange}
           onSave={onTokenSave}
           onForget={onTokenForget}
+          onLoginDiscord={onLoginDiscord}
+          onLogout={onLogout}
+          onOpenIdentity={() => onViewChange("admin")}
         />
       </section>
 

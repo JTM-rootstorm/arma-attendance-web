@@ -337,4 +337,41 @@ export type DiscordAuditsResponse = {
   audits: DiscordRoleAudit[];
 };
 
-export type ViewName = "dashboard" | "operations" | "players" | "discord";
+export type AuthIdentity = {
+  provider: "discord" | "steam";
+  provider_user_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
+export type AuthUser = {
+  id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  roles: Array<"owner" | "admin" | "officer" | "viewer">;
+  identities: AuthIdentity[];
+};
+
+export type MeResponse = {
+  ok: true;
+  user: AuthUser;
+};
+
+export type AdminUser = AuthUser & {
+  disabled_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+};
+
+export type AdminUsersResponse = {
+  ok: true;
+  users: AdminUser[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type ViewName = "dashboard" | "operations" | "players" | "discord" | "admin";
