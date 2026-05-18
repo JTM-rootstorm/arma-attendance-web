@@ -2,7 +2,7 @@
 
 Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard. Discord readiness adds DB/API/admin surfaces for a future bot to sync guild roles and evaluate attendance-based role actions.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard. Discord readiness adds DB/API/admin surfaces for a future bot to sync guild roles and evaluate attendance-based role actions. Auth readiness adds Discord OAuth browser login, server-side sessions, local app roles, admin user management, and Steam identity linking.
 
 Raw payloads remain the source of truth. The service intentionally does not include user accounts, Steam login, role-based permissions, queues, Redis, or required Docker deployment yet.
 
@@ -108,6 +108,19 @@ GET  /v1/players
 GET  /v1/players.csv
 GET  /v1/players/:player_uid
 GET  /v1/players/:player_uid/summary
+GET  /auth/discord/start
+GET  /auth/discord/callback
+POST /auth/logout
+GET  /auth/steam/start
+GET  /auth/steam/callback
+GET  /v1/me
+DELETE /v1/me/identities/steam
+GET  /v1/admin/users
+GET  /v1/admin/users/:user_id
+PUT  /v1/admin/users/:user_id/roles/:role
+DELETE /v1/admin/users/:user_id/roles/:role
+POST /v1/admin/users/:user_id/disable
+POST /v1/admin/users/:user_id/enable
 POST /v1/discord/guilds/sync
 GET  /v1/discord/guilds
 GET  /v1/discord/guilds/:guild_id
@@ -329,6 +342,46 @@ pnpm db:backfill:attendance -- --operation-id <operation_id>
 
 The backfill script is safe to rerun. It does not delete raw payload rows and does not mutate raw ingest tables.
 
+## Authentication And Identity
+
+Discord OAuth is the primary browser login. The app stores local `app_users`, linked provider identities, app roles, and opaque server-side sessions. It does not store local passwords or Discord access tokens.
+
+Steam OpenID is a linked identity only. Steam login does not grant app permissions by itself and the app never asks for a Steam username or password.
+
+Machine-token bearer auth remains available for Arma ingest, smoke scripts, and bot-facing automation endpoints. Browser/admin workflows should use the session cookie created by Discord login.
+
+Session cookies are `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when `SESSION_SECURE=true`.
+
+First admin setup is server-side:
+
+```bash
+# Have the user log in with Discord once first.
+pnpm admin:grant -- --provider discord --provider-user-id <discord_user_id> --role owner
+pnpm admin:list
+```
+
+If the local app user UUID is known:
+
+```bash
+pnpm admin:grant -- --user-id <uuid> --role owner
+```
+
+Emergency recovery fallback:
+
+```env
+INITIAL_ADMIN_DISCORD_IDS=<discord_user_id>
+```
+
+This fallback grants `owner` during Discord login, writes an audit event with `actor_label = system/env-bootstrap`, and logs a server warning. Prefer the `pnpm admin:grant` path and remove the env fallback after recovery when practical.
+
+Synthetic auth validation:
+
+```bash
+pnpm smoke:auth
+```
+
+`pnpm smoke:auth` requires a running API with a migrated database and test auth enabled through non-production mode or `ENABLE_TEST_AUTH=true`. It uses fake Discord/Steam identities and does not contact real OAuth providers.
+
 ## Discord Integration Readiness
 
 Discord readiness provides the database schema, authenticated API contracts, deterministic role evaluation, and the COMMS admin tab needed before a separate bot is built. The app does not store a Discord bot token and does not run a Discord client process.
@@ -384,6 +437,24 @@ Replace `API_TOKEN`, `PUBLIC_BASE_URL`, and any real database password before st
 
 Set `BOT_API_TOKEN` only if the future Discord bot should authenticate with a token separate from `API_TOKEN`. Leave it blank to use the normal API token for smoke tests and manual readiness checks.
 
+Auth variables:
+
+```env
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+DISCORD_REDIRECT_URI=https://arma-stats.example.com/auth/discord/callback
+STEAM_RETURN_URL=https://arma-stats.example.com/auth/steam/callback
+STEAM_REALM=https://arma-stats.example.com/
+SESSION_COOKIE_NAME=arma_attendance_session
+SESSION_SECRET=change-this-session-secret
+SESSION_TTL_HOURS=168
+SESSION_SECURE=true
+INITIAL_ADMIN_DISCORD_IDS=
+ENABLE_TEST_AUTH=false
+```
+
+Use `ENABLE_TEST_AUTH=true` only for local/synthetic smoke validation. Do not expose test auth helpers in production.
+
 Never commit real `.env` files.
 
 ## Database Migrations
@@ -394,6 +465,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0002_raw_operations_ingest.sql`
 - `0003_normalized_attendance.sql`
 - `0004_discord_integration.sql`
+- `0005_auth_identity.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -412,9 +484,10 @@ pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
 pnpm smoke:discord
+pnpm smoke:auth
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
 
 Normalized attendance tables:
 
@@ -429,7 +502,7 @@ pnpm release:check
 RUN_DB_SMOKE=1 pnpm release:check
 ```
 
-The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including dashboard, exports, data quality, and Discord readiness.
+The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including dashboard, exports, data quality, Discord readiness, and auth readiness.
 
 ## Debian 13 LXC Setup
 
@@ -509,6 +582,7 @@ pnpm install --frozen-lockfile
 pnpm db:status
 pnpm db:migrate
 pnpm build
+pnpm smoke:auth
 ```
 
 Install and start the service:
@@ -576,6 +650,7 @@ pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
 pnpm smoke:discord
+pnpm smoke:auth
 ```
 
 Also verify no real env files are staged before opening a pull request.
