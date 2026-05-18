@@ -1,0 +1,576 @@
+import { randomBytes } from "node:crypto";
+
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
+
+import {
+  clearSessionCookie,
+  createUserSession,
+  requireUser,
+  revokeCurrentSession,
+  setSessionCookie,
+  type CurrentUser
+} from "../auth.js";
+import { config } from "../config.js";
+import { getSafeDbErrorDetails } from "../db/errors.js";
+import { queryDb } from "../db/pool.js";
+import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
+
+const discordStartQuerySchema = z.object({
+  redirect_after: z.string().max(500).optional()
+});
+
+const discordCallbackQuerySchema = z.object({
+  code: z.string().min(1),
+  state: z.string().min(1)
+});
+
+const steamStartQuerySchema = z.object({
+  redirect_after: z.string().max(500).optional()
+});
+
+const steamCallbackQuerySchema = z.record(z.string(), z.string());
+
+const testLoginBodySchema = z.object({
+  provider_user_id: z.string().min(1).max(64),
+  display_name: z.string().min(1).max(200).default("Test Discord User"),
+  avatar_url: z.string().url().nullable().optional()
+});
+
+const testSteamLinkBodySchema = z.object({
+  provider_user_id: z.string().min(1).max(64)
+});
+
+type OAuthStateRow = {
+  state: string;
+  provider: "discord" | "steam";
+  redirect_after: string | null;
+  code_verifier: string | null;
+  expires_at: Date;
+  consumed_at: Date | null;
+};
+
+type DiscordTokenResponse = {
+  access_token: string;
+  token_type: string;
+};
+
+type DiscordProfile = {
+  id: string;
+  username?: string;
+  global_name?: string | null;
+  avatar?: string | null;
+};
+
+type UserIdentityRow = {
+  user_id: string;
+};
+
+function sendValidationFailed(reply: FastifyReply) {
+  return reply.code(400).send({
+    ok: false,
+    error: {
+      code: "validation_failed",
+      message: "Request did not match expected shape."
+    }
+  });
+}
+
+function sendAuthUnavailable(reply: FastifyReply, message = "Authentication provider is not configured.") {
+  return reply.code(503).send({
+    ok: false,
+    error: {
+      code: "auth_provider_unavailable",
+      message
+    }
+  });
+}
+
+function sendProviderFailure(reply: FastifyReply, message = "Authentication provider rejected the request.") {
+  return reply.code(502).send({
+    ok: false,
+    error: {
+      code: "auth_provider_failure",
+      message
+    }
+  });
+}
+
+function sendConflict(reply: FastifyReply, message: string) {
+  return reply.code(409).send({
+    ok: false,
+    error: {
+      code: "identity_conflict",
+      message
+    }
+  });
+}
+
+function randomState(): string {
+  return randomBytes(24).toString("base64url");
+}
+
+function isSafeRedirect(value: string | null | undefined): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return "/";
+  }
+
+  return value;
+}
+
+function discordAvatarUrl(profile: DiscordProfile): string | null {
+  if (!profile.avatar) {
+    return null;
+  }
+
+  return `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`;
+}
+
+function serializeUser(user: CurrentUser) {
+  return {
+    id: user.id,
+    display_name: user.display_name,
+    avatar_url: user.avatar_url,
+    roles: user.roles,
+    identities: user.identities.map((identity) => ({
+      provider: identity.provider,
+      provider_user_id: identity.provider_user_id,
+      display_name: identity.display_name,
+      avatar_url: identity.avatar_url
+    }))
+  };
+}
+
+async function insertOAuthState(provider: "discord" | "steam", redirectAfter: string | null, codeVerifier: string | null) {
+  const state = randomState();
+
+  await queryDb(
+    `
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, expires_at)
+    VALUES ($1, $2, $3, $4, now() + interval '10 minutes')
+    `,
+    [state, provider, redirectAfter, codeVerifier]
+  );
+
+  return state;
+}
+
+async function consumeOAuthState(provider: "discord" | "steam", state: string): Promise<OAuthStateRow | null> {
+  return withDbTransaction(async (tx) => {
+    const result = await tx.query<OAuthStateRow>(
+      `
+      SELECT *
+      FROM oauth_states
+      WHERE state = $1
+        AND provider = $2
+        AND consumed_at IS NULL
+        AND expires_at > now()
+      FOR UPDATE
+      `,
+      [state, provider]
+    );
+    const row = result.rows[0];
+
+    if (!row) {
+      return null;
+    }
+
+    await tx.query("UPDATE oauth_states SET consumed_at = now() WHERE state = $1", [state]);
+    return row;
+  });
+}
+
+async function exchangeDiscordCode(code: string): Promise<DiscordTokenResponse> {
+  if (!config.discordClientId || !config.discordClientSecret || !config.discordRedirectUri) {
+    throw new Error("Discord OAuth is not configured.");
+  }
+
+  const body = new URLSearchParams({
+    client_id: config.discordClientId,
+    client_secret: config.discordClientSecret,
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: config.discordRedirectUri
+  });
+
+  const response = await fetch("https://discord.com/api/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+
+  if (!response.ok) {
+    throw new Error(`Discord token exchange failed with HTTP ${response.status}.`);
+  }
+
+  return (await response.json()) as DiscordTokenResponse;
+}
+
+async function fetchDiscordProfile(token: DiscordTokenResponse): Promise<DiscordProfile> {
+  const response = await fetch("https://discord.com/api/users/@me", {
+    headers: {
+      Authorization: `${token.token_type} ${token.access_token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Discord profile fetch failed with HTTP ${response.status}.`);
+  }
+
+  return (await response.json()) as DiscordProfile;
+}
+
+async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Promise<string> {
+  const displayName = profile.global_name ?? profile.username ?? `Discord ${profile.id}`;
+  const avatarUrl = discordAvatarUrl(profile);
+  const existingIdentity = await tx.query<UserIdentityRow>(
+    "SELECT user_id FROM user_identities WHERE provider = 'discord' AND provider_user_id = $1",
+    [profile.id]
+  );
+  const existingUserId = existingIdentity.rows[0]?.user_id;
+
+  if (existingUserId) {
+    await tx.query(
+      `
+      UPDATE app_users
+      SET display_name = $2, avatar_url = $3, last_login_at = now(), updated_at = now()
+      WHERE id = $1
+      `,
+      [existingUserId, displayName, avatarUrl]
+    );
+    await tx.query(
+      `
+      UPDATE user_identities
+      SET display_name = $3, avatar_url = $4, raw_profile = $5::jsonb, last_seen_at = now()
+      WHERE provider = 'discord' AND provider_user_id = $1 AND user_id = $2
+      `,
+      [profile.id, existingUserId, displayName, avatarUrl, JSON.stringify(profile)]
+    );
+    return existingUserId;
+  }
+
+  const userResult = await tx.query<UserIdentityRow>(
+    `
+    INSERT INTO app_users (display_name, avatar_url, last_login_at)
+    VALUES ($1, $2, now())
+    RETURNING id AS user_id
+    `,
+    [displayName, avatarUrl]
+  );
+  const userId = userResult.rows[0]?.user_id;
+
+  if (!userId) {
+    throw new Error("User insert returned no row.");
+  }
+
+  await tx.query(
+    `
+    INSERT INTO user_identities (user_id, provider, provider_user_id, display_name, avatar_url, raw_profile)
+    VALUES ($1, 'discord', $2, $3, $4, $5::jsonb)
+    `,
+    [userId, profile.id, displayName, avatarUrl, JSON.stringify(profile)]
+  );
+
+  return userId;
+}
+
+async function applyInitialAdminFallback(tx: DbTransaction, userId: string, discordId: string, request: FastifyRequest) {
+  if (!config.initialAdminDiscordIds.includes(discordId)) {
+    return;
+  }
+
+  request.log.warn("INITIAL_ADMIN_DISCORD_IDS is active; granting owner from env fallback");
+  await tx.query(
+    `
+    INSERT INTO user_roles (user_id, role, grant_source)
+    VALUES ($1, 'owner', 'env-bootstrap')
+    ON CONFLICT (user_id, role) DO NOTHING
+    `,
+    [userId]
+  );
+  await tx.query(
+    `
+    INSERT INTO admin_audit_events (actor_label, action, target_user_id, details)
+    VALUES ('system/env-bootstrap', 'grant_role', $1, $2::jsonb)
+    `,
+    [userId, JSON.stringify({ role: "owner", provider: "discord", provider_user_id: discordId })]
+  );
+}
+
+async function upsertSteamIdentity(tx: DbTransaction, userId: string, steamId: string) {
+  const existing = await tx.query<UserIdentityRow>(
+    "SELECT user_id FROM user_identities WHERE provider = 'steam' AND provider_user_id = $1",
+    [steamId]
+  );
+  const existingUserId = existing.rows[0]?.user_id;
+
+  if (existingUserId && existingUserId !== userId) {
+    throw new Error("steam_identity_conflict");
+  }
+
+  await tx.query(
+    `
+    INSERT INTO user_identities (user_id, provider, provider_user_id, display_name, raw_profile)
+    VALUES ($1, 'steam', $2, $2, $3::jsonb)
+    ON CONFLICT (user_id, provider) DO UPDATE
+    SET provider_user_id = EXCLUDED.provider_user_id,
+        display_name = EXCLUDED.display_name,
+        raw_profile = EXCLUDED.raw_profile,
+        last_seen_at = now()
+    `,
+    [userId, steamId, JSON.stringify({ steam_id: steamId })]
+  );
+  await tx.query(
+    `
+    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
+    VALUES ($1, 'self', 'link_steam_identity', $1, $2::jsonb)
+    `,
+    [userId, JSON.stringify({ provider: "steam", provider_user_id: steamId })]
+  );
+}
+
+function steamIdFromClaimedId(claimedId: string | undefined): string | null {
+  const match = claimedId?.match(/^https:\/\/steamcommunity\.com\/openid\/id\/(\d+)$/);
+  return match?.[1] ?? null;
+}
+
+async function verifySteamCallback(query: Record<string, string>): Promise<boolean> {
+  const params = new URLSearchParams(query);
+  params.set("openid.mode", "check_authentication");
+
+  const response = await fetch("https://steamcommunity.com/openid/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params
+  });
+
+  if (!response.ok) {
+    return false;
+  }
+
+  const text = await response.text();
+  return text.includes("is_valid:true");
+}
+
+export async function registerAuthRoutes(app: FastifyInstance) {
+  app.get("/auth/discord/start", async (request, reply) => {
+    const parsedQuery = discordStartQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    if (!config.discordClientId || !config.discordRedirectUri) {
+      return sendAuthUnavailable(reply, "Discord OAuth is not configured.");
+    }
+
+    try {
+      const state = await insertOAuthState("discord", isSafeRedirect(parsedQuery.data.redirect_after), null);
+      const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
+      authorizeUrl.searchParams.set("client_id", config.discordClientId);
+      authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("scope", "identify");
+      authorizeUrl.searchParams.set("state", state);
+
+      return reply.redirect(authorizeUrl.toString());
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Discord OAuth");
+      return sendAuthUnavailable(reply);
+    }
+  });
+
+  app.get("/auth/discord/callback", async (request, reply) => {
+    const parsedQuery = discordCallbackQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const state = await consumeOAuthState("discord", parsedQuery.data.state);
+
+      if (!state) {
+        return reply.code(400).send({ ok: false, error: { code: "invalid_oauth_state", message: "OAuth state is invalid or expired." } });
+      }
+
+      const token = await exchangeDiscordCode(parsedQuery.data.code);
+      const profile = await fetchDiscordProfile(token);
+      const userId = await withDbTransaction(async (tx) => {
+        const nextUserId = await upsertDiscordUser(tx, profile);
+        await applyInitialAdminFallback(tx, nextUserId, profile.id, request);
+        return nextUserId;
+      });
+      const session = await createUserSession(userId, request);
+      setSessionCookie(reply, session.token, session.expires_at);
+
+      return reply.redirect(isSafeRedirect(state.redirect_after));
+    } catch (error) {
+      request.log.error({ err: error }, "Discord OAuth callback failed");
+      return sendProviderFailure(reply);
+    }
+  });
+
+  app.post("/auth/logout", async (request, reply) => {
+    await revokeCurrentSession(request);
+    clearSessionCookie(reply);
+    return { ok: true };
+  });
+
+  app.get("/v1/me", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    return { ok: true, user: serializeUser(user) };
+  });
+
+  app.get("/auth/steam/start", async (request, reply) => {
+    const parsedQuery = steamStartQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    if (!config.steamReturnUrl || !config.steamRealm) {
+      return sendAuthUnavailable(reply, "Steam OpenID is not configured.");
+    }
+
+    const state = await insertOAuthState("steam", isSafeRedirect(parsedQuery.data.redirect_after), user.id);
+    const steamUrl = new URL("https://steamcommunity.com/openid/login");
+    steamUrl.searchParams.set("openid.ns", "http://specs.openid.net/auth/2.0");
+    steamUrl.searchParams.set("openid.mode", "checkid_setup");
+    steamUrl.searchParams.set("openid.return_to", `${config.steamReturnUrl}?state=${encodeURIComponent(state)}`);
+    steamUrl.searchParams.set("openid.realm", config.steamRealm);
+    steamUrl.searchParams.set("openid.identity", "http://specs.openid.net/auth/2.0/identifier_select");
+    steamUrl.searchParams.set("openid.claimed_id", "http://specs.openid.net/auth/2.0/identifier_select");
+
+    return reply.redirect(steamUrl.toString());
+  });
+
+  app.get("/auth/steam/callback", async (request, reply) => {
+    const parsedQuery = steamCallbackQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const stateValue = parsedQuery.data.state;
+    const state = stateValue ? await consumeOAuthState("steam", stateValue) : null;
+
+    if (!state?.code_verifier) {
+      return reply.code(400).send({ ok: false, error: { code: "invalid_oauth_state", message: "OAuth state is invalid or expired." } });
+    }
+
+    const steamId = steamIdFromClaimedId(parsedQuery.data["openid.claimed_id"]);
+
+    if (!steamId) {
+      return sendValidationFailed(reply);
+    }
+
+    if (!(await verifySteamCallback(parsedQuery.data))) {
+      return sendProviderFailure(reply, "Steam OpenID response could not be verified.");
+    }
+
+    try {
+      await withDbTransaction(async (tx) => {
+        await upsertSteamIdentity(tx, state.code_verifier ?? "", steamId);
+      });
+      return reply.redirect(isSafeRedirect(state.redirect_after));
+    } catch (error) {
+      if (error instanceof Error && error.message === "steam_identity_conflict") {
+        return sendConflict(reply, "That Steam identity is already linked to another user.");
+      }
+
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to link Steam identity");
+      return sendProviderFailure(reply);
+    }
+  });
+
+  app.delete("/v1/me/identities/steam", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    await withDbTransaction(async (tx) => {
+      await tx.query("DELETE FROM user_identities WHERE user_id = $1 AND provider = 'steam'", [user.id]);
+      await tx.query(
+        `
+        INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
+        VALUES ($1, 'self', 'unlink_steam_identity', $1, $2::jsonb)
+        `,
+        [user.id, JSON.stringify({ provider: "steam" })]
+      );
+    });
+
+    return { ok: true };
+  });
+
+  app.post("/auth/test/login", async (request, reply) => {
+    if (config.nodeEnv === "production" && !config.enableTestAuth) {
+      return reply.code(404).send({ ok: false, error: { code: "not_found", message: "Route not found." } });
+    }
+
+    const parsedBody = testLoginBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const body = parsedBody.data;
+    const userId = await withDbTransaction(async (tx) =>
+      upsertDiscordUser(tx, {
+        id: body.provider_user_id,
+        username: body.display_name,
+        global_name: body.display_name,
+        avatar: null
+      })
+    );
+    const session = await createUserSession(userId, request);
+    setSessionCookie(reply, session.token, session.expires_at);
+
+    return { ok: true, user_id: userId };
+  });
+
+  app.post("/auth/test/link-steam", async (request, reply) => {
+    if (config.nodeEnv === "production" && !config.enableTestAuth) {
+      return reply.code(404).send({ ok: false, error: { code: "not_found", message: "Route not found." } });
+    }
+
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = testSteamLinkBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      await withDbTransaction(async (tx) => {
+        await upsertSteamIdentity(tx, user.id, parsedBody.data.provider_user_id);
+      });
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof Error && error.message === "steam_identity_conflict") {
+        return sendConflict(reply, "That Steam identity is already linked to another user.");
+      }
+
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to link test Steam identity");
+      return sendProviderFailure(reply);
+    }
+  });
+}

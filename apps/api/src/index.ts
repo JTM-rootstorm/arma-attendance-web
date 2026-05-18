@@ -2,6 +2,8 @@ import Fastify from "fastify";
 
 import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
+import { registerAdminRoutes } from "./routes/admin.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
 import { registerDebugRoutes } from "./routes/debug.js";
 import { registerDiscordRoutes } from "./routes/discord.js";
@@ -26,6 +28,11 @@ app.log.info(
     envFilesLoaded: loadedEnvFiles.filter((envFile) => envFile.loaded).length,
     apiTokenPresent: Boolean(config.apiToken),
     botApiTokenPresent: Boolean(config.botApiToken),
+    discordOAuthConfigured: Boolean(config.discordClientId && config.discordClientSecret && config.discordRedirectUri),
+    steamOpenIdConfigured: Boolean(config.steamReturnUrl && config.steamRealm),
+    sessionSecure: config.sessionSecure,
+    initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
+    testAuthEnabled: config.enableTestAuth,
     databaseUrlPresent: Boolean(config.databaseUrl)
   },
   "configuration loaded"
@@ -72,6 +79,8 @@ app.addHook("onClose", async () => {
 
 await registerHealthRoutes(app);
 await registerHealthDbRoutes(app);
+await registerAuthRoutes(app);
+await registerAdminRoutes(app);
 await registerDebugRoutes(app);
 await registerSummaryRoutes(app);
 await registerExportRoutes(app);

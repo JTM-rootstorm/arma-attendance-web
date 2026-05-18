@@ -15,6 +15,25 @@ const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url(),
   API_TOKEN: z.string().min(1),
   BOT_API_TOKEN: z.string().optional(),
+  DISCORD_CLIENT_ID: z.string().optional(),
+  DISCORD_CLIENT_SECRET: z.string().optional(),
+  DISCORD_REDIRECT_URI: z.string().url().optional(),
+  STEAM_RETURN_URL: z.string().url().optional(),
+  STEAM_REALM: z.string().url().optional(),
+  SESSION_COOKIE_NAME: z.string().min(1).default("arma_attendance_session"),
+  SESSION_SECRET: z.string().optional(),
+  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(168),
+  SESSION_SECURE: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(true),
+  INITIAL_ADMIN_DISCORD_IDS: z.string().optional(),
+  ENABLE_TEST_AUTH: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(false),
   LOG_LEVEL: logLevelSchema,
   DATABASE_URL: z.string().optional()
 });
@@ -32,6 +51,10 @@ if (env.NODE_ENV === "production") {
   if (env.API_TOKEN === "change-this-token" || env.API_TOKEN.length < 24) {
     throw new Error("Invalid application configuration: API_TOKEN must be replaced with a strong production token.");
   }
+
+  if (!env.SESSION_SECRET || env.SESSION_SECRET === "change-this-session-secret" || env.SESSION_SECRET.length < 24) {
+    throw new Error("Invalid application configuration: SESSION_SECRET must be replaced with a strong production secret.");
+  }
 }
 
 export const config = {
@@ -43,6 +66,21 @@ export const config = {
   publicBaseUrl: env.PUBLIC_BASE_URL,
   apiToken: env.API_TOKEN,
   botApiToken: env.BOT_API_TOKEN && env.BOT_API_TOKEN.length > 0 ? env.BOT_API_TOKEN : undefined,
+  discordClientId: env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_ID.length > 0 ? env.DISCORD_CLIENT_ID : undefined,
+  discordClientSecret:
+    env.DISCORD_CLIENT_SECRET && env.DISCORD_CLIENT_SECRET.length > 0 ? env.DISCORD_CLIENT_SECRET : undefined,
+  discordRedirectUri: env.DISCORD_REDIRECT_URI,
+  steamReturnUrl: env.STEAM_RETURN_URL,
+  steamRealm: env.STEAM_REALM,
+  sessionCookieName: env.SESSION_COOKIE_NAME,
+  sessionSecret: env.SESSION_SECRET && env.SESSION_SECRET.length > 0 ? env.SESSION_SECRET : undefined,
+  sessionTtlHours: env.SESSION_TTL_HOURS,
+  sessionSecure: env.SESSION_SECURE,
+  initialAdminDiscordIds: (env.INITIAL_ADMIN_DISCORD_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+  enableTestAuth: env.ENABLE_TEST_AUTH,
   logLevel: env.LOG_LEVEL,
   databaseUrl: env.DATABASE_URL
 } as const;

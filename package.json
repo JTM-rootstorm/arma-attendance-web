@@ -18,6 +18,8 @@
     "db:migrate": "bash scripts/db-migrate.sh",
     "db:status": "bash scripts/db-status.sh",
     "db:backfill:attendance": "pnpm --filter @arma-attendance/api exec tsx src/scripts/backfillAttendance.ts",
+    "admin:grant": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/admin-grant.ts",
+    "admin:list": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/admin-list.ts",
     "smoke:db": "bash scripts/db-smoke.sh",
     "smoke:operations": "bash scripts/operations-smoke.sh",
     "smoke:operations:observability": "bash scripts/operations-observability-smoke.sh",
@@ -26,6 +28,7 @@
     "smoke:exports": "bash scripts/exports-smoke.sh",
     "smoke:data-quality": "bash scripts/data-quality-smoke.sh",
     "smoke:discord": "bash scripts/discord-smoke.sh",
+    "smoke:auth": "bash scripts/auth-smoke.sh",
     "release:check": "bash scripts/release-check.sh"
   },
   "pnpm": {
