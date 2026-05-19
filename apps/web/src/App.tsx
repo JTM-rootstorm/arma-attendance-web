@@ -448,6 +448,18 @@ export function App() {
     window.location.href = `/auth/discord/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
   }
 
+  async function loginTestOwner() {
+    await apiFetch("/auth/test/login", {
+      method: "POST",
+      body: {
+        provider_user_id: "local-dev-owner",
+        display_name: "Local Dev Owner",
+        roles: ["owner"]
+      }
+    });
+    await loadMe();
+  }
+
   function selectOperation(operationId: string) {
     setSelectedOperationId(operationId);
     setView("operations");
@@ -570,6 +582,11 @@ export function App() {
           <button type="button" onClick={loginDiscord}>
             Login with Discord
           </button>
+          {import.meta.env.DEV ? (
+            <button type="button" className="secondary" onClick={() => void loginTestOwner()}>
+              Enter Test Console
+            </button>
+          ) : null}
           <StatusChip label={`API ${statusLabel(health)}`} tone={health.status === "error" ? "danger" : health.status === "ready" ? "ready" : "muted"} />
         </section>
       </main>

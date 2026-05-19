@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import {
+  appRoles,
   clearSessionCookie,
   createUserSession,
   requireUser,
@@ -35,7 +36,8 @@ const steamCallbackQuerySchema = z.record(z.string(), z.string());
 const testLoginBodySchema = z.object({
   provider_user_id: z.string().min(1).max(64),
   display_name: z.string().min(1).max(200).default("Test Discord User"),
-  avatar_url: z.string().url().nullable().optional()
+  avatar_url: z.string().url().nullable().optional(),
+  roles: z.array(z.enum(appRoles)).max(appRoles.length).optional()
 });
 
 const testSteamLinkBodySchema = z.object({
@@ -808,6 +810,20 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         avatar: null
       })
     );
+
+    for (const role of body.roles ?? []) {
+      await queryDb(
+        `
+        INSERT INTO user_roles (user_id, role, grant_source)
+        VALUES ($1, $2, 'test_auth')
+        ON CONFLICT (user_id, role) DO UPDATE
+        SET grant_source = EXCLUDED.grant_source,
+            granted_at = now()
+        `,
+        [userId, role]
+      );
+    }
+
     const session = await createUserSession(userId, request);
     setSessionCookie(reply, session.token, session.expires_at);
 
