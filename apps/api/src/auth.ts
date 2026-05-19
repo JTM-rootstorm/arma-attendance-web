@@ -5,7 +5,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { config } from "./config.js";
 import { queryDb } from "./db/pool.js";
 
-export const appRoles = ["viewer", "officer", "admin", "owner"] as const;
+export const appRoles = ["viewer", "officer", "admin", "tcw_admin", "owner"] as const;
 export type AppRole = (typeof appRoles)[number];
 export type IdentityProvider = "discord" | "steam";
 
@@ -253,6 +253,15 @@ export async function requireBearerToken(request: FastifyRequest, reply: Fastify
   if (request.headers.authorization !== expected) {
     return unauthorized(reply);
   }
+}
+
+export function isMachineTokenRequest(request: FastifyRequest): boolean {
+  return request.headers.authorization === `Bearer ${config.apiToken}`;
+}
+
+export function isAdminOrBotTokenRequest(request: FastifyRequest): boolean {
+  const acceptedTokens = [config.apiToken, config.botApiToken].filter((token): token is string => Boolean(token));
+  return acceptedTokens.some((token) => request.headers.authorization === `Bearer ${token}`);
 }
 
 export async function requireAdminOrBotToken(request: FastifyRequest, reply: FastifyReply) {

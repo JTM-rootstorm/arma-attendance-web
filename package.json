@@ -29,6 +29,7 @@
     "smoke:data-quality": "bash scripts/data-quality-smoke.sh",
     "smoke:discord": "bash scripts/discord-smoke.sh",
     "smoke:auth": "bash scripts/auth-smoke.sh",
+    "smoke:rbac": "bash scripts/rbac-smoke.sh",
     "release:check": "bash scripts/release-check.sh"
   },
   "pnpm": {

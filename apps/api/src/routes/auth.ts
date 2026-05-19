@@ -11,6 +11,7 @@ import {
   setSessionCookie,
   type CurrentUser
 } from "../auth.js";
+import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -64,6 +65,46 @@ type DiscordProfile = {
 
 type UserIdentityRow = {
   user_id: string;
+};
+
+type LinkedPlayerRow = {
+  player_uid: string;
+  last_name: string | null;
+  rank: string | null;
+  roster_name: string | null;
+  first_seen_at: Date;
+  last_seen_at: Date;
+};
+
+type SelfOperationRow = {
+  operation_id: string;
+  status: "started" | "finished" | "abandoned";
+  mission_name: string | null;
+  world_name: string | null;
+  started_at: Date;
+  ended_at: Date | null;
+  present_at_start: boolean;
+  present_at_end: boolean;
+};
+
+type SelfSummaryRow = {
+  operation_count: number;
+  present_at_start_count: number;
+  present_at_end_count: number;
+  infantry_kills: number;
+  vehicle_kills: number;
+  player_kills: number;
+  ai_kills: number;
+  friendly_kills: number;
+  deaths: number;
+};
+
+type OperationMateRow = {
+  name: string | null;
+  rank: string | null;
+  role: string | null;
+  side: string | null;
+  group_name: string | null;
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -126,12 +167,15 @@ function discordAvatarUrl(profile: DiscordProfile): string | null {
   return `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`;
 }
 
-function serializeUser(user: CurrentUser) {
+async function serializeUser(user: CurrentUser) {
+  const unitMemberships = await getUserUnitRoles(user.id);
+
   return {
     id: user.id,
     display_name: user.display_name,
     avatar_url: user.avatar_url,
     roles: user.roles,
+    unit_memberships: unitMemberships,
     identities: user.identities.map((identity) => ({
       provider: identity.provider,
       provider_user_id: identity.provider_user_id,
@@ -139,6 +183,33 @@ function serializeUser(user: CurrentUser) {
       avatar_url: identity.avatar_url
     }))
   };
+}
+
+async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | null> {
+  const steamId = user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null;
+  const discordId = user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null;
+
+  const result = await queryDb<LinkedPlayerRow>(
+    `
+    SELECT
+      p.player_uid,
+      p.last_name,
+      up.rank,
+      up.roster_name,
+      p.first_seen_at,
+      p.last_seen_at
+    FROM players p
+    LEFT JOIN unit_players up ON up.player_uid = p.player_uid
+    LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
+    WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
+       OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+    ORDER BY p.last_seen_at DESC
+    LIMIT 1
+    `,
+    [steamId, discordId]
+  );
+
+  return result.rows[0] ?? null;
 }
 
 async function insertOAuthState(provider: "discord" | "steam", redirectAfter: string | null, codeVerifier: string | null) {
@@ -424,7 +495,208 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return;
     }
 
-    return { ok: true, user: serializeUser(user) };
+    return { ok: true, user: await serializeUser(user) };
+  });
+
+  app.get("/v1/me/player", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    try {
+      const player = await findLinkedPlayer(user);
+
+      if (!player) {
+        return {
+          ok: true,
+          linked_player: null,
+          message: "Link Steam or ask an admin to link your player record."
+        };
+      }
+
+      const summaryResult = await queryDb<SelfSummaryRow>(
+        `
+        SELECT
+          COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          COUNT(*) FILTER (WHERE op.present_at_start = true)::int AS present_at_start_count,
+          COUNT(*) FILTER (WHERE op.present_at_end = true)::int AS present_at_end_count,
+          COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
+          COALESCE(SUM(ops.vehicle_kills), 0)::int AS vehicle_kills,
+          COALESCE(SUM(ops.player_kills), 0)::int AS player_kills,
+          COALESCE(SUM(ops.ai_kills), 0)::int AS ai_kills,
+          COALESCE(SUM(ops.friendly_kills), 0)::int AS friendly_kills,
+          COALESCE(SUM(ops.deaths), 0)::int AS deaths
+        FROM operation_players op
+        LEFT JOIN operation_player_stats ops
+          ON ops.operation_id = op.operation_id
+          AND ops.player_uid = op.player_uid
+        WHERE op.player_uid = $1
+        `,
+        [player.player_uid]
+      );
+
+      return {
+        ok: true,
+        linked_player: {
+          display_name: player.roster_name ?? player.last_name,
+          rank: player.rank,
+          first_seen_at: player.first_seen_at,
+          last_seen_at: player.last_seen_at
+        },
+        summary: summaryResult.rows[0] ?? {
+          operation_count: 0,
+          present_at_start_count: 0,
+          present_at_end_count: 0,
+          infantry_kills: 0,
+          vehicle_kills: 0,
+          player_kills: 0,
+          ai_kills: 0,
+          friendly_kills: 0,
+          deaths: 0
+        }
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch self player");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.get("/v1/me/operations", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    try {
+      const player = await findLinkedPlayer(user);
+
+      if (!player) {
+        return {
+          ok: true,
+          linked_player: null,
+          operations: [],
+          message: "Link Steam or ask an admin to link your player record."
+        };
+      }
+
+      const result = await queryDb<SelfOperationRow>(
+        `
+        SELECT
+          o.id AS operation_id,
+          o.status,
+          o.mission_name,
+          o.world_name,
+          o.started_at,
+          o.ended_at,
+          op.present_at_start,
+          op.present_at_end
+        FROM operation_players op
+        JOIN operations o ON o.id = op.operation_id
+        WHERE op.player_uid = $1
+        ORDER BY o.started_at DESC
+        LIMIT 50
+        `,
+        [player.player_uid]
+      );
+
+      return {
+        ok: true,
+        linked_player: {
+          display_name: player.roster_name ?? player.last_name,
+          rank: player.rank
+        },
+        operations: result.rows
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch self operations");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.get("/v1/me/operation-mates", async (request, reply) => {
+    const operationQuerySchema = z.object({
+      operation_id: z.string().uuid()
+    });
+    const parsedQuery = operationQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    try {
+      const player = await findLinkedPlayer(user);
+
+      if (!player) {
+        return {
+          ok: true,
+          linked_player: null,
+          mates: [],
+          message: "Link Steam or ask an admin to link your player record."
+        };
+      }
+
+      const attended = await queryDb<{ exists: boolean }>(
+        `
+        SELECT EXISTS (
+          SELECT 1 FROM operation_players
+          WHERE operation_id = $1 AND player_uid = $2
+        ) AS exists
+        `,
+        [parsedQuery.data.operation_id, player.player_uid]
+      );
+
+      if (!attended.rows[0]?.exists) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "operation_not_found",
+            message: "Operation was not found for the linked player."
+          }
+        });
+      }
+
+      const mates = await queryDb<OperationMateRow>(
+        `
+        SELECT
+          COALESCE(op.name_at_end, op.name_at_start, p.last_name) AS name,
+          up.rank,
+          COALESCE(op.role_at_end, op.role_at_start) AS role,
+          COALESCE(op.side_at_end, op.side_at_start) AS side,
+          COALESCE(op.group_at_end, op.group_at_start) AS group_name
+        FROM operation_players op
+        JOIN players p ON p.player_uid = op.player_uid
+        LEFT JOIN unit_players up ON up.player_uid = op.player_uid
+        WHERE op.operation_id = $1
+          AND op.player_uid <> $2
+        ORDER BY COALESCE(op.name_at_end, op.name_at_start, p.last_name)
+        LIMIT 100
+        `,
+        [parsedQuery.data.operation_id, player.player_uid]
+      );
+
+      return { ok: true, mates: mates.rows };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation mates");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
   });
 
   app.get("/auth/steam/start", async (request, reply) => {

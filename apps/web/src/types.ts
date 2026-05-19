@@ -348,7 +348,13 @@ export type AuthUser = {
   id: string;
   display_name: string | null;
   avatar_url: string | null;
-  roles: Array<"owner" | "admin" | "officer" | "viewer">;
+  roles: Array<"owner" | "tcw_admin" | "admin" | "officer" | "viewer">;
+  unit_memberships: Array<{
+    unit_id: string;
+    unit_key: string;
+    name: string;
+    role: "member" | "officer" | "admin";
+  }>;
   identities: AuthIdentity[];
 };
 
@@ -374,4 +380,47 @@ export type AdminUsersResponse = {
   };
 };
 
-export type ViewName = "dashboard" | "operations" | "players" | "discord" | "admin";
+export type MyPlayerResponse = {
+  ok: true;
+  linked_player: {
+    display_name: string | null;
+    rank: string | null;
+    first_seen_at?: string;
+    last_seen_at?: string;
+  } | null;
+  summary?: PlayerSummaryResponse["summary"];
+  message?: string;
+};
+
+export type MyOperationsResponse = {
+  ok: true;
+  linked_player: {
+    display_name: string | null;
+    rank: string | null;
+  } | null;
+  operations: Array<{
+    operation_id: string;
+    status: OperationStatus;
+    mission_name: string | null;
+    world_name: string | null;
+    started_at: string;
+    ended_at: string | null;
+    present_at_start: boolean;
+    present_at_end: boolean;
+  }>;
+  message?: string;
+};
+
+export type MyOperationMatesResponse = {
+  ok: true;
+  mates: Array<{
+    name: string | null;
+    rank: string | null;
+    role: string | null;
+    side: string | null;
+    group_name: string | null;
+  }>;
+  message?: string;
+};
+
+export type ViewName = "me" | "dashboard" | "operations" | "players" | "discord" | "admin";

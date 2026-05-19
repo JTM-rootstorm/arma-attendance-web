@@ -1,16 +1,18 @@
 import type { ReactNode } from "react";
 
+import { canOpenComms, canOpenDashboard, canOpenIdentityAdmin, canOpenOperations, canOpenRoster, isOwner } from "../authz";
 import { statusLabel } from "../format";
 import type { ApiResult, AuthUser, DbHealthResponse, HealthResponse, ViewName } from "../types";
 import { StatusChip } from "./StatusChip";
 import { TokenGate } from "./TokenGate";
 
-const navigation: Array<{ view: ViewName; label: string; code: string }> = [
-  { view: "dashboard", label: "Command", code: "CMD" },
-  { view: "operations", label: "Operations", code: "OPS" },
-  { view: "players", label: "Roster", code: "RST" },
-  { view: "discord", label: "Comms", code: "COM" },
-  { view: "admin", label: "Identity", code: "ID" }
+const navigation: Array<{ view: ViewName; label: string; code: string; allowed: (user: AuthUser | null) => boolean }> = [
+  { view: "me", label: "My Stats", code: "ME", allowed: (user) => Boolean(user) },
+  { view: "dashboard", label: "Command", code: "CMD", allowed: canOpenDashboard },
+  { view: "operations", label: "Operations", code: "OPS", allowed: canOpenOperations },
+  { view: "players", label: "Roster", code: "RST", allowed: canOpenRoster },
+  { view: "discord", label: "Comms", code: "COM", allowed: canOpenComms },
+  { view: "admin", label: "Identity", code: "ID", allowed: canOpenIdentityAdmin }
 ];
 
 export function CommandShell({
@@ -56,16 +58,18 @@ export function CommandShell({
         </div>
         <div className="status-strip" aria-label="Service status">
           <StatusChip label={`API ${statusLabel(health)}`} tone={health.status === "error" ? "danger" : health.status === "ready" ? "ready" : "muted"} />
-          <StatusChip
-            label={`DB ${hasToken ? statusLabel(dbHealth) : "token required"}`}
-            tone={dbHealth.status === "error" ? "danger" : dbHealth.status === "ready" ? "ready" : "warn"}
-          />
-          <StatusChip label={hasToken ? "token linked" : "token offline"} tone={hasToken ? "info" : "muted"} />
+          {isOwner(sessionUser) ? (
+            <StatusChip
+              label={`DB ${statusLabel(dbHealth)}`}
+              tone={dbHealth.status === "error" ? "danger" : dbHealth.status === "ready" ? "ready" : "warn"}
+            />
+          ) : null}
+          <StatusChip label={sessionUser ? "session linked" : "session offline"} tone={sessionUser ? "info" : "muted"} />
         </div>
       </header>
 
       <aside className="nav-rail" aria-label="Dashboard views">
-        {navigation.map((item) => (
+        {navigation.filter((item) => item.allowed(sessionUser)).map((item) => (
           <button
             key={item.view}
             className={view === item.view ? "active" : ""}
@@ -79,19 +83,21 @@ export function CommandShell({
         ))}
       </aside>
 
-      <section className="token-station" aria-label="API token station">
-        <TokenGate
-          tokenDraft={tokenDraft}
-          hasToken={hasToken}
-          sessionUser={sessionUser}
-          onDraftChange={onTokenDraftChange}
-          onSave={onTokenSave}
-          onForget={onTokenForget}
-          onLoginDiscord={onLoginDiscord}
-          onLogout={onLogout}
-          onOpenIdentity={() => onViewChange("admin")}
-        />
-      </section>
+      {isOwner(sessionUser) ? (
+        <section className="token-station" aria-label="Machine token diagnostics">
+          <TokenGate
+            tokenDraft={tokenDraft}
+            hasToken={hasToken}
+            sessionUser={sessionUser}
+            onDraftChange={onTokenDraftChange}
+            onSave={onTokenSave}
+            onForget={onTokenForget}
+            onLoginDiscord={onLoginDiscord}
+            onLogout={onLogout}
+            onOpenIdentity={() => onViewChange("admin")}
+          />
+        </section>
+      ) : null}
 
       <section className="viewport" data-view={view}>
         <div key={view} className="view-transition-layer">

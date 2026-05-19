@@ -2,10 +2,13 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { requireBearerToken } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { getDefaultUnitId, requireUnitRead } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 import { persistOperationAttendance, type NormalizationSummary } from "../normalization/operationAttendance.js";
+import { redactAttendance, redactOperation, redactOperationListItem } from "../privacy/redaction.js";
 
 const missionSchema = z
   .object({
@@ -59,6 +62,7 @@ type OperationIngestResponse = {
 
 type OperationRow = {
   id: string;
+  unit_id: string | null;
   server_key: string;
   status: OperationStatus;
   mission_uid: string | null;
@@ -72,6 +76,7 @@ type OperationRow = {
 
 type OperationListRow = {
   id: string;
+  unit_id: string | null;
   server_key: string;
   status: OperationStatus;
   mission_uid: string | null;
@@ -88,6 +93,11 @@ type OperationPayloadRow = {
   request_id: string;
   received_at: Date;
   payload: unknown;
+};
+
+type OperationUnitRow = {
+  id: string;
+  unit_id: string | null;
 };
 
 type OperationAttendanceRow = {
@@ -229,7 +239,13 @@ function getMissionField(
 }
 
 export async function registerOperationRoutes(app: FastifyInstance) {
-  app.get("/v1/operations", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/operations", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedQuery = operationListQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -239,6 +255,16 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const query = parsedQuery.data;
     const where: string[] = [];
     const values: unknown[] = [];
+    const unitFilter = await getReadableUnitFilter(auth.user);
+
+    if (!unitFilter.all) {
+      if (unitFilter.unitIds.length === 0) {
+        return deny(reply);
+      }
+
+      values.push(unitFilter.unitIds);
+      where.push(`o.unit_id = ANY($${values.length}::uuid[])`);
+    }
 
     if (query.server_key) {
       values.push(query.server_key);
@@ -267,6 +293,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         `
         SELECT
           o.id,
+          o.unit_id,
           o.server_key,
           o.status,
           o.mission_uid,
@@ -287,7 +314,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        operations: operationsResult.rows,
+        operations: operationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user))),
         pagination: {
           limit: query.limit,
           offset: query.offset,
@@ -317,6 +344,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           return replayResponse(existingResponse);
         }
 
+        const defaultUnitId = await getDefaultUnitId();
         const operationResult = await tx.query<{
           id: string;
           status: OperationStatus;
@@ -324,16 +352,18 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           `
           INSERT INTO operations (
             server_key,
+            unit_id,
             mission_uid,
             mission_name,
             world_name,
             raw_start_payload
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb)
           RETURNING id, status
           `,
           [
             payload.server_key,
+            defaultUnitId,
             getMissionField(payload.mission, "mission_uid"),
             getMissionField(payload.mission, "mission_name"),
             getMissionField(payload.mission, "world_name"),
@@ -477,7 +507,17 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/operations/:operation_id/payloads", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/operations/:operation_id/payloads", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
+    if (auth.user && !canSeeSensitiveIds(auth.user)) {
+      return deny(reply);
+    }
+
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -487,7 +527,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const { operation_id: operationId } = parsedParams.data;
 
     try {
-      const operationResult = await queryDb<{ id: string }>("SELECT id FROM operations WHERE id = $1", [operationId]);
+      const operationResult = await queryDb<OperationUnitRow>("SELECT id, unit_id FROM operations WHERE id = $1", [operationId]);
       const operation = operationResult.rows[0];
 
       if (!operation) {
@@ -498,6 +538,10 @@ export async function registerOperationRoutes(app: FastifyInstance) {
             message: "Operation was not found."
           }
         });
+      }
+
+      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
+        return;
       }
 
       const payloadResult = await queryDb<OperationPayloadRow>(
@@ -521,7 +565,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/operations/:operation_id/attendance", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/operations/:operation_id/attendance", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -531,7 +581,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const { operation_id: operationId } = parsedParams.data;
 
     try {
-      const operationResult = await queryDb<{ id: string }>("SELECT id FROM operations WHERE id = $1", [operationId]);
+      const operationResult = await queryDb<OperationUnitRow>("SELECT id, unit_id FROM operations WHERE id = $1", [operationId]);
       const operation = operationResult.rows[0];
 
       if (!operation) {
@@ -542,6 +592,10 @@ export async function registerOperationRoutes(app: FastifyInstance) {
             message: "Operation was not found."
           }
         });
+      }
+
+      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
+        return;
       }
 
       const attendanceResult = await queryDb<OperationAttendanceRow>(
@@ -582,7 +636,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
       return {
         ok: true,
         operation_id: operationId,
-        attendance: attendanceResult.rows.map((row) => ({
+        attendance: attendanceResult.rows.map((row) => redactAttendance({
           player_uid: row.player_uid,
           name_at_start: row.name_at_start,
           name_at_end: row.name_at_end,
@@ -609,7 +663,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
                   friendly_kills: row.friendly_kills ?? 0,
                   deaths: row.deaths ?? 0
                 }
-        }))
+        }, canSeeSensitiveIds(auth.user)))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation attendance");
@@ -617,7 +671,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/operations/:operation_id", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/operations/:operation_id", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -629,6 +689,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         `
         SELECT
           id,
+          unit_id,
           server_key,
           status,
           mission_uid,
@@ -656,6 +717,10 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         });
       }
 
+      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
+        return;
+      }
+
       const payloadResult = await queryDb<{
         id: string;
         kind: "start" | "finish";
@@ -673,7 +738,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        operation,
+        operation: redactOperation(operation, canSeeSensitiveIds(auth.user)),
         payloads: payloadResult.rows
       };
     } catch (error) {

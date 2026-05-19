@@ -1,12 +1,24 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch, fetchCsv } from "./api";
+import {
+  canExport,
+  canOpenComms,
+  canOpenDashboard,
+  canOpenIdentityAdmin,
+  canOpenOperations,
+  canOpenRoster,
+  canSeeSensitiveIds,
+  isOwner
+} from "./authz";
 import { CommandShell } from "./components/CommandShell";
 import { PayloadInspector } from "./components/PayloadInspector";
-import { emptyResult, resultError } from "./format";
+import { StatusChip } from "./components/StatusChip";
+import { emptyResult, resultError, statusLabel } from "./format";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DiscordPage } from "./pages/DiscordPage";
 import { IdentityPage } from "./pages/IdentityPage";
+import { MyStatsPage } from "./pages/MyStatsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { PlayersPage } from "./pages/PlayersPage";
 import type {
@@ -17,6 +29,9 @@ import type {
   DbHealthResponse,
   HealthResponse,
   MeResponse,
+  MyOperationMatesResponse,
+  MyOperationsResponse,
+  MyPlayerResponse,
   OperationAttendanceResponse,
   OperationDetailResponse,
   OperationsResponse,
@@ -58,11 +73,14 @@ function saveCsv(text: string, filename: string) {
 export function App() {
   const [token, setToken] = useState(getStoredToken);
   const [tokenDraft, setTokenDraft] = useState(token);
-  const [view, setView] = useState<ViewName>("dashboard");
+  const [view, setView] = useState<ViewName>("me");
   const [health, setHealth] = useState<ApiResult<HealthResponse>>(emptyResult);
   const [dbHealth, setDbHealth] = useState<ApiResult<DbHealthResponse>>(emptyResult);
   const [me, setMe] = useState<ApiResult<MeResponse>>(emptyResult);
   const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
+  const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
+  const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
+  const [myOperationMates, setMyOperationMates] = useState<ApiResult<MyOperationMatesResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
   const [dataQuality, setDataQuality] = useState<ApiResult<DataQualityResponse>>(emptyResult);
   const [operations, setOperations] = useState<ApiResult<OperationsResponse>>(emptyResult);
@@ -80,7 +98,12 @@ export function App() {
 
   const hasToken = token.trim().length > 0;
   const sessionUser = me.status === "ready" ? me.data.user : null;
-  const canAdmin = Boolean(sessionUser?.roles.some((role) => role === "owner" || role === "admin"));
+  const canAdmin = canOpenIdentityAdmin(sessionUser);
+  const canViewDashboard = canOpenDashboard(sessionUser);
+  const canViewOperations = canOpenOperations(sessionUser);
+  const canViewRoster = canOpenRoster(sessionUser);
+  const canViewComms = canOpenComms(sessionUser);
+  const canExportViews = canExport(sessionUser);
 
   const selectedOperationDetail = useMemo(
     () => (operationDetail.status === "ready" ? operationDetail.data : null),
@@ -100,7 +123,7 @@ export function App() {
   }, []);
 
   const loadDbHealth = useCallback(async () => {
-    if (!hasToken) {
+    if (!isOwner(sessionUser)) {
       setDbHealth(emptyResult);
       return;
     }
@@ -108,11 +131,15 @@ export function App() {
     setDbHealth({ status: "loading", data: null, error: null });
 
     try {
-      setDbHealth({ status: "ready", data: await apiFetch<DbHealthResponse>("/health/db", { token }), error: null });
+      setDbHealth({
+        status: "ready",
+        data: await apiFetch<DbHealthResponse>("/health/db", hasToken ? { token } : {}),
+        error: null
+      });
     } catch (error) {
       setDbHealth(errorResult(error, "DB health failed."));
     }
-  }, [hasToken, token]);
+  }, [hasToken, sessionUser, token]);
 
   const loadMe = useCallback(async () => {
     setMe({ status: "loading", data: null, error: null });
@@ -148,8 +175,32 @@ export function App() {
     }
   }, [canAdmin]);
 
+  const loadMyStats = useCallback(async () => {
+    if (!sessionUser) {
+      setMyPlayer(emptyResult);
+      setMyOperations(emptyResult);
+      setMyOperationMates(emptyResult);
+      return;
+    }
+
+    setMyPlayer({ status: "loading", data: null, error: null });
+    setMyOperations({ status: "loading", data: null, error: null });
+
+    try {
+      const [player, operationsData] = await Promise.all([
+        apiFetch<MyPlayerResponse>("/v1/me/player"),
+        apiFetch<MyOperationsResponse>("/v1/me/operations")
+      ]);
+      setMyPlayer({ status: "ready", data: player, error: null });
+      setMyOperations({ status: "ready", data: operationsData, error: null });
+    } catch (error) {
+      setMyPlayer(errorResult(error, "My stats failed."));
+      setMyOperations(errorResult(error, "My operations failed."));
+    }
+  }, [sessionUser]);
+
   const loadSummary = useCallback(async () => {
-    if (!hasToken) {
+    if (!canViewDashboard) {
       setSummary(emptyResult);
       return;
     }
@@ -159,16 +210,16 @@ export function App() {
     try {
       setSummary({
         status: "ready",
-        data: await apiFetch<DashboardSummaryResponse>("/v1/dashboard/summary", { token }),
+        data: await apiFetch<DashboardSummaryResponse>("/v1/dashboard/summary"),
         error: null
       });
     } catch (error) {
       setSummary(errorResult(error, "Summary failed."));
     }
-  }, [hasToken, token]);
+  }, [canViewDashboard]);
 
   const loadDataQuality = useCallback(async () => {
-    if (!hasToken) {
+    if (!canSeeSensitiveIds(sessionUser)) {
       setDataQuality(emptyResult);
       return;
     }
@@ -178,16 +229,16 @@ export function App() {
     try {
       setDataQuality({
         status: "ready",
-        data: await apiFetch<DataQualityResponse>("/v1/data-quality", { token }),
+        data: await apiFetch<DataQualityResponse>("/v1/data-quality"),
         error: null
       });
     } catch (error) {
       setDataQuality(errorResult(error, "Data quality checks failed."));
     }
-  }, [hasToken, token]);
+  }, [sessionUser]);
 
   const loadOperations = useCallback(async () => {
-    if (!hasToken) {
+    if (!canViewOperations) {
       setOperations(emptyResult);
       return;
     }
@@ -198,7 +249,6 @@ export function App() {
       setOperations({
         status: "ready",
         data: await apiFetch<OperationsResponse>("/v1/operations", {
-          token,
           params: {
             ...operationFilters,
             limit: "50"
@@ -209,10 +259,10 @@ export function App() {
     } catch (error) {
       setOperations(errorResult(error, "Operations failed."));
     }
-  }, [hasToken, operationFilters, token]);
+  }, [canViewOperations, operationFilters]);
 
   const loadPlayers = useCallback(async () => {
-    if (!hasToken) {
+    if (!canViewRoster) {
       setPlayers(emptyResult);
       return;
     }
@@ -223,7 +273,6 @@ export function App() {
       setPlayers({
         status: "ready",
         data: await apiFetch<PlayersResponse>("/v1/players", {
-          token,
           params: { q: playerSearch, limit: "50" }
         }),
         error: null
@@ -231,11 +280,11 @@ export function App() {
     } catch (error) {
       setPlayers(errorResult(error, "Players failed."));
     }
-  }, [hasToken, playerSearch, token]);
+  }, [canViewRoster, playerSearch]);
 
   const loadOperationDetail = useCallback(
     async (operationId: string) => {
-      if (!hasToken || operationId.length === 0) {
+      if (!canViewOperations || operationId.length === 0) {
         return;
       }
 
@@ -245,9 +294,9 @@ export function App() {
 
       try {
         const [detail, detailSummary, attendance] = await Promise.all([
-          apiFetch<OperationDetailResponse>(`/v1/operations/${operationId}`, { token }),
-          apiFetch<OperationSummaryResponse>(`/v1/operations/${operationId}/summary`, { token }),
-          apiFetch<OperationAttendanceResponse>(`/v1/operations/${operationId}/attendance`, { token })
+          apiFetch<OperationDetailResponse>(`/v1/operations/${operationId}`),
+          apiFetch<OperationSummaryResponse>(`/v1/operations/${operationId}/summary`),
+          apiFetch<OperationAttendanceResponse>(`/v1/operations/${operationId}/attendance`)
         ]);
 
         setOperationDetail({ status: "ready", data: detail, error: null });
@@ -259,12 +308,12 @@ export function App() {
         setOperationAttendance(errorResult(error, "Operation attendance failed."));
       }
     },
-    [hasToken, token]
+    [canViewOperations]
   );
 
   const loadPlayerDetail = useCallback(
     async (playerUid: string) => {
-      if (!hasToken || playerUid.length === 0) {
+      if (!canViewRoster || playerUid.length === 0) {
         return;
       }
 
@@ -274,8 +323,8 @@ export function App() {
       try {
         const encodedUid = encodeURIComponent(playerUid);
         const [detail, detailSummary] = await Promise.all([
-          apiFetch<PlayerDetailResponse>(`/v1/players/${encodedUid}`, { token }),
-          apiFetch<PlayerSummaryResponse>(`/v1/players/${encodedUid}/summary`, { token })
+          apiFetch<PlayerDetailResponse>(`/v1/players/${encodedUid}`),
+          apiFetch<PlayerSummaryResponse>(`/v1/players/${encodedUid}/summary`)
         ]);
 
         setPlayerDetail({ status: "ready", data: detail, error: null });
@@ -285,8 +334,27 @@ export function App() {
         setPlayerSummary(errorResult(error, "Player summary failed."));
       }
     },
-    [hasToken, token]
+    [canViewRoster]
   );
+
+  const loadMyOperationMates = useCallback(async (operationId: string) => {
+    if (!sessionUser || operationId.length === 0) {
+      setMyOperationMates(emptyResult);
+      return;
+    }
+
+    setMyOperationMates({ status: "loading", data: null, error: null });
+
+    try {
+      setMyOperationMates({
+        status: "ready",
+        data: await apiFetch<MyOperationMatesResponse>("/v1/me/operation-mates", { params: { operation_id: operationId } }),
+        error: null
+      });
+    } catch (error) {
+      setMyOperationMates(errorResult(error, "Operation mates failed."));
+    }
+  }, [sessionUser]);
 
   useEffect(() => {
     void loadHealth();
@@ -306,10 +374,33 @@ export function App() {
   }, [loadAdminUsers]);
 
   useEffect(() => {
+    void loadMyStats();
+  }, [loadMyStats]);
+
+  useEffect(() => {
+    if (!sessionUser) {
+      return;
+    }
+
+    const allowed =
+      view === "me" ||
+      (view === "dashboard" && canViewDashboard) ||
+      (view === "operations" && canViewOperations) ||
+      (view === "players" && canViewRoster) ||
+      (view === "discord" && canViewComms) ||
+      (view === "admin" && canAdmin);
+
+    if (!allowed) {
+      setView("me");
+    }
+  }, [canAdmin, canViewComms, canViewDashboard, canViewOperations, canViewRoster, sessionUser, view]);
+
+  useEffect(() => {
     if (selectedOperationId) {
       void loadOperationDetail(selectedOperationId);
+      void loadMyOperationMates(selectedOperationId);
     }
-  }, [loadOperationDetail, selectedOperationId]);
+  }, [loadMyOperationMates, loadOperationDetail, selectedOperationId]);
 
   useEffect(() => {
     if (selectedPlayerUid) {
@@ -350,6 +441,7 @@ export function App() {
 
     setMe(emptyResult);
     setAdminUsers(emptyResult);
+    setView("me");
   }
 
   function loginDiscord() {
@@ -362,13 +454,13 @@ export function App() {
   }
 
   async function exportCsv(path: string, filename: string) {
-    if (!hasToken) {
-      setExportMessage("Token required.");
+    if (!canExportViews) {
+      setExportMessage("Export not available for this role.");
       return;
     }
 
     try {
-      const csv = await fetchCsv(path, token);
+      const csv = await fetchCsv(path, isOwner(sessionUser) && hasToken ? token : undefined);
       saveCsv(csv, filename);
       setExportMessage(`Export ready: ${filename}`);
     } catch (error) {
@@ -378,17 +470,36 @@ export function App() {
   }
 
   const content =
-    view === "dashboard" ? (
+    view === "me" && sessionUser ? (
+      <MyStatsPage
+        user={sessionUser}
+        myPlayer={myPlayer}
+        myOperations={myOperations}
+        mates={myOperationMates}
+        selectedOperationId={selectedOperationId}
+        onSelectOperation={setSelectedOperationId}
+        onRefresh={() => void loadMyStats()}
+        onLinkSteam={() => {
+          window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
+        }}
+        onUnlinkSteam={async () => {
+          await apiFetch("/v1/me/identities/steam", { method: "DELETE" });
+          await loadMe();
+          await loadMyStats();
+        }}
+      />
+    ) : view === "dashboard" && canViewDashboard ? (
       <DashboardPage
-        hasToken={hasToken}
+        hasToken={canViewDashboard}
         summary={summary}
         dataQuality={dataQuality}
         onSelectOperation={selectOperation}
         onOpenOperations={() => setView("operations")}
         onOpenPlayers={() => setView("players")}
+        canExport={canExportViews}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
-    ) : view === "operations" ? (
+    ) : view === "operations" && canViewOperations ? (
       <OperationsPage
         operations={operations}
         operationDetail={operationDetail}
@@ -399,9 +510,10 @@ export function App() {
         onFiltersChange={setOperationFilters}
         onSelectOperation={setSelectedOperationId}
         onRefresh={() => void loadOperations()}
+        canExport={canExportViews}
         onExportAttendance={(operationId) => void exportCsv(`/v1/operations/${operationId}/attendance.csv`, `operation-${operationId}-attendance.csv`)}
       />
-    ) : view === "players" ? (
+    ) : view === "players" && canViewRoster ? (
       <PlayersPage
         players={players}
         playerDetail={playerDetail}
@@ -411,11 +523,12 @@ export function App() {
         onSearchChange={setPlayerSearch}
         onSearch={() => void loadPlayers()}
         onSelectPlayer={setSelectedPlayerUid}
+        canExport={canExportViews}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
-    ) : view === "discord" ? (
-      <DiscordPage hasToken={hasToken} token={token} />
-    ) : (
+    ) : view === "discord" && canViewComms ? (
+      <DiscordPage hasToken={Boolean(sessionUser)} token="" />
+    ) : view === "admin" && canAdmin ? (
       <IdentityPage
         me={me}
         adminUsers={adminUsers}
@@ -424,7 +537,44 @@ export function App() {
         onRefreshMe={() => void loadMe()}
         onRefreshAdminUsers={() => void loadAdminUsers()}
       />
+    ) : sessionUser ? (
+      <MyStatsPage
+        user={sessionUser}
+        myPlayer={myPlayer}
+        myOperations={myOperations}
+        mates={myOperationMates}
+        selectedOperationId={selectedOperationId}
+        onSelectOperation={setSelectedOperationId}
+        onRefresh={() => void loadMyStats()}
+        onLinkSteam={() => {
+          window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
+        }}
+        onUnlinkSteam={async () => {
+          await apiFetch("/v1/me/identities/steam", { method: "DELETE" });
+          await loadMe();
+          await loadMyStats();
+        }}
+      />
+    ) : null;
+
+  if (!sessionUser) {
+    return (
+      <main className="login-only">
+        <section className="login-panel">
+          <p className="console-glyphs" aria-hidden="true">
+            authentication required
+          </p>
+          <p className="eyebrow">Arma Attendance Tracker</p>
+          <h1>Login Required</h1>
+          <p>Use Discord to open your attendance console.</p>
+          <button type="button" onClick={loginDiscord}>
+            Login with Discord
+          </button>
+          <StatusChip label={`API ${statusLabel(health)}`} tone={health.status === "error" ? "danger" : health.status === "ready" ? "ready" : "muted"} />
+        </section>
+      </main>
     );
+  }
 
   return (
     <CommandShell

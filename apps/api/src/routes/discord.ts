@@ -1,7 +1,9 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { requireAdminOrBotToken, requireBearerToken } from "../auth.js";
+import { hasRole, requireAdminOrBotToken } from "../auth.js";
+import { deny, getAuthContext, type AuthContext } from "../auth/authorization.js";
+import { getUserUnitRoles } from "../auth/units.js";
 import { evaluateDiscordRoleActions } from "../discord/scoring.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -151,6 +153,35 @@ async function playerExists(playerUid: string): Promise<boolean> {
   return result.rows[0]?.exists ?? false;
 }
 
+async function requireAnyDiscordAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  allowBotToken = false
+): Promise<AuthContext | null> {
+  const auth = await getAuthContext(request, reply, { allowBotToken, allowMachineToken: true });
+
+  if (!auth) {
+    return null;
+  }
+
+  if (auth.kind === "machine") {
+    return auth;
+  }
+
+  if (hasRole(auth.user, ["admin"])) {
+    return auth;
+  }
+
+  const unitRoles = await getUserUnitRoles(auth.user.id);
+
+  if (unitRoles.some((role) => role.role === "admin")) {
+    return auth;
+  }
+
+  deny(reply);
+  return null;
+}
+
 export async function registerDiscordRoutes(app: FastifyInstance) {
   app.post("/v1/discord/guilds/sync", { preHandler: requireAdminOrBotToken }, async (request, reply) => {
     const parsed = guildSyncSchema.safeParse(request.body);
@@ -246,7 +277,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/guilds", { preHandler: requireBearerToken }, async (_request, reply) => {
+  app.get("/v1/discord/guilds", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     try {
       const result = await queryDb(
         `
@@ -270,7 +307,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/guilds/:guild_id", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/discord/guilds/:guild_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -307,7 +350,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/guilds/:guild_id/roles", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/discord/guilds/:guild_id/roles", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -331,7 +380,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/player-links", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/discord/player-links", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedQuery = playerLinksQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -370,7 +425,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/v1/discord/player-links", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.post("/v1/discord/player-links", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsed = playerLinkBodySchema.safeParse(request.body);
 
     if (!parsed.success) {
@@ -419,7 +480,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete("/v1/discord/player-links/:discord_user_id", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.delete("/v1/discord/player-links/:discord_user_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = linkParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -436,7 +503,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/guilds/:guild_id/rules", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/discord/guilds/:guild_id/rules", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -460,7 +533,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/v1/discord/guilds/:guild_id/rules", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.post("/v1/discord/guilds/:guild_id/rules", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
     const parsedBody = ruleBodySchema.safeParse(request.body);
 
@@ -515,7 +594,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/v1/discord/guilds/:guild_id/rules/:rule_id", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.patch("/v1/discord/guilds/:guild_id/rules/:rule_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = ruleParamsSchema.safeParse(request.params);
     const parsedBody = rulePatchSchema.safeParse(request.body);
 
@@ -588,7 +673,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete("/v1/discord/guilds/:guild_id/rules/:rule_id", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.delete("/v1/discord/guilds/:guild_id/rules/:rule_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = ruleParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -606,7 +697,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/guilds/:guild_id/role-actions", { preHandler: requireAdminOrBotToken }, async (request, reply) => {
+  app.get("/v1/discord/guilds/:guild_id/role-actions", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply, true);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
     const parsedQuery = roleActionsQuerySchema.safeParse(request.query);
 
@@ -636,7 +733,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/v1/discord/guilds/:guild_id/role-action-results", { preHandler: requireAdminOrBotToken }, async (request, reply) => {
+  app.post("/v1/discord/guilds/:guild_id/role-action-results", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply, true);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
     const parsedBody = roleActionResultsBodySchema.safeParse(request.body);
 
@@ -689,7 +792,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/discord/guilds/:guild_id/role-action-audits", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/discord/guilds/:guild_id/role-action-audits", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = guildParamsSchema.safeParse(request.params);
     const parsedQuery = auditsQuerySchema.safeParse(request.query);
 

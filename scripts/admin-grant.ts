@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { closeDbPool, queryDb } from "../apps/api/src/db/pool.js";
 
-const roles = ["owner", "admin", "officer", "viewer"] as const;
+const roles = ["owner", "tcw_admin", "admin", "officer", "viewer"] as const;
 type Role = (typeof roles)[number];
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -24,7 +24,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 function usage(): never {
   console.error(
-    "Usage: pnpm admin:grant -- --role owner|admin|officer|viewer (--user-id <uuid> | --provider discord|steam --provider-user-id <id>)"
+    "Usage: pnpm admin:grant -- --role owner|tcw_admin|admin|officer|viewer (--user-id <uuid> | --provider discord|steam --provider-user-id <id>)"
   );
   process.exit(1);
 }

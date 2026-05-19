@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 
-import { requireBearerToken } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 
@@ -45,7 +45,17 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 }
 
 export async function registerDataQualityRoutes(app: FastifyInstance) {
-  app.get("/v1/data-quality", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/data-quality", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
+    if (auth.user && !canSeeSensitiveIds(auth.user)) {
+      return deny(reply);
+    }
+
     try {
       const startedWithoutFinish = await queryDb<OperationIssueRow>(
         `

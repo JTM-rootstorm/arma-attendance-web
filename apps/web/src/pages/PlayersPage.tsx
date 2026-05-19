@@ -26,6 +26,7 @@ export function PlayersPage({
   onSearchChange,
   onSearch,
   onSelectPlayer,
+  canExport,
   onExportPlayers
 }: {
   players: ApiResult<PlayersResponse>;
@@ -36,6 +37,7 @@ export function PlayersPage({
   onSearchChange: (value: string) => void;
   onSearch: () => void;
   onSelectPlayer: (playerUid: string) => void;
+  canExport: boolean;
   onExportPlayers: () => void;
 }) {
   const detail = playerDetail.status === "ready" ? playerDetail.data : null;
@@ -44,7 +46,7 @@ export function PlayersPage({
 
   return (
     <div className="view-grid">
-      <CommandPanel title="Player Registry" eyebrow="Roster uplink" wide actions={<button type="button" onClick={onExportPlayers}>Players CSV</button>}>
+      <CommandPanel title="Player Registry" eyebrow="Roster uplink" wide actions={canExport ? <button type="button" onClick={onExportPlayers}>Players CSV</button> : null}>
         <div className={isDetailOpen ? "drilldown-stage is-open" : "drilldown-stage"}>
           <div className={isDetailOpen ? "drilldown-base is-obscured" : "drilldown-base"}>
             <form className="filters roster-filter" onSubmit={(event) => event.preventDefault()}>

@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { requireBearerToken } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { redactOperationListItem, redactPlayer } from "../privacy/redaction.js";
 
 const playerListQuerySchema = z.object({
   q: z.string().max(200).optional(),
@@ -22,6 +23,10 @@ type PlayerRow = {
   last_seen_at: Date;
   raw_last_player: unknown;
   operation_count: number;
+};
+
+type PlayerUnitRow = {
+  unit_id: string;
 };
 
 type PlayerDetailRow = {
@@ -77,7 +82,13 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 }
 
 export async function registerPlayerRoutes(app: FastifyInstance) {
-  app.get("/v1/players", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/players", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedQuery = playerListQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -87,6 +98,20 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     const query = parsedQuery.data;
     const where: string[] = [];
     const values: unknown[] = [];
+    const unitFilter = await getReadableUnitFilter(auth.user);
+
+    if (!unitFilter.all) {
+      if (unitFilter.unitIds.length === 0) {
+        return deny(reply);
+      }
+
+      values.push(unitFilter.unitIds);
+      where.push(`EXISTS (
+        SELECT 1 FROM unit_players up_filter
+        WHERE up_filter.player_uid = p.player_uid
+          AND up_filter.unit_id = ANY($${values.length}::uuid[])
+      )`);
+    }
 
     if (query.q && query.q.trim().length > 0) {
       values.push(`%${query.q.trim()}%`);
@@ -122,7 +147,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        players: playersResult.rows,
+        players: playersResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user))),
         pagination: {
           limit: query.limit,
           offset: query.offset,
@@ -135,7 +160,13 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/players/:player_uid", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/players/:player_uid", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = playerParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -171,6 +202,25 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
             message: "Player was not found."
           }
         });
+      }
+
+      if (auth.user) {
+        const steamId = auth.user.identities.find((identity) => identity.provider === "steam")?.provider_user_id;
+        const ownsPlayer = steamId === playerUid;
+
+        if (!ownsPlayer) {
+          const unitFilter = await getReadableUnitFilter(auth.user);
+          const visibleResult = unitFilter.all
+            ? await queryDb<PlayerUnitRow>("SELECT unit_id FROM unit_players WHERE player_uid = $1 LIMIT 1", [playerUid])
+            : await queryDb<PlayerUnitRow>(
+                "SELECT unit_id FROM unit_players WHERE player_uid = $1 AND unit_id = ANY($2::uuid[]) LIMIT 1",
+                [playerUid, unitFilter.unitIds]
+              );
+
+          if (!visibleResult.rows[0]) {
+            return deny(reply);
+          }
+        }
       }
 
       const operationsResult = await queryDb<PlayerOperationRow>(
@@ -209,8 +259,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        player,
-        recent_operations: operationsResult.rows.map((row) => ({
+        player: redactPlayer(player, canSeeSensitiveIds(auth.user)),
+        recent_operations: operationsResult.rows.map((row) => redactOperationListItem({
           operation_id: row.operation_id,
           server_key: row.server_key,
           status: row.status,
@@ -234,7 +284,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
                   friendly_kills: row.friendly_kills ?? 0,
                   deaths: row.deaths ?? 0
                 }
-        }))
+        }, canSeeSensitiveIds(auth.user)))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch player");

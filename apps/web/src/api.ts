@@ -68,11 +68,16 @@ export async function apiFetch<T>(
   return data as T;
 }
 
-export async function fetchCsv(path: string, token: string): Promise<string> {
+export async function fetchCsv(path: string, token?: string): Promise<string> {
+  const headers = new Headers();
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
   const response = await fetch(buildUrl(path), {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    headers,
+    credentials: "include"
   });
 
   if (!response.ok) {

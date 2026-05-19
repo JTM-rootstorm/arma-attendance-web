@@ -73,6 +73,29 @@ body {
   min-height: 100dvh;
 }
 
+.login-only {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 1rem;
+}
+
+.login-panel {
+  display: grid;
+  width: min(30rem, 100%);
+  gap: 0.9rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 1.25rem;
+  background: var(--panel-strong);
+  box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.28);
+}
+
+.login-panel h1,
+.login-panel p {
+  margin: 0;
+}
+
 button,
 input,
 select {
@@ -433,6 +456,88 @@ h3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.stat-grid.compact {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.stat-grid.compact > div,
+.identity-strip,
+.stack-row {
+  border: 1px solid rgba(135, 196, 255, 0.18);
+  border-radius: 3px;
+  padding: 0.7rem;
+  background: rgba(5, 15, 29, 0.78);
+}
+
+.stat-grid span,
+.identity-strip span,
+.stack-row span {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.stat-grid strong,
+.identity-strip strong,
+.stack-row strong {
+  overflow-wrap: anywhere;
+}
+
+.identity-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: center;
+  margin: 0.9rem 0;
+}
+
+.inline-actions,
+.panel-heading,
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.panel-heading {
+  justify-content: space-between;
+  margin-bottom: 0.9rem;
+}
+
+.panel-heading.slim {
+  margin-bottom: 0.5rem;
+}
+
+.panel-heading h2,
+.panel-heading h3 {
+  margin: 0;
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(16rem, 0.75fr);
+  gap: 1rem;
+}
+
+.stack-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.stack-row {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.empty-copy {
+  color: var(--text-secondary);
+  margin: 0.7rem 0 0;
+}
+
 .metric-tile {
   display: grid;
   gap: 0.18rem;
@@ -771,7 +876,10 @@ pre {
   .identity-account-grid,
   .view-grid,
   .metric-grid,
-  .metric-grid.compact {
+  .metric-grid.compact,
+  .stat-grid.compact,
+  .identity-strip,
+  .split-grid {
     grid-template-columns: 1fr;
   }
 

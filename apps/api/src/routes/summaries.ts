@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { requireBearerToken } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { requireUnitRead } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { redactOperationListItem, redactPlayer } from "../privacy/redaction.js";
 
 const dashboardSummaryQuerySchema = z.object({
   server_key: z.string().max(128).optional(),
@@ -30,6 +32,7 @@ type DashboardSummaryRow = {
 
 type RecentOperationRow = {
   id: string;
+  unit_id: string | null;
   server_key: string;
   status: "started" | "finished" | "abandoned";
   mission_uid: string | null;
@@ -54,6 +57,7 @@ type TopPlayerKillsRow = {
 
 type OperationIdentityRow = {
   id: string;
+  unit_id: string | null;
   server_key: string;
   status: "started" | "finished" | "abandoned";
   mission_uid: string | null;
@@ -132,12 +136,20 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
   });
 }
 
-function buildDashboardWhere(query: z.infer<typeof dashboardSummaryQuerySchema>): {
+function buildDashboardWhere(
+  query: z.infer<typeof dashboardSummaryQuerySchema>,
+  unitFilter: { all: boolean; unitIds: string[] }
+): {
   whereClause: string;
   values: unknown[];
 } {
   const where: string[] = [];
   const values: unknown[] = [];
+
+  if (!unitFilter.all) {
+    values.push(unitFilter.unitIds);
+    where.push(`unit_id = ANY($${values.length}::uuid[])`);
+  }
 
   if (query.server_key) {
     values.push(query.server_key);
@@ -156,14 +168,40 @@ function buildDashboardWhere(query: z.infer<typeof dashboardSummaryQuerySchema>)
 }
 
 export async function registerSummaryRoutes(app: FastifyInstance) {
-  app.get("/v1/dashboard/summary", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/dashboard/summary", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedQuery = dashboardSummaryQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
       return sendValidationFailed(reply);
     }
 
-    const { whereClause, values } = buildDashboardWhere(parsedQuery.data);
+    const unitFilter = await getReadableUnitFilter(auth.user);
+
+    if (!unitFilter.all && unitFilter.unitIds.length === 0) {
+      return {
+        ok: true,
+        summary: {
+          operations_total: 0,
+          operations_started: 0,
+          operations_finished: 0,
+          players_total: 0,
+          attendance_rows_total: 0,
+          stats_rows_total: 0,
+          last_operation_at: null
+        },
+        recent_operations: [],
+        top_players_by_attendance: [],
+        top_players_by_ai_kills: []
+      };
+    }
+
+    const { whereClause, values } = buildDashboardWhere(parsedQuery.data, unitFilter);
 
     try {
       const summaryResult = await queryDb<DashboardSummaryRow>(
@@ -194,6 +232,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         `
         SELECT
           o.id,
+          o.unit_id,
           o.server_key,
           o.status,
           o.mission_uid,
@@ -257,9 +296,9 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           stats_rows_total: 0,
           last_operation_at: null
         },
-        recent_operations: recentOperationsResult.rows,
-        top_players_by_attendance: topAttendanceResult.rows,
-        top_players_by_ai_kills: topKillsResult.rows
+        recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user))),
+        top_players_by_attendance: topAttendanceResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user))),
+        top_players_by_ai_kills: topKillsResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user)))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch dashboard summary");
@@ -267,7 +306,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/operations/:operation_id/summary", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/operations/:operation_id/summary", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -281,6 +326,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         `
         SELECT
           id,
+          unit_id,
           server_key,
           status,
           mission_uid,
@@ -304,6 +350,10 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
             message: "Operation was not found."
           }
         });
+      }
+
+      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
+        return;
       }
 
       const attendanceResult = await queryDb<OperationAttendanceSummaryRow>(
@@ -350,7 +400,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
       return {
         ok: true,
         operation_id: operationId,
-        operation,
+        operation: redactOperationListItem(operation, canSeeSensitiveIds(auth.user)),
         attendance: attendanceResult.rows[0] ?? {
           present_at_start: 0,
           present_at_end: 0,
@@ -378,7 +428,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/players/:player_uid/summary", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/players/:player_uid/summary", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = playerParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -407,6 +463,28 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
             message: "Player was not found."
           }
         });
+      }
+
+      if (auth.user) {
+        const steamId = auth.user.identities.find((identity) => identity.provider === "steam")?.provider_user_id;
+        const ownsPlayer = steamId === playerUid;
+
+        if (!ownsPlayer) {
+          const unitFilter = await getReadableUnitFilter(auth.user);
+          const visibleResult = unitFilter.all
+            ? await queryDb<{ exists: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM unit_players WHERE player_uid = $1) AS exists",
+                [playerUid]
+              )
+            : await queryDb<{ exists: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM unit_players WHERE player_uid = $1 AND unit_id = ANY($2::uuid[])) AS exists",
+                [playerUid, unitFilter.unitIds]
+              );
+
+          if (!visibleResult.rows[0]?.exists) {
+            return deny(reply);
+          }
+        }
       }
 
       const summaryResult = await queryDb<PlayerSummaryRow>(
@@ -454,8 +532,8 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        player_uid: playerUid,
-        player,
+        player_uid: canSeeSensitiveIds(auth.user) ? playerUid : null,
+        player: redactPlayer(player, canSeeSensitiveIds(auth.user)),
         summary: summaryResult.rows[0] ?? {
           operation_count: 0,
           present_at_start_count: 0,
@@ -467,7 +545,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           friendly_kills: 0,
           deaths: 0
         },
-        recent_operations: recentOperationsResult.rows
+        recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user)))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch player summary");

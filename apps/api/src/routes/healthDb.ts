@@ -1,11 +1,21 @@
 import type { FastifyInstance } from "fastify";
 
-import { requireBearerToken } from "../auth.js";
+import { canSeeApiSecrets, deny, getAuthContext } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 
 export async function registerHealthDbRoutes(app: FastifyInstance) {
-  app.get("/health/db", { preHandler: requireBearerToken }, async (_request, reply) => {
+  app.get("/health/db", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
+    if (auth.user && !canSeeApiSecrets(auth.user)) {
+      return deny(reply);
+    }
+
     try {
       const result = await queryDb<{
         current_database: string;

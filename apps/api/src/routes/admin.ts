@@ -6,7 +6,7 @@ import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 
-const roles = ["owner", "admin", "officer", "viewer"] as const;
+const roles = ["owner", "tcw_admin", "admin", "officer", "viewer"] as const;
 
 const usersQuerySchema = z.object({
   q: z.string().max(200).optional(),
@@ -96,11 +96,7 @@ function serializeUser(row: AdminUserRow) {
 }
 
 function canManageRole(actor: CurrentUser, role: AppRole): boolean {
-  if (role === "owner" || role === "admin") {
-    return hasRole(actor, ["owner"]);
-  }
-
-  return hasRole(actor, ["admin"]);
+  return hasRole(actor, ["owner"]) && (role !== "owner" || actor.roles.includes("owner"));
 }
 
 async function userExists(tx: DbTransaction, userId: string): Promise<boolean> {
@@ -134,7 +130,7 @@ async function insertAudit(
 }
 
 export async function registerAdminRoutes(app: FastifyInstance) {
-  app.get("/v1/admin/users", { preHandler: requireRole(["admin"]) }, async (request, reply) => {
+  app.get("/v1/admin/users", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
     const parsedQuery = usersQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -199,7 +195,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/admin/users/:user_id", { preHandler: requireRole(["admin"]) }, async (request, reply) => {
+  app.get("/v1/admin/users/:user_id", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
     const parsedParams = userParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -262,7 +258,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
-  app.put("/v1/admin/users/:user_id/roles/:role", { preHandler: requireRole(["admin"]) }, async (request, reply) => {
+  app.put("/v1/admin/users/:user_id/roles/:role", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
     const parsedParams = roleParamsSchema.safeParse(request.params);
     const parsedBody = roleBodySchema.safeParse(request.body);
 
@@ -311,7 +307,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete("/v1/admin/users/:user_id/roles/:role", { preHandler: requireRole(["admin"]) }, async (request, reply) => {
+  app.delete("/v1/admin/users/:user_id/roles/:role", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
     const parsedParams = roleParamsSchema.safeParse(request.params);
     const parsedBody = roleBodySchema.safeParse(request.body);
 
@@ -358,7 +354,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/v1/admin/users/:user_id/disable", { preHandler: requireRole(["admin"]) }, async (request, reply) => {
+  app.post("/v1/admin/users/:user_id/disable", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
     const parsedParams = userParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -395,7 +391,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/v1/admin/users/:user_id/enable", { preHandler: requireRole(["admin"]) }, async (request, reply) => {
+  app.post("/v1/admin/users/:user_id/enable", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
     const parsedParams = userParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {

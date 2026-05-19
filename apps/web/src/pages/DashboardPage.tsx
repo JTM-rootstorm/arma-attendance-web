@@ -69,6 +69,7 @@ export function DashboardPage({
   onSelectOperation,
   onOpenOperations,
   onOpenPlayers,
+  canExport,
   onExportPlayers
 }: {
   hasToken: boolean;
@@ -77,6 +78,7 @@ export function DashboardPage({
   onSelectOperation: (operationId: string) => void;
   onOpenOperations: () => void;
   onOpenPlayers: () => void;
+  canExport: boolean;
   onExportPlayers: () => void;
 }) {
   const summaryData = summary.status === "ready" ? summary.data : null;
@@ -86,12 +88,6 @@ export function DashboardPage({
 
   return (
     <div className="view-grid">
-      {!hasToken ? (
-        <CommandPanel title="Token Gate" eyebrow="Secure uplink" wide>
-          <p className="message">Enter a bearer token to load internal operation telemetry.</p>
-        </CommandPanel>
-      ) : null}
-
       <DataMessage result={summary} />
 
       <CommandPanel title="Command Overview" eyebrow="Operational registry">
@@ -158,14 +154,16 @@ export function DashboardPage({
         </TacticalTable>
       </CommandPanel>
 
+      {canExport ? (
       <CommandPanel title="Export Console" eyebrow="Payload archive">
         <div className="export-stack">
-          <button type="button" onClick={onExportPlayers} disabled={!hasToken}>
+          <button type="button" onClick={onExportPlayers}>
             Export Players CSV
           </button>
           <p className="message">Operation attendance CSV is available from a selected operation.</p>
         </div>
       </CommandPanel>
+      ) : null}
     </div>
   );
 }

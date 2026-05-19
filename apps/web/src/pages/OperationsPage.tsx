@@ -113,6 +113,7 @@ export function OperationsPage({
   onFiltersChange,
   onSelectOperation,
   onRefresh,
+  canExport,
   onExportAttendance
 }: {
   operations: ApiResult<OperationsResponse>;
@@ -124,6 +125,7 @@ export function OperationsPage({
   onFiltersChange: (filters: { server_key: string; status: string; mission_uid: string }) => void;
   onSelectOperation: (operationId: string) => void;
   onRefresh: () => void;
+  canExport: boolean;
   onExportAttendance: (operationId: string) => void;
 }) {
   const detail = operationDetail.status === "ready" ? operationDetail.data : null;
@@ -174,7 +176,7 @@ export function OperationsPage({
                   <h3>Operation Detail</h3>
                 </div>
                 <div className="panel-actions">
-                  {detail ? (
+                  {detail && canExport ? (
                     <button type="button" onClick={() => onExportAttendance(detail.operation.id)}>
                       Attendance CSV
                     </button>

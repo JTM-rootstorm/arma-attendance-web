@@ -22,6 +22,7 @@ if [[ "${RUN_DB_SMOKE:-0}" == "1" ]]; then
   run pnpm smoke:data-quality
   run pnpm smoke:discord
   run pnpm smoke:auth
+  run pnpm smoke:rbac
 fi
 
 echo "[release:check] OK"
