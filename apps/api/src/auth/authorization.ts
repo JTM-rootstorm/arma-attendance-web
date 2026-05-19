@@ -38,7 +38,11 @@ export async function getAuthContext(
   reply: FastifyReply,
   options: { allowMachineToken?: boolean; allowBotToken?: boolean } = {}
 ): Promise<AuthContext | null> {
-  if (options.allowBotToken ? isAdminOrBotTokenRequest(request) : options.allowMachineToken && isMachineTokenRequest(request)) {
+  if (
+    options.allowBotToken
+      ? await isAdminOrBotTokenRequest(request)
+      : options.allowMachineToken && (await isMachineTokenRequest(request))
+  ) {
     return { kind: "machine", user: null };
   }
 

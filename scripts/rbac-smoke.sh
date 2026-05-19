@@ -122,11 +122,23 @@ INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
 SELECT id, :'tcw_id'::uuid, 'admin', 'smoke' FROM unit
 ON CONFLICT DO NOTHING;
 
+INSERT INTO unit_user_roles (unit_id, user_id, role, grant_source)
+SELECT id, :'tcw_id'::uuid, 'tcw_admin', 'smoke' FROM units WHERE unit_key = 'rbac_smoke'
+ON CONFLICT DO NOTHING;
+
 INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
 SELECT id, :'admin_id'::uuid, 'admin', 'smoke' FROM units WHERE unit_key = 'rbac_smoke'
 ON CONFLICT DO NOTHING;
 
+INSERT INTO unit_user_roles (unit_id, user_id, role, grant_source)
+SELECT id, :'admin_id'::uuid, 'admin', 'smoke' FROM units WHERE unit_key = 'rbac_smoke'
+ON CONFLICT DO NOTHING;
+
 INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
+SELECT id, :'officer_id'::uuid, 'officer', 'smoke' FROM units WHERE unit_key = 'rbac_smoke'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO unit_user_roles (unit_id, user_id, role, grant_source)
 SELECT id, :'officer_id'::uuid, 'officer', 'smoke' FROM units WHERE unit_key = 'rbac_smoke'
 ON CONFLICT DO NOTHING;
 
@@ -158,6 +170,7 @@ echo "[smoke:rbac] Checking normal user self-only access..."
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me" | assert_json 'data.ok === true'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/player" | assert_json 'data.ok === true && data.linked_player !== null'
 operation_id="$(curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations" | json_value ".operations.0.operation_id")"
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations/$operation_id" | assert_json 'data.ok === true && data.operation.operation_id !== undefined'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operation-mates?operation_id=$operation_id" | assert_json 'data.ok === true'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" "$BASE_URL/v1/players")" "normal user roster"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" "$BASE_URL/v1/players.csv")" "normal user CSV"
@@ -173,10 +186,19 @@ curl -fsS -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/players.csv" >/dev/null
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/owner/api-key")" "unit admin API key"
 curl -fsS -b "$TCW_COOKIE_JAR" "$BASE_URL/v1/players" | assert_json 'data.ok === true && data.players[0].player_uid !== null'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$TCW_COOKIE_JAR" "$BASE_URL/v1/owner/api-key")" "TCW API key"
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$TCW_COOKIE_JAR" "$BASE_URL/v1/system/machine-tokens")" "TCW machine tokens"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$TCW_COOKIE_JAR" "$BASE_URL/v1/admin/users")" "TCW global user admin"
 
 echo "[smoke:rbac] Checking owner-only paths and machine-token compatibility..."
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/owner/api-key" | assert_json 'data.ok === true && data.api_key.mutable === false'
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/system/machine-tokens" | assert_json 'data.ok === true && Array.isArray(data.tokens)'
+machine_token_response="$(curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/system/machine-tokens" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"RBAC smoke token $STAMP\",\"token_kind\":\"api\"}")"
+machine_token="$(printf "%s" "$machine_token_response" | json_value ".token")"
+machine_token_id="$(printf "%s" "$machine_token_response" | json_value ".token_record.id")"
+curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $machine_token" | assert_json 'data.ok === true'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$machine_token_id" | assert_json 'data.ok === true && data.token_record.is_active === false'
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $API_TOKEN" | assert_json 'data.ok === true'
 
 echo "[smoke:rbac] OK"

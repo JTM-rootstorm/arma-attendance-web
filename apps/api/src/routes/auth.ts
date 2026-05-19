@@ -7,6 +7,7 @@ import {
   appRoles,
   clearSessionCookie,
   createUserSession,
+  hasRole,
   requireUser,
   revokeCurrentSession,
   setSessionCookie,
@@ -171,6 +172,9 @@ function discordAvatarUrl(profile: DiscordProfile): string | null {
 
 async function serializeUser(user: CurrentUser) {
   const unitMemberships = await getUserUnitRoles(user.id);
+  const selfPlayerUids = await getSelfPlayerUids(user);
+  const unitAdmin = unitMemberships.some((membership) => membership.role === "admin" || membership.role === "tcw_admin");
+  const canViewSensitiveIdentifiers = hasRole(user, ["tcw_admin"]);
 
   return {
     id: user.id,
@@ -178,6 +182,21 @@ async function serializeUser(user: CurrentUser) {
     avatar_url: user.avatar_url,
     roles: user.roles,
     unit_memberships: unitMemberships,
+    units: unitMemberships.map((membership) => ({
+      unit_id: membership.unit_id,
+      slug: membership.unit_key,
+      name: membership.name,
+      roles: [membership.role]
+    })),
+    self_player_uids: selfPlayerUids,
+    is_owner: user.roles.includes("owner"),
+    is_tcw_admin: user.roles.includes("tcw_admin"),
+    capabilities: {
+      can_view_global_admin: hasRole(user, ["owner"]),
+      can_view_sensitive_identifiers: canViewSensitiveIdentifiers,
+      can_export: hasRole(user, ["tcw_admin"]) || hasRole(user, ["admin"]) || unitAdmin,
+      can_manage_api_tokens: hasRole(user, ["owner"])
+    },
     identities: user.identities.map((identity) => ({
       provider: identity.provider,
       provider_user_id: identity.provider_user_id,
@@ -185,6 +204,24 @@ async function serializeUser(user: CurrentUser) {
       avatar_url: identity.avatar_url
     }))
   };
+}
+
+async function getSelfPlayerUids(user: CurrentUser): Promise<string[]> {
+  const steamId = user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null;
+  const discordId = user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null;
+  const result = await queryDb<{ player_uid: string }>(
+    `
+    SELECT DISTINCT p.player_uid
+    FROM players p
+    LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
+    WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
+       OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+    ORDER BY p.player_uid
+    `,
+    [steamId, discordId]
+  );
+
+  return result.rows.map((row) => row.player_uid);
 }
 
 async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | null> {
@@ -617,6 +654,103 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch self operations");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.get("/v1/me/operations/:operation_id", async (request, reply) => {
+    const operationParamsSchema = z.object({
+      operation_id: z.string().uuid()
+    });
+    const parsedParams = operationParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    try {
+      const player = await findLinkedPlayer(user);
+
+      if (!player) {
+        return {
+          ok: true,
+          linked_player: null,
+          operation: null,
+          mates: [],
+          message: "Link Steam or ask an admin to link your player record."
+        };
+      }
+
+      const operationResult = await queryDb<SelfOperationRow>(
+        `
+        SELECT
+          o.id AS operation_id,
+          o.status,
+          o.mission_name,
+          o.world_name,
+          o.started_at,
+          o.ended_at,
+          op.present_at_start,
+          op.present_at_end
+        FROM operation_players op
+        JOIN operations o ON o.id = op.operation_id
+        WHERE op.player_uid = $1
+          AND op.operation_id = $2
+        LIMIT 1
+        `,
+        [player.player_uid, parsedParams.data.operation_id]
+      );
+      const operation = operationResult.rows[0];
+
+      if (!operation) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "operation_not_found",
+            message: "Operation was not found for the linked player."
+          }
+        });
+      }
+
+      const mates = await queryDb<OperationMateRow>(
+        `
+        SELECT
+          COALESCE(op.name_at_end, op.name_at_start, p.last_name) AS name,
+          up.rank,
+          COALESCE(op.role_at_end, op.role_at_start) AS role,
+          COALESCE(op.side_at_end, op.side_at_start) AS side,
+          COALESCE(op.group_at_end, op.group_at_start) AS group_name
+        FROM operation_players op
+        JOIN players p ON p.player_uid = op.player_uid
+        LEFT JOIN unit_players up ON up.player_uid = op.player_uid
+        WHERE op.operation_id = $1
+          AND op.player_uid <> $2
+        ORDER BY COALESCE(op.name_at_end, op.name_at_start, p.last_name)
+        LIMIT 100
+        `,
+        [parsedParams.data.operation_id, player.player_uid]
+      );
+
+      return {
+        ok: true,
+        linked_player: {
+          display_name: player.roster_name ?? player.last_name,
+          rank: player.rank
+        },
+        operation,
+        mates: mates.rows
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch self operation");
       return reply.code(503).send({
         ok: false,
         error: { code: "database_unavailable", message: "Database is not available." }

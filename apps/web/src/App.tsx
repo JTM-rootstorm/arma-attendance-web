@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch, fetchCsv } from "./api";
 import {
@@ -8,6 +8,7 @@ import {
   canOpenIdentityAdmin,
   canOpenOperations,
   canOpenRoster,
+  canManageMachineTokens,
   canSeeSensitiveIds,
   isOwner
 } from "./authz";
@@ -21,13 +22,16 @@ import { IdentityPage } from "./pages/IdentityPage";
 import { MyStatsPage } from "./pages/MyStatsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { PlayersPage } from "./pages/PlayersPage";
+import { SystemPage } from "./pages/SystemPage";
 import type {
   AdminUsersResponse,
   ApiResult,
+  CreateMachineTokenResponse,
   DashboardSummaryResponse,
   DataQualityResponse,
   DbHealthResponse,
   HealthResponse,
+  MachineTokensResponse,
   MeResponse,
   MyOperationMatesResponse,
   MyOperationsResponse,
@@ -41,12 +45,6 @@ import type {
   PlayerSummaryResponse,
   ViewName
 } from "./types";
-
-const tokenStorageKey = "arma-attendance-api-token";
-
-function getStoredToken(): string {
-  return window.sessionStorage.getItem(tokenStorageKey) ?? "";
-}
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   const parsed = resultError(error, fallback);
@@ -71,13 +69,13 @@ function saveCsv(text: string, filename: string) {
 }
 
 export function App() {
-  const [token, setToken] = useState(getStoredToken);
-  const [tokenDraft, setTokenDraft] = useState(token);
   const [view, setView] = useState<ViewName>("me");
   const [health, setHealth] = useState<ApiResult<HealthResponse>>(emptyResult);
   const [dbHealth, setDbHealth] = useState<ApiResult<DbHealthResponse>>(emptyResult);
   const [me, setMe] = useState<ApiResult<MeResponse>>(emptyResult);
   const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
+  const [machineTokens, setMachineTokens] = useState<ApiResult<MachineTokensResponse>>(emptyResult);
+  const [createdMachineToken, setCreatedMachineToken] = useState<CreateMachineTokenResponse | null>(null);
   const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
   const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
   const [myOperationMates, setMyOperationMates] = useState<ApiResult<MyOperationMatesResponse>>(emptyResult);
@@ -96,9 +94,9 @@ export function App() {
   const [selectedPlayerUid, setSelectedPlayerUid] = useState("");
   const [exportMessage, setExportMessage] = useState("");
 
-  const hasToken = token.trim().length > 0;
   const sessionUser = me.status === "ready" ? me.data.user : null;
   const canAdmin = canOpenIdentityAdmin(sessionUser);
+  const canManageSystem = canManageMachineTokens(sessionUser);
   const canViewDashboard = canOpenDashboard(sessionUser);
   const canViewOperations = canOpenOperations(sessionUser);
   const canViewRoster = canOpenRoster(sessionUser);
@@ -133,13 +131,13 @@ export function App() {
     try {
       setDbHealth({
         status: "ready",
-        data: await apiFetch<DbHealthResponse>("/health/db", hasToken ? { token } : {}),
+        data: await apiFetch<DbHealthResponse>("/health/db"),
         error: null
       });
     } catch (error) {
       setDbHealth(errorResult(error, "DB health failed."));
     }
-  }, [hasToken, sessionUser, token]);
+  }, [sessionUser]);
 
   const loadMe = useCallback(async () => {
     setMe({ status: "loading", data: null, error: null });
@@ -174,6 +172,26 @@ export function App() {
       setAdminUsers(errorResult(error, "Admin users failed."));
     }
   }, [canAdmin]);
+
+  const loadMachineTokens = useCallback(async () => {
+    if (!canManageSystem) {
+      setMachineTokens(emptyResult);
+      setCreatedMachineToken(null);
+      return;
+    }
+
+    setMachineTokens({ status: "loading", data: null, error: null });
+
+    try {
+      setMachineTokens({
+        status: "ready",
+        data: await apiFetch<MachineTokensResponse>("/v1/system/machine-tokens"),
+        error: null
+      });
+    } catch (error) {
+      setMachineTokens(errorResult(error, "Machine tokens failed."));
+    }
+  }, [canManageSystem]);
 
   const loadMyStats = useCallback(async () => {
     if (!sessionUser) {
@@ -374,6 +392,10 @@ export function App() {
   }, [loadAdminUsers]);
 
   useEffect(() => {
+    void loadMachineTokens();
+  }, [loadMachineTokens]);
+
+  useEffect(() => {
     void loadMyStats();
   }, [loadMyStats]);
 
@@ -388,12 +410,13 @@ export function App() {
       (view === "operations" && canViewOperations) ||
       (view === "players" && canViewRoster) ||
       (view === "discord" && canViewComms) ||
-      (view === "admin" && canAdmin);
+      (view === "admin" && canAdmin) ||
+      (view === "system" && canManageSystem);
 
     if (!allowed) {
       setView("me");
     }
-  }, [canAdmin, canViewComms, canViewDashboard, canViewOperations, canViewRoster, sessionUser, view]);
+  }, [canAdmin, canManageSystem, canViewComms, canViewDashboard, canViewOperations, canViewRoster, sessionUser, view]);
 
   useEffect(() => {
     if (selectedOperationId) {
@@ -408,30 +431,6 @@ export function App() {
     }
   }, [loadPlayerDetail, selectedPlayerUid]);
 
-  function saveToken(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const nextToken = tokenDraft.trim();
-    window.sessionStorage.setItem(tokenStorageKey, nextToken);
-    setToken(nextToken);
-  }
-
-  function forgetToken() {
-    window.sessionStorage.removeItem(tokenStorageKey);
-    setToken("");
-    setTokenDraft("");
-    setSummary(emptyResult);
-    setDataQuality(emptyResult);
-    setOperations(emptyResult);
-    setPlayers(emptyResult);
-    setOperationDetail(emptyResult);
-    setOperationSummary(emptyResult);
-    setOperationAttendance(emptyResult);
-    setPlayerDetail(emptyResult);
-    setPlayerSummary(emptyResult);
-    setSelectedOperationId("");
-    setSelectedPlayerUid("");
-  }
-
   async function logout() {
     try {
       await apiFetch("/auth/logout", { method: "POST" });
@@ -441,6 +440,7 @@ export function App() {
 
     setMe(emptyResult);
     setAdminUsers(emptyResult);
+    setMachineTokens(emptyResult);
     setView("me");
   }
 
@@ -472,13 +472,27 @@ export function App() {
     }
 
     try {
-      const csv = await fetchCsv(path, isOwner(sessionUser) && hasToken ? token : undefined);
+      const csv = await fetchCsv(path);
       saveCsv(csv, filename);
       setExportMessage(`Export ready: ${filename}`);
     } catch (error) {
       const parsed = resultError(error, "Export failed.");
       setExportMessage(parsed.message);
     }
+  }
+
+  async function createMachineToken(input: { name: string; token_kind: "api" | "bot" | "arma_server" }) {
+    const created = await apiFetch<CreateMachineTokenResponse>("/v1/system/machine-tokens", {
+      method: "POST",
+      body: input
+    });
+    setCreatedMachineToken(created);
+    await loadMachineTokens();
+  }
+
+  async function revokeMachineToken(tokenId: string) {
+    await apiFetch(`/v1/system/machine-tokens/${tokenId}`, { method: "DELETE" });
+    await loadMachineTokens();
   }
 
   const content =
@@ -549,6 +563,14 @@ export function App() {
         onRefreshMe={() => void loadMe()}
         onRefreshAdminUsers={() => void loadAdminUsers()}
       />
+    ) : view === "system" && canManageSystem ? (
+      <SystemPage
+        machineTokens={machineTokens}
+        createdToken={createdMachineToken}
+        onCreateToken={createMachineToken}
+        onRevokeToken={revokeMachineToken}
+        onRefresh={() => void loadMachineTokens()}
+      />
     ) : sessionUser ? (
       <MyStatsPage
         user={sessionUser}
@@ -598,14 +620,8 @@ export function App() {
       view={view}
       health={health}
       dbHealth={dbHealth}
-      hasToken={hasToken}
-      tokenDraft={tokenDraft}
       sessionUser={sessionUser}
       onViewChange={setView}
-      onTokenDraftChange={setTokenDraft}
-      onTokenSave={saveToken}
-      onTokenForget={forgetToken}
-      onLoginDiscord={loginDiscord}
       onLogout={() => void logout()}
       inspector={<PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />}
     >

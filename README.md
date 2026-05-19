@@ -4,7 +4,7 @@ Web/API service for the Arma 3 Attendance Tracker.
 
 Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard. Discord readiness adds DB/API/admin surfaces for a future bot to sync guild roles and evaluate attendance-based role actions. Auth readiness adds Discord OAuth browser login, server-side sessions, local app roles, admin user management, and Steam identity linking.
 
-Raw payloads remain the source of truth. The service intentionally does not include user accounts, Steam login, role-based permissions, queues, Redis, or required Docker deployment yet.
+Raw payloads remain the source of truth. Browser access is now session-cookie based with Discord OAuth, Steam identity linking, unit-scoped RBAC, and sensitive identifier redaction. Machine-token bearer auth remains for Arma ingest, smoke scripts, and future bot automation. Queues, Redis, and required Docker deployment are still intentionally out of scope.
 
 ## Stack
 
@@ -114,6 +114,9 @@ POST /auth/logout
 GET  /auth/steam/start
 GET  /auth/steam/callback
 GET  /v1/me
+GET  /v1/me/player
+GET  /v1/me/operations
+GET  /v1/me/operations/:operation_id
 DELETE /v1/me/identities/steam
 GET  /v1/admin/users
 GET  /v1/admin/users/:user_id
@@ -121,6 +124,9 @@ PUT  /v1/admin/users/:user_id/roles/:role
 DELETE /v1/admin/users/:user_id/roles/:role
 POST /v1/admin/users/:user_id/disable
 POST /v1/admin/users/:user_id/enable
+GET  /v1/system/machine-tokens
+POST /v1/system/machine-tokens
+DELETE /v1/system/machine-tokens/:token_id
 POST /v1/discord/guilds/sync
 GET  /v1/discord/guilds
 GET  /v1/discord/guilds/:guild_id
@@ -139,13 +145,15 @@ GET  /v1/discord/guilds/:guild_id/role-action-audits
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
 
-`GET /health/db` requires bearer auth and checks PostgreSQL connectivity without exposing secrets.
+`GET /health/db` requires an owner session or machine-token auth and checks PostgreSQL connectivity without exposing secrets.
 
-All `/v1/*` endpoints require:
+Browser/user endpoints use the session cookie created by Discord OAuth login. Machine endpoints use bearer auth:
 
 ```http
 Authorization: Bearer <API_TOKEN>
 ```
+
+DB-backed machine tokens created by owners at `/v1/system/machine-tokens` are also accepted for the matching automation kind. The full token is shown only once when created.
 
 JSON request bodies also require:
 
@@ -296,40 +304,36 @@ This does not require Arma manual testing. The new normalization layer is verifi
 
 The built Vite dashboard is served by Fastify from `apps/web/dist` when `pnpm build` has run. If the web build is missing, `GET /` falls back to a minimal HTML status page. API routes under `/v1/*` and `/health*` remain API-only and are not swallowed by the dashboard fallback.
 
-The dashboard is an internal operator surface. It uses the existing bearer token only:
-
-- enter the token in the browser,
-- it is stored in `sessionStorage`,
-- use "Forget token" to clear it.
+The dashboard is a logged-in browser app. Anonymous visitors see only the login screen. Normal users see their own stats, operations, and identity linking. Officers and unit admins see assigned-unit command surfaces. Owners also see global identity/admin and System machine-token pages.
 
 Summary endpoints:
 
 ```bash
 curl -fsS "http://127.0.0.1:3000/v1/dashboard/summary" \
-  -H "Authorization: Bearer dev-token"
+  -b cookie-jar.txt
 
 curl -fsS "http://127.0.0.1:3000/v1/operations/<operation_id>/summary" \
-  -H "Authorization: Bearer dev-token"
+  -b cookie-jar.txt
 
 curl -fsS "http://127.0.0.1:3000/v1/players/<player_uid>/summary" \
-  -H "Authorization: Bearer dev-token"
+  -b cookie-jar.txt
 ```
 
 CSV export endpoints:
 
 ```bash
 curl -fsS "http://127.0.0.1:3000/v1/operations/<operation_id>/attendance.csv" \
-  -H "Authorization: Bearer dev-token"
+  -b cookie-jar.txt
 
 curl -fsS "http://127.0.0.1:3000/v1/players.csv?q=Smoke" \
-  -H "Authorization: Bearer dev-token"
+  -b cookie-jar.txt
 ```
 
 Data-quality checks:
 
 ```bash
 curl -fsS "http://127.0.0.1:3000/v1/data-quality" \
-  -H "Authorization: Bearer dev-token"
+  -b cookie-jar.txt
 ```
 
 Backfill/reprocess normalized attendance from existing raw payload rows:
@@ -338,9 +342,12 @@ Backfill/reprocess normalized attendance from existing raw payload rows:
 pnpm db:backfill:attendance
 pnpm db:backfill:attendance -- --dry-run
 pnpm db:backfill:attendance -- --operation-id <operation_id>
+pnpm db:backfill:units -- --map-operations --map-players
 ```
 
 The backfill script is safe to rerun. It does not delete raw payload rows and does not mutate raw ingest tables.
+
+`pnpm db:backfill:units` creates or updates a default unit from `DEFAULT_UNIT_SLUG` / `DEFAULT_UNIT_NAME` or safe defaults. Mapping existing operations and players is opt-in through flags.
 
 ## Authentication And Identity
 
@@ -351,6 +358,19 @@ Steam OpenID is a linked identity only. Steam login does not grant app permissio
 Machine-token bearer auth remains available for Arma ingest, smoke scripts, and bot-facing automation endpoints. Browser/admin workflows should use the session cookie created by Discord login.
 
 Session cookies are `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when `SESSION_SECURE=true`.
+
+Role summary:
+
+| Actor | Browser access | Exports | Sensitive IDs | System tokens |
+|---|---|---:|---:|---:|
+| Anonymous | Login only | No | No | No |
+| Viewer | Own stats, own operations, identity | No | Self only | No |
+| Officer | Assigned-unit roster and operations, read-only | No | No | No |
+| Unit admin | Assigned-unit roster, mappings, attendance rules | Assigned units | No | No |
+| TCW admin | Assigned multi-unit admin surfaces | Assigned units | Yes, within scope | No |
+| Owner | All surfaces | Yes | Yes | Yes |
+
+Sensitive identifiers are visible only to TCW admins and owners except for a user's own linked player identity. Restricted fields include player UID, Steam ID, Discord ID, server key, mission UID, operation UUID where exposed as a raw ID, and raw payload identifiers containing those values.
 
 First admin setup is server-side:
 
@@ -378,9 +398,12 @@ Synthetic auth validation:
 
 ```bash
 pnpm smoke:auth
+pnpm smoke:rbac
 ```
 
 `pnpm smoke:auth` requires a running API with a migrated database and test auth enabled through non-production mode or `ENABLE_TEST_AUTH=true`. It uses fake Discord/Steam identities and does not contact real OAuth providers.
+
+`pnpm smoke:rbac` creates synthetic users, units, attendance rows, and owner machine tokens. It verifies anonymous rejection, self-only viewer pages, officer read-only access, unit admin boundaries, TCW sensitive-ID access, owner-only System token management, and DB-backed machine-token auth.
 
 ## Discord Integration Readiness
 
@@ -392,7 +415,7 @@ Bot-facing endpoints accept the normal `API_TOKEN`. If `BOT_API_TOKEN` is set, t
 - `GET /v1/discord/guilds/:guild_id/role-actions`
 - `POST /v1/discord/guilds/:guild_id/role-action-results`
 
-Admin endpoints use the normal bearer token and cover guild/role snapshots, player links, attendance rules, evaluations, and audit history. The COMMS dashboard tab is an internal operator surface for the same data.
+Admin endpoints use session-cookie RBAC and cover guild/role snapshots, player links, attendance rules, evaluations, and audit history. Owners can manage all guilds. TCW admins and unit admins can manage assigned-unit guilds; unassigned guilds are owner-only until associated with a unit. The COMMS dashboard tab is the browser operator surface for the same data.
 
 Role evaluation is dry-run by default. It scores finished operations unless a rule opts into started operations, supports lookback/server/mission filters, and emits only planned `grant`, `skip`, and preview-only `revoke_preview` actions. Persisted evaluations create `discord_role_action_audits` rows so a future bot can report action results back.
 
@@ -466,6 +489,8 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0003_normalized_attendance.sql`
 - `0004_discord_integration.sql`
 - `0005_auth_identity.sql`
+- `0006_unit_rbac.sql`
+- `0007_rbac_session_machine_tokens.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -485,9 +510,10 @@ pnpm smoke:exports
 pnpm smoke:data-quality
 pnpm smoke:discord
 pnpm smoke:auth
+pnpm smoke:rbac
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. `pnpm smoke:rbac` covers session-cookie RBAC, unit scoping, redaction boundaries, and owner machine-token management. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
 
 Normalized attendance tables:
 
@@ -583,6 +609,7 @@ pnpm db:status
 pnpm db:migrate
 pnpm build
 pnpm smoke:auth
+pnpm smoke:rbac
 ```
 
 Install and start the service:
@@ -601,6 +628,19 @@ journalctl -u arma-attendance-api -f
 ```
 
 Deploy later updates:
+
+```bash
+git checkout web-frontend
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm db:status
+pnpm db:migrate
+pnpm build
+systemctl restart arma-attendance-api
+pnpm smoke:rbac
+```
+
+The helper script wraps the same source-update/build/restart path for the LXC:
 
 ```bash
 bash scripts/deploy-lxc.sh
@@ -651,6 +691,7 @@ pnpm smoke:exports
 pnpm smoke:data-quality
 pnpm smoke:discord
 pnpm smoke:auth
+pnpm smoke:rbac
 ```
 
 Also verify no real env files are staged before opening a pull request.

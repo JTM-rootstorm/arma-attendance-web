@@ -8,6 +8,7 @@ import { queryDb } from "./db/pool.js";
 export const appRoles = ["viewer", "officer", "admin", "tcw_admin", "owner"] as const;
 export type AppRole = (typeof appRoles)[number];
 export type IdentityProvider = "discord" | "steam";
+export type MachineTokenKind = "api" | "bot" | "arma_server";
 
 export type CurrentUser = {
   id: string;
@@ -104,7 +105,21 @@ function getSessionToken(request: FastifyRequest): string | null {
   return parseCookies(request.headers.cookie)[config.sessionCookieName] ?? null;
 }
 
+function getBearerToken(request: FastifyRequest): string | null {
+  const authorization = request.headers.authorization;
+
+  if (!authorization?.startsWith("Bearer ")) {
+    return null;
+  }
+
+  return authorization.slice("Bearer ".length).trim();
+}
+
 export function hashSessionToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+export function hashMachineToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -247,27 +262,80 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
   };
 }
 
-export async function requireBearerToken(request: FastifyRequest, reply: FastifyReply) {
-  const expected = `Bearer ${config.apiToken}`;
+async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<boolean> {
+  const token = getBearerToken(request);
 
-  if (request.headers.authorization !== expected) {
+  if (!token || !config.databaseUrl) {
+    return false;
+  }
+
+  const tokenHash = hashMachineToken(token);
+  let row: { id: string } | undefined;
+
+  try {
+    const result = await queryDb<{ id: string }>(
+      `
+      SELECT id
+      FROM machine_tokens
+      WHERE token_hash = $1
+        AND token_kind = ANY($2::text[])
+        AND is_active = true
+        AND revoked_at IS NULL
+      LIMIT 1
+      `,
+      [tokenHash, kinds]
+    );
+    row = result.rows[0];
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "42P01") {
+      return false;
+    }
+
+    throw error;
+  }
+
+  if (!row) {
+    return false;
+  }
+
+  await queryDb("UPDATE machine_tokens SET last_used_at = now() WHERE id = $1", [row.id]);
+  return true;
+}
+
+async function acceptsMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<boolean> {
+  const token = getBearerToken(request);
+
+  if (!token) {
+    return false;
+  }
+
+  if (kinds.includes("api") && token === config.apiToken) {
+    return true;
+  }
+
+  if (kinds.includes("bot") && config.botApiToken && token === config.botApiToken) {
+    return true;
+  }
+
+  return findActiveDbMachineToken(request, kinds);
+}
+
+export async function requireBearerToken(request: FastifyRequest, reply: FastifyReply) {
+  if (!(await acceptsMachineToken(request, ["api", "arma_server"]))) {
     return unauthorized(reply);
   }
 }
 
-export function isMachineTokenRequest(request: FastifyRequest): boolean {
-  return request.headers.authorization === `Bearer ${config.apiToken}`;
+export async function isMachineTokenRequest(request: FastifyRequest): Promise<boolean> {
+  return acceptsMachineToken(request, ["api", "arma_server"]);
 }
 
-export function isAdminOrBotTokenRequest(request: FastifyRequest): boolean {
-  const acceptedTokens = [config.apiToken, config.botApiToken].filter((token): token is string => Boolean(token));
-  return acceptedTokens.some((token) => request.headers.authorization === `Bearer ${token}`);
+export async function isAdminOrBotTokenRequest(request: FastifyRequest): Promise<boolean> {
+  return acceptsMachineToken(request, ["api", "bot", "arma_server"]);
 }
 
 export async function requireAdminOrBotToken(request: FastifyRequest, reply: FastifyReply) {
-  const acceptedTokens = [config.apiToken, config.botApiToken].filter((token): token is string => Boolean(token));
-
-  if (!acceptedTokens.some((token) => request.headers.authorization === `Bearer ${token}`)) {
+  if (!(await isAdminOrBotTokenRequest(request))) {
     return unauthorized(reply);
   }
 }
@@ -305,7 +373,7 @@ export function requireAnyAuth({
   roles?: AppRole[];
 }) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
-    if (allowMachineToken && request.headers.authorization === `Bearer ${config.apiToken}`) {
+    if (allowMachineToken && (await isMachineTokenRequest(request))) {
       return;
     }
 

@@ -353,8 +353,23 @@ export type AuthUser = {
     unit_id: string;
     unit_key: string;
     name: string;
-    role: "member" | "officer" | "admin";
+    role: "member" | "officer" | "admin" | "tcw_admin";
   }>;
+  units?: Array<{
+    unit_id: string;
+    slug: string;
+    name: string;
+    roles: Array<"member" | "officer" | "admin" | "tcw_admin">;
+  }>;
+  self_player_uids?: string[];
+  is_owner?: boolean;
+  is_tcw_admin?: boolean;
+  capabilities?: {
+    can_view_global_admin: boolean;
+    can_view_sensitive_identifiers: boolean;
+    can_export: boolean;
+    can_manage_api_tokens: boolean;
+  };
   identities: AuthIdentity[];
 };
 
@@ -423,4 +438,31 @@ export type MyOperationMatesResponse = {
   message?: string;
 };
 
-export type ViewName = "me" | "dashboard" | "operations" | "players" | "discord" | "admin";
+export type MachineTokenRecord = {
+  id: string;
+  name: string;
+  token_kind: "api" | "bot" | "arma_server";
+  token_prefix: string;
+  is_active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+export type MachineTokensResponse = {
+  ok: true;
+  tokens: MachineTokenRecord[];
+  env_tokens: {
+    api_token_present: boolean;
+    bot_api_token_present: boolean;
+    api_token_source: string;
+  };
+};
+
+export type CreateMachineTokenResponse = {
+  ok: true;
+  token: string;
+  token_record: MachineTokenRecord;
+};
+
+export type ViewName = "me" | "dashboard" | "operations" | "players" | "discord" | "admin" | "system";

@@ -3,7 +3,7 @@ import type { FastifyReply } from "fastify";
 import { hasRole, type CurrentUser } from "../auth.js";
 import { queryDb } from "../db/pool.js";
 
-export const unitRoles = ["member", "officer", "admin"] as const;
+export const unitRoles = ["member", "officer", "admin", "tcw_admin"] as const;
 export type UnitRole = (typeof unitRoles)[number];
 
 export type UserUnitRole = {
@@ -20,7 +20,8 @@ type UnitRow = {
 const unitRoleRank: Record<UnitRole, number> = {
   member: 0,
   officer: 1,
-  admin: 2
+  admin: 2,
+  tcw_admin: 2
 };
 
 function forbidden(reply: FastifyReply) {
@@ -46,16 +47,27 @@ export async function getAllUnitIds(): Promise<string[]> {
 export async function getUserUnitRoles(userId: string): Promise<UserUnitRole[]> {
   const result = await queryDb<UserUnitRole>(
     `
+    WITH roles AS (
+      SELECT unit_id, user_id, role
+      FROM unit_memberships
+      WHERE role IN ('member', 'officer', 'admin')
+
+      UNION
+
+      SELECT unit_id, user_id, role
+      FROM unit_user_roles
+      WHERE role IN ('officer', 'admin', 'tcw_admin')
+    )
     SELECT
-      um.unit_id,
+      roles.unit_id,
       u.unit_key,
       u.name,
-      um.role
-    FROM unit_memberships um
-    JOIN units u ON u.id = um.unit_id
-    WHERE um.user_id = $1
+      roles.role
+    FROM roles
+    JOIN units u ON u.id = roles.unit_id
+    WHERE roles.user_id = $1
       AND u.is_active = true
-    ORDER BY u.unit_key, um.role
+    ORDER BY u.unit_key, roles.role
     `,
     [userId]
   );

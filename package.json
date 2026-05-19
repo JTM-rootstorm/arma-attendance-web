@@ -18,6 +18,7 @@
     "db:migrate": "bash scripts/db-migrate.sh",
     "db:status": "bash scripts/db-status.sh",
     "db:backfill:attendance": "pnpm --filter @arma-attendance/api exec tsx src/scripts/backfillAttendance.ts",
+    "db:backfill:units": "pnpm --filter @arma-attendance/api exec tsx src/scripts/backfillUnits.ts",
     "admin:grant": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/admin-grant.ts",
     "admin:list": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/admin-list.ts",
     "smoke:db": "bash scripts/db-smoke.sh",

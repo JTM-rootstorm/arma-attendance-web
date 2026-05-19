@@ -1,10 +1,17 @@
 import type { ReactNode } from "react";
 
-import { canOpenComms, canOpenDashboard, canOpenIdentityAdmin, canOpenOperations, canOpenRoster, isOwner } from "../authz";
+import {
+  canManageMachineTokens,
+  canOpenComms,
+  canOpenDashboard,
+  canOpenIdentityAdmin,
+  canOpenOperations,
+  canOpenRoster,
+  isOwner
+} from "../authz";
 import { statusLabel } from "../format";
 import type { ApiResult, AuthUser, DbHealthResponse, HealthResponse, ViewName } from "../types";
 import { StatusChip } from "./StatusChip";
-import { TokenGate } from "./TokenGate";
 
 const navigation: Array<{ view: ViewName; label: string; code: string; allowed: (user: AuthUser | null) => boolean }> = [
   { view: "me", label: "My Stats", code: "ME", allowed: (user) => Boolean(user) },
@@ -12,21 +19,16 @@ const navigation: Array<{ view: ViewName; label: string; code: string; allowed: 
   { view: "operations", label: "Operations", code: "OPS", allowed: canOpenOperations },
   { view: "players", label: "Roster", code: "RST", allowed: canOpenRoster },
   { view: "discord", label: "Comms", code: "COM", allowed: canOpenComms },
-  { view: "admin", label: "Identity", code: "ID", allowed: canOpenIdentityAdmin }
+  { view: "admin", label: "Identity", code: "ID", allowed: canOpenIdentityAdmin },
+  { view: "system", label: "System", code: "SYS", allowed: canManageMachineTokens }
 ];
 
 export function CommandShell({
   view,
   health,
   dbHealth,
-  hasToken,
-  tokenDraft,
   sessionUser,
   onViewChange,
-  onTokenDraftChange,
-  onTokenSave,
-  onTokenForget,
-  onLoginDiscord,
   onLogout,
   children,
   inspector
@@ -34,14 +36,8 @@ export function CommandShell({
   view: ViewName;
   health: ApiResult<HealthResponse>;
   dbHealth: ApiResult<DbHealthResponse>;
-  hasToken: boolean;
-  tokenDraft: string;
   sessionUser: AuthUser | null;
   onViewChange: (view: ViewName) => void;
-  onTokenDraftChange: (value: string) => void;
-  onTokenSave: React.FormEventHandler<HTMLFormElement>;
-  onTokenForget: () => void;
-  onLoginDiscord: () => void;
   onLogout: () => void;
   children: ReactNode;
   inspector: ReactNode;
@@ -65,6 +61,11 @@ export function CommandShell({
             />
           ) : null}
           <StatusChip label={sessionUser ? "session linked" : "session offline"} tone={sessionUser ? "info" : "muted"} />
+          {sessionUser ? (
+            <button type="button" className="session-logout" onClick={onLogout}>
+              Logout
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -82,22 +83,6 @@ export function CommandShell({
           </button>
         ))}
       </aside>
-
-      {isOwner(sessionUser) ? (
-        <section className="token-station" aria-label="Machine token diagnostics">
-          <TokenGate
-            tokenDraft={tokenDraft}
-            hasToken={hasToken}
-            sessionUser={sessionUser}
-            onDraftChange={onTokenDraftChange}
-            onSave={onTokenSave}
-            onForget={onTokenForget}
-            onLoginDiscord={onLoginDiscord}
-            onLogout={onLogout}
-            onOpenIdentity={() => onViewChange("admin")}
-          />
-        </section>
-      ) : null}
 
       <section className="viewport" data-view={view}>
         <div key={view} className="view-transition-layer">
