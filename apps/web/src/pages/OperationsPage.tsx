@@ -181,7 +181,7 @@ export function OperationsPage({
                 </div>
                 <div className="panel-actions">
                   {detail && canExport ? (
-                    <button type="button" onClick={() => onExportAttendance(detail.operation.id)}>
+                    <button type="button" onClick={() => onExportAttendance(selectedOperationId)}>
                       Attendance CSV
                     </button>
                   ) : null}
@@ -191,7 +191,7 @@ export function OperationsPage({
                       className="danger"
                       onClick={() => {
                         if (window.confirm("Delete this operation and its attendance data?")) {
-                          void onDeleteOperation(detail.operation.id);
+                          void onDeleteOperation(selectedOperationId);
                         }
                       }}
                     >

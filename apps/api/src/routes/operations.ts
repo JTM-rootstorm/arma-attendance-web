@@ -592,6 +592,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
     const { operation_id: operationId } = parsedParams.data;
 
+    if (!canDeleteOperation(auth.user)) {
+      return sendOperationRouteError(
+        reply,
+        new OperationRouteError(403, "forbidden", "The authenticated user does not have permission for this action.")
+      );
+    }
+
     try {
       const result = await withDbTransaction(async (tx) => {
         const operationResult = await tx.query<OperationDeleteRow>(
@@ -606,11 +613,11 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         const operation = operationResult.rows[0];
 
         if (!operation) {
-          throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
-        }
-
-        if (!canDeleteOperation(auth.user)) {
-          throw new OperationRouteError(403, "forbidden", "The authenticated user does not have permission for this action.");
+          return {
+            operation_id: operationId,
+            operation_deleted: false,
+            ingest_requests_deleted: 0
+          };
         }
 
         const ingestResult = await tx.query("DELETE FROM ingest_requests WHERE operation_id = $1", [operation.id]);
@@ -635,6 +642,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
         return {
           operation_id: operation.id,
+          operation_deleted: true,
           ingest_requests_deleted: ingestResult.rowCount ?? 0
         };
       });

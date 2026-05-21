@@ -226,7 +226,8 @@ owner_delete_response="$(curl -fsS -X POST "$BASE_URL/v1/operations/start" \
   -H "Content-Type: application/json" \
   -d "{\"request_id\":\"rbac-owner-delete-$STAMP\",\"server_key\":\"$server_key-owner-delete\",\"mission\":{\"mission_name\":\"RBAC Owner Delete\",\"world_name\":\"Altis\"}}")"
 owner_delete_id="$(printf "%s" "$owner_delete_response" | json_value ".operation_id")"
-curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" | assert_json 'data.ok === true && data.ingest_requests_deleted >= 1'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" | assert_json 'data.ok === true && data.operation_deleted === true && data.ingest_requests_deleted >= 1'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" | assert_json 'data.ok === true && data.operation_deleted === false && data.ingest_requests_deleted === 0'
 assert_status "404" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$owner_delete_id")" "owner deleted operation detail"
 
 echo "[smoke:rbac] OK"
