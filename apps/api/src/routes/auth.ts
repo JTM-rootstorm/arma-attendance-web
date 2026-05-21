@@ -45,6 +45,10 @@ const testSteamLinkBodySchema = z.object({
   provider_user_id: z.string().min(1).max(64)
 });
 
+const selfPlayerBodySchema = z.object({
+  display_name: z.string().trim().min(1).max(200)
+});
+
 type OAuthStateRow = {
   state: string;
   provider: "discord" | "steam";
@@ -236,10 +240,14 @@ async function getSelfPlayerUids(user: CurrentUser): Promise<string[]> {
 }
 
 async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | null> {
+  return findLinkedPlayerWithClient({ query: queryDb }, user);
+}
+
+async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUser): Promise<LinkedPlayerRow | null> {
   const steamId = user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null;
   const discordId = user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null;
 
-  const result = await queryDb<LinkedPlayerRow>(
+  const result = await client.query<LinkedPlayerRow>(
     `
     SELECT
       p.player_uid,
@@ -260,6 +268,47 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
   );
 
   return result.rows[0] ?? null;
+}
+
+async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displayName: string): Promise<LinkedPlayerRow | null> {
+  await ensureAuthenticatedUserRosterEntry(tx, user.id);
+  const player = await findLinkedPlayerWithClient(tx, user);
+
+  if (!player) {
+    return null;
+  }
+
+  await tx.query(
+    `
+    UPDATE players
+    SET last_name = $2,
+        updated_at = now()
+    WHERE player_uid = $1
+    `,
+    [player.player_uid, displayName]
+  );
+  await tx.query(
+    `
+    UPDATE unit_players
+    SET roster_name = $2,
+        updated_at = now()
+    WHERE player_uid = $1
+    `,
+    [player.player_uid, displayName]
+  );
+  await tx.query(
+    `
+    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
+    VALUES ($1, 'self', 'update_player_name', $1, $2::jsonb)
+    `,
+    [user.id, JSON.stringify({ player_uid: player.player_uid, display_name: displayName })]
+  );
+
+  return {
+    ...player,
+    last_name: displayName,
+    roster_name: displayName
+  };
 }
 
 async function insertOAuthState(provider: "discord" | "steam", redirectAfter: string | null, codeVerifier: string | null) {
@@ -755,6 +804,50 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch self player");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.patch("/v1/me/player", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = selfPlayerBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const player = await withDbTransaction((tx) => updateSelfPlayerName(tx, user, parsedBody.data.display_name));
+
+      if (!player) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "player_not_found",
+            message: "Player was not found."
+          }
+        });
+      }
+
+      return {
+        ok: true,
+        linked_player: {
+          display_name: player.roster_name ?? player.last_name,
+          rank: player.rank,
+          first_seen_at: player.first_seen_at,
+          last_seen_at: player.last_seen_at
+        }
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update self player");
       return reply.code(503).send({
         ok: false,
         error: { code: "database_unavailable", message: "Database is not available." }

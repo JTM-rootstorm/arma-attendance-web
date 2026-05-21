@@ -495,6 +495,15 @@ export function App() {
     await loadMachineTokens();
   }
 
+  async function updatePlayerName(displayName: string) {
+    await apiFetch<MyPlayerResponse>("/v1/me/player", {
+      method: "PATCH",
+      body: { display_name: displayName }
+    });
+    await loadMyStats();
+    await loadPlayers();
+  }
+
   const content =
     view === "me" && sessionUser ? (
       <MyStatsPage
@@ -505,6 +514,7 @@ export function App() {
         selectedOperationId={selectedOperationId}
         onSelectOperation={setSelectedOperationId}
         onRefresh={() => void loadMyStats()}
+        onUpdatePlayerName={updatePlayerName}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}
@@ -580,6 +590,7 @@ export function App() {
         selectedOperationId={selectedOperationId}
         onSelectOperation={setSelectedOperationId}
         onRefresh={() => void loadMyStats()}
+        onUpdatePlayerName={updatePlayerName}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}

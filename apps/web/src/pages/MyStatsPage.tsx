@@ -1,3 +1,6 @@
+import type { FormEvent } from "react";
+import { useEffect, useState } from "react";
+
 import { formatDate } from "../format";
 import type { ApiResult, AuthUser, MyOperationMatesResponse, MyOperationsResponse, MyPlayerResponse } from "../types";
 
@@ -9,6 +12,7 @@ export function MyStatsPage({
   selectedOperationId,
   onSelectOperation,
   onRefresh,
+  onUpdatePlayerName,
   onLinkSteam,
   onUnlinkSteam
 }: {
@@ -19,6 +23,7 @@ export function MyStatsPage({
   selectedOperationId: string;
   onSelectOperation: (operationId: string) => void;
   onRefresh: () => void;
+  onUpdatePlayerName: (displayName: string) => Promise<void>;
   onLinkSteam: () => void;
   onUnlinkSteam: () => void;
 }) {
@@ -27,6 +32,37 @@ export function MyStatsPage({
   const player = myPlayer.status === "ready" ? myPlayer.data.linked_player : null;
   const summary = myPlayer.status === "ready" ? myPlayer.data.summary : null;
   const operations = myOperations.status === "ready" ? myOperations.data.operations : [];
+  const [playerName, setPlayerName] = useState(player?.display_name ?? "");
+  const [playerNameState, setPlayerNameState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [playerNameError, setPlayerNameError] = useState("");
+
+  useEffect(() => {
+    setPlayerName(player?.display_name ?? "");
+  }, [player?.display_name]);
+
+  async function submitPlayerName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const nextName = playerName.trim();
+
+    if (!nextName) {
+      setPlayerNameError("Player name is required.");
+      setPlayerNameState("error");
+      return;
+    }
+
+    setPlayerNameState("saving");
+    setPlayerNameError("");
+
+    try {
+      await onUpdatePlayerName(nextName);
+      setPlayerName(nextName);
+      setPlayerNameState("saved");
+    } catch (error) {
+      setPlayerNameError(error instanceof Error ? error.message : "Player name update failed.");
+      setPlayerNameState("error");
+    }
+  }
 
   return (
     <section className="command-panel">
@@ -79,6 +115,27 @@ export function MyStatsPage({
           ) : null}
         </div>
       </div>
+
+      <form className="inline-form player-name-form" onSubmit={(event) => void submitPlayerName(event)}>
+        <label>
+          <span>Player name</span>
+          <input
+            value={playerName}
+            onChange={(event) => {
+              setPlayerName(event.target.value);
+              setPlayerNameState("idle");
+            }}
+            maxLength={200}
+            placeholder="Roster display name"
+            aria-label="Player name"
+          />
+        </label>
+        <button type="submit" disabled={playerNameState === "saving"}>
+          {playerNameState === "saving" ? "Saving" : "Save"}
+        </button>
+        {playerNameState === "error" ? <p className="message error">{playerNameError}</p> : null}
+        {playerNameState === "saved" ? <p className="message">Roster name updated.</p> : null}
+      </form>
 
       {myPlayer.status === "ready" && !myPlayer.data.linked_player ? (
         <p className="empty-copy">{myPlayer.data.message}</p>
