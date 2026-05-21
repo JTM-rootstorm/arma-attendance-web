@@ -454,6 +454,17 @@ function getAuthPlayerUid(identity: AuthIdentityRow): string {
   return `discord:${identity.provider_user_id}`;
 }
 
+function getAuthPlayerDisplayName(identities: AuthIdentityRow[], user: AuthUserProfileRow, chosenIdentity: AuthIdentityRow): string {
+  const discordIdentity = identities.find((identity) => identity.provider === "discord");
+
+  return (
+    discordIdentity?.display_name ??
+    user.display_name ??
+    chosenIdentity.display_name ??
+    `${chosenIdentity.provider} ${chosenIdentity.provider_user_id}`
+  );
+}
+
 async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: string): Promise<string | null> {
   const userResult = await tx.query<AuthUserProfileRow>(
     "SELECT display_name FROM app_users WHERE id = $1 AND disabled_at IS NULL",
@@ -481,8 +492,7 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
   }
 
   const playerUid = getAuthPlayerUid(chosenIdentity);
-  const displayName =
-    chosenIdentity.display_name ?? user.display_name ?? `${chosenIdentity.provider} ${chosenIdentity.provider_user_id}`;
+  const displayName = getAuthPlayerDisplayName(identities, user, chosenIdentity);
   const unitResult = await tx.query<{ id: string }>(
     `
     INSERT INTO units (unit_key, name, description)
@@ -513,7 +523,8 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
         source: "auth",
         user_id: userId,
         provider: chosenIdentity.provider,
-        provider_user_id: chosenIdentity.provider_user_id
+        provider_user_id: chosenIdentity.provider_user_id,
+        display_name: displayName
       })
     ]
   );

@@ -492,6 +492,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0006_unit_rbac.sql`
 - `0007_rbac_session_machine_tokens.sql`
 - `0008_authenticated_roster_defaults.sql`
+- `0009_discord_default_player_names.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 

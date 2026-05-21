@@ -9,9 +9,10 @@ TCW_COOKIE_JAR="$(mktemp)"
 ADMIN_COOKIE_JAR="$(mktemp)"
 OFFICER_COOKIE_JAR="$(mktemp)"
 USER_COOKIE_JAR="$(mktemp)"
+DEFAULT_COOKIE_JAR="$(mktemp)"
 
 cleanup() {
-  rm -f "$OWNER_COOKIE_JAR" "$TCW_COOKIE_JAR" "$ADMIN_COOKIE_JAR" "$OFFICER_COOKIE_JAR" "$USER_COOKIE_JAR"
+  rm -f "$OWNER_COOKIE_JAR" "$TCW_COOKIE_JAR" "$ADMIN_COOKIE_JAR" "$OFFICER_COOKIE_JAR" "$USER_COOKIE_JAR" "$DEFAULT_COOKIE_JAR"
 }
 
 trap cleanup EXIT
@@ -77,7 +78,9 @@ tcw_discord="rbac-tcw-$STAMP"
 admin_discord="rbac-admin-$STAMP"
 officer_discord="rbac-officer-$STAMP"
 user_discord="rbac-user-$STAMP"
+default_discord="rbac-default-$STAMP"
 steam_id="7656119$STAMP"
+default_steam_id="7656118$STAMP"
 server_key="rbac-smoke-$STAMP"
 
 echo "[smoke:rbac] Creating test sessions..."
@@ -86,6 +89,7 @@ tcw_id="$(login_user "$TCW_COOKIE_JAR" "$tcw_discord" "RBAC Smoke TCW Admin")"
 admin_id="$(login_user "$ADMIN_COOKIE_JAR" "$admin_discord" "RBAC Smoke Unit Admin")"
 officer_id="$(login_user "$OFFICER_COOKIE_JAR" "$officer_discord" "RBAC Smoke Officer")"
 user_id="$(login_user "$USER_COOKIE_JAR" "$user_discord" "RBAC Smoke Player")"
+login_user "$DEFAULT_COOKIE_JAR" "$default_discord" "RBAC Steam Default" >/dev/null
 
 echo "[smoke:rbac] Seeding roles, memberships, player, and operation..."
 pnpm admin:grant -- --provider discord --provider-user-id "$owner_discord" --role owner >/dev/null
@@ -162,6 +166,9 @@ SQL
 curl -fsS -b "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"$steam_id\"}" >/dev/null
+curl -fsS -b "$DEFAULT_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+  -H "Content-Type: application/json" \
+  -d "{\"provider_user_id\":\"$default_steam_id\"}" >/dev/null
 
 echo "[smoke:rbac] Checking unauthenticated session rejection..."
 assert_status "401" "$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/v1/me")" "/v1/me without cookie"
@@ -169,6 +176,7 @@ assert_status "401" "$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/v1/me"
 echo "[smoke:rbac] Checking normal user self-only access..."
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me" | assert_json 'data.ok === true'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/player" | assert_json 'data.ok === true && data.linked_player !== null'
+curl -fsS -b "$DEFAULT_COOKIE_JAR" "$BASE_URL/v1/me/player" | assert_json 'data.ok === true && data.linked_player.display_name === "RBAC Steam Default"'
 curl -fsS -b "$USER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/me/player" \
   -H "Content-Type: application/json" \
   -d '{"display_name":"RBAC Callsign"}' | assert_json 'data.ok === true && data.linked_player.display_name === "RBAC Callsign"'
