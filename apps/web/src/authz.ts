@@ -50,3 +50,7 @@ export function canExport(user: AuthUser | null): boolean {
 export function canManageMachineTokens(user: AuthUser | null): boolean {
   return Boolean(user?.capabilities?.can_manage_api_tokens) || isOwner(user);
 }
+
+export function canResetPlayerNames(user: AuthUser | null): boolean {
+  return isTcwAdmin(user) || hasGlobalRole(user, "admin") || hasUnitRole(user, "admin");
+}

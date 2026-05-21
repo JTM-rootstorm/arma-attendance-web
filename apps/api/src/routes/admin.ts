@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { getCurrentUser, hasRole, requireRole, type AppRole, type CurrentUser } from "../auth.js";
+import { hasUnitRole } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
@@ -23,6 +24,10 @@ const roleParamsSchema = userParamsSchema.extend({
   role: z.enum(roles)
 });
 
+const playerParamsSchema = z.object({
+  player_uid: z.string().min(1).max(200)
+});
+
 const roleBodySchema = z
   .object({
     reason: z.string().max(1000).optional()
@@ -39,6 +44,15 @@ type AdminUserRow = {
   last_login_at: Date | null;
   roles: AppRole[] | null;
   identities: Array<{ provider: string; provider_user_id: string; display_name: string | null }> | null;
+};
+
+type PlayerNameResetRow = {
+  player_uid: string;
+  reset_name: string | null;
+};
+
+type PlayerUnitRow = {
+  unit_id: string;
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -127,6 +141,85 @@ async function insertAudit(
     `,
     [actor.id, actor.display_name ?? actor.id, action, targetUserId, JSON.stringify(details)]
   );
+}
+
+async function canResetPlayerName(actor: CurrentUser, playerUid: string): Promise<boolean> {
+  if (hasRole(actor, ["admin"])) {
+    return true;
+  }
+
+  const units = await queryDb<PlayerUnitRow>("SELECT unit_id FROM unit_players WHERE player_uid = $1", [playerUid]);
+
+  for (const unit of units.rows) {
+    if (await hasUnitRole(actor, unit.unit_id, "admin")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function resetPlayerName(tx: DbTransaction, actor: CurrentUser, playerUid: string): Promise<PlayerNameResetRow> {
+  const playerResult = await tx.query<PlayerNameResetRow>(
+    `
+    SELECT
+      p.player_uid,
+      COALESCE(
+        op_names.operation_name,
+        p.raw_last_player->>'display_name',
+        p.raw_last_player->>'player_name',
+        p.raw_last_player->>'name',
+        pdl.discord_display_name,
+        pdl.discord_username,
+        p.player_uid
+      ) AS reset_name
+    FROM players p
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(op.name_at_end, op.name_at_start) AS operation_name
+      FROM operation_players op
+      JOIN operations o ON o.id = op.operation_id
+      WHERE op.player_uid = p.player_uid
+        AND COALESCE(op.name_at_end, op.name_at_start) IS NOT NULL
+      ORDER BY COALESCE(o.ended_at, o.started_at) DESC, op.updated_at DESC
+      LIMIT 1
+    ) op_names ON true
+    LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
+    WHERE p.player_uid = $1
+    ORDER BY pdl.verified_at DESC NULLS LAST, pdl.updated_at DESC NULLS LAST
+    LIMIT 1
+    `,
+    [playerUid]
+  );
+  const player = playerResult.rows[0];
+
+  if (!player) {
+    throw new Error("player_not_found");
+  }
+
+  await tx.query(
+    `
+    UPDATE players
+    SET last_name = $2,
+        updated_at = now()
+    WHERE player_uid = $1
+    `,
+    [player.player_uid, player.reset_name]
+  );
+  await tx.query(
+    `
+    UPDATE unit_players
+    SET roster_name = $2,
+        updated_at = now()
+    WHERE player_uid = $1
+    `,
+    [player.player_uid, player.reset_name]
+  );
+  await insertAudit(tx, actor, "reset_player_name", actor.id, {
+    player_uid: player.player_uid,
+    reset_name: player.reset_name
+  });
+
+  return player;
 }
 
 export async function registerAdminRoutes(app: FastifyInstance) {
@@ -423,6 +516,44 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
 
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to enable user");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/admin/players/:player_uid/reset-name", async (request, reply) => {
+    const parsedParams = playerParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const actor = await getCurrentUser(request);
+
+    if (!actor || !(await canResetPlayerName(actor, parsedParams.data.player_uid))) {
+      return sendForbidden(reply, "Only admins and owners may reset player names.");
+    }
+
+    try {
+      const player = await withDbTransaction((tx) => resetPlayerName(tx, actor, parsedParams.data.player_uid));
+      return {
+        ok: true,
+        player: {
+          player_uid: player.player_uid,
+          last_name: player.reset_name
+        }
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === "player_not_found") {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "player_not_found",
+            message: "Player was not found."
+          }
+        });
+      }
+
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to reset player name");
       return sendDatabaseUnavailable(reply);
     }
   });

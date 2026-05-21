@@ -9,6 +9,7 @@ import {
   canOpenOperations,
   canOpenRoster,
   canManageMachineTokens,
+  canResetPlayerNames,
   canSeeSensitiveIds,
   isOwner
 } from "./authz";
@@ -102,6 +103,7 @@ export function App() {
   const canViewRoster = canOpenRoster(sessionUser);
   const canViewComms = canOpenComms(sessionUser);
   const canExportViews = canExport(sessionUser);
+  const canResetRosterNames = canResetPlayerNames(sessionUser);
 
   const selectedOperationDetail = useMemo(
     () => (operationDetail.status === "ready" ? operationDetail.data : null),
@@ -504,6 +506,12 @@ export function App() {
     await loadPlayers();
   }
 
+  async function resetPlayerName(playerUid: string) {
+    await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}/reset-name`, { method: "POST" });
+    await loadPlayers();
+    await loadPlayerDetail(playerUid);
+  }
+
   const content =
     view === "me" && sessionUser ? (
       <MyStatsPage
@@ -560,6 +568,8 @@ export function App() {
         onSearch={() => void loadPlayers()}
         onSelectPlayer={setSelectedPlayerUid}
         canExport={canExportViews}
+        canResetPlayerNames={canResetRosterNames}
+        onResetPlayerName={resetPlayerName}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
     ) : view === "discord" && canViewComms ? (

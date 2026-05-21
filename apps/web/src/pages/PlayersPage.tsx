@@ -27,6 +27,8 @@ export function PlayersPage({
   onSearch,
   onSelectPlayer,
   canExport,
+  canResetPlayerNames,
+  onResetPlayerName,
   onExportPlayers
 }: {
   players: ApiResult<PlayersResponse>;
@@ -38,6 +40,8 @@ export function PlayersPage({
   onSearch: () => void;
   onSelectPlayer: (playerUid: string) => void;
   canExport: boolean;
+  canResetPlayerNames: boolean;
+  onResetPlayerName: (playerUid: string) => Promise<void>;
   onExportPlayers: () => void;
 }) {
   const detail = playerDetail.status === "ready" ? playerDetail.data : null;
@@ -97,9 +101,16 @@ export function PlayersPage({
                   <p className="panel-eyebrow">Attendance signal</p>
                   <h3>Player Detail</h3>
                 </div>
-                <button type="button" className="secondary" onClick={() => onSelectPlayer("")}>
-                  Return to roster
-                </button>
+                <div className="inline-actions">
+                  {canResetPlayerNames ? (
+                    <button type="button" className="secondary" onClick={() => void onResetPlayerName(selectedPlayerUid)}>
+                      Reset name
+                    </button>
+                  ) : null}
+                  <button type="button" className="secondary" onClick={() => onSelectPlayer("")}>
+                    Return to roster
+                  </button>
+                </div>
               </div>
 
               <DataMessage result={playerDetail} />
