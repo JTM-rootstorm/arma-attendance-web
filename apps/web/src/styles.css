@@ -564,6 +564,15 @@ h3 {
   background: rgba(5, 15, 29, 0.78);
 }
 
+.stat-grid.compact > div,
+.identity-strip > div:not(.inline-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.65rem;
+  row-gap: 0.25rem;
+}
+
 .stat-grid span,
 .identity-strip span,
 .stack-row span {
