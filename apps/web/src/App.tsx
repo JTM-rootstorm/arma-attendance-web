@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch, fetchCsv } from "./api";
 import {
+  canDeleteOperations,
   canExport,
   canOpenComms,
   canOpenDashboard,
@@ -104,6 +105,7 @@ export function App() {
   const canViewComms = canOpenComms(sessionUser);
   const canExportViews = canExport(sessionUser);
   const canResetRosterNames = canResetPlayerNames(sessionUser);
+  const canDeleteOperationRows = canDeleteOperations(sessionUser);
 
   const selectedOperationDetail = useMemo(
     () => (operationDetail.status === "ready" ? operationDetail.data : null),
@@ -512,6 +514,15 @@ export function App() {
     await loadPlayerDetail(playerUid);
   }
 
+  async function deleteOperation(operationId: string) {
+    await apiFetch(`/v1/operations/${encodeURIComponent(operationId)}`, { method: "DELETE" });
+    setSelectedOperationId("");
+    setOperationDetail(emptyResult);
+    setOperationSummary(emptyResult);
+    setOperationAttendance(emptyResult);
+    await loadOperations();
+  }
+
   async function refreshRoster() {
     await loadPlayers();
 
@@ -563,6 +574,8 @@ export function App() {
         onSelectOperation={setSelectedOperationId}
         onRefresh={() => void loadOperations()}
         canExport={canExportViews}
+        canDeleteOperations={canDeleteOperationRows}
+        onDeleteOperation={deleteOperation}
         onExportAttendance={(operationId) => void exportCsv(`/v1/operations/${operationId}/attendance.csv`, `operation-${operationId}-attendance.csv`)}
       />
     ) : view === "players" && canViewRoster ? (

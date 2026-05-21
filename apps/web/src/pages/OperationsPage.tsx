@@ -114,6 +114,8 @@ export function OperationsPage({
   onSelectOperation,
   onRefresh,
   canExport,
+  canDeleteOperations,
+  onDeleteOperation,
   onExportAttendance
 }: {
   operations: ApiResult<OperationsResponse>;
@@ -126,6 +128,8 @@ export function OperationsPage({
   onSelectOperation: (operationId: string) => void;
   onRefresh: () => void;
   canExport: boolean;
+  canDeleteOperations: boolean;
+  onDeleteOperation: (operationId: string) => Promise<void>;
   onExportAttendance: (operationId: string) => void;
 }) {
   const detail = operationDetail.status === "ready" ? operationDetail.data : null;
@@ -179,6 +183,19 @@ export function OperationsPage({
                   {detail && canExport ? (
                     <button type="button" onClick={() => onExportAttendance(detail.operation.id)}>
                       Attendance CSV
+                    </button>
+                  ) : null}
+                  {detail && canDeleteOperations ? (
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => {
+                        if (window.confirm("Delete this operation and its attendance data?")) {
+                          void onDeleteOperation(detail.operation.id);
+                        }
+                      }}
+                    >
+                      Delete
                     </button>
                   ) : null}
                   <button type="button" className="secondary" onClick={() => onSelectOperation("")}>

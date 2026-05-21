@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { requireBearerToken } from "../auth.js";
+import { hasRole, requireBearerToken, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
-import { getDefaultUnitId, requireUnitRead } from "../auth/units.js";
+import { getDefaultUnitId, hasUnitRole, requireUnitRead } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
@@ -98,6 +98,14 @@ type OperationPayloadRow = {
 type OperationUnitRow = {
   id: string;
   unit_id: string | null;
+};
+
+type OperationDeleteRow = {
+  id: string;
+  unit_id: string | null;
+  server_key: string;
+  mission_uid: string | null;
+  mission_name: string | null;
 };
 
 type OperationAttendanceRow = {
@@ -229,6 +237,18 @@ async function insertIngestRequest(
     `,
     [requestId, operationId, endpoint, JSON.stringify(payload), JSON.stringify(response)]
   );
+}
+
+async function canDeleteOperation(user: CurrentUser, unitId: string | null): Promise<boolean> {
+  if (hasRole(user, ["admin"])) {
+    return true;
+  }
+
+  if (!unitId) {
+    return false;
+  }
+
+  return hasUnitRole(user, unitId, "admin");
 }
 
 function getMissionField(
@@ -561,6 +581,82 @@ export async function registerOperationRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation payloads");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.delete("/v1/operations/:operation_id", async (request, reply) => {
+    const auth = await getAuthContext(request, reply);
+
+    if (!auth || !auth.user) {
+      return;
+    }
+
+    const parsedParams = operationParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const { operation_id: operationId } = parsedParams.data;
+
+    try {
+      const result = await withDbTransaction(async (tx) => {
+        const operationResult = await tx.query<OperationDeleteRow>(
+          `
+          SELECT id, unit_id, server_key, mission_uid, mission_name
+          FROM operations
+          WHERE id = $1
+          FOR UPDATE
+          `,
+          [operationId]
+        );
+        const operation = operationResult.rows[0];
+
+        if (!operation) {
+          throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
+        }
+
+        if (!(await canDeleteOperation(auth.user, operation.unit_id))) {
+          throw new OperationRouteError(403, "forbidden", "The authenticated user does not have permission for this action.");
+        }
+
+        const ingestResult = await tx.query("DELETE FROM ingest_requests WHERE operation_id = $1", [operation.id]);
+        await tx.query("DELETE FROM operations WHERE id = $1", [operation.id]);
+        await tx.query(
+          `
+          INSERT INTO admin_audit_events (actor_user_id, actor_label, action, details)
+          VALUES ($1, $2, 'delete_operation', $3::jsonb)
+          `,
+          [
+            auth.user.id,
+            auth.user.display_name ?? auth.user.id,
+            JSON.stringify({
+              operation_id: operation.id,
+              server_key: operation.server_key,
+              mission_uid: operation.mission_uid,
+              mission_name: operation.mission_name,
+              ingest_requests_deleted: ingestResult.rowCount ?? 0
+            })
+          ]
+        );
+
+        return {
+          operation_id: operation.id,
+          ingest_requests_deleted: ingestResult.rowCount ?? 0
+        };
+      });
+
+      return {
+        ok: true,
+        ...result
+      };
+    } catch (error) {
+      if (error instanceof OperationRouteError) {
+        return sendOperationRouteError(reply, error);
+      }
+
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to delete operation");
       return sendDatabaseUnavailable(reply);
     }
   });

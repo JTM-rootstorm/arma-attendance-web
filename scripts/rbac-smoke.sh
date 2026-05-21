@@ -189,6 +189,9 @@ curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/admin/players/$steam_id/r
 operation_id="$(curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations" | json_value ".operations.0.operation_id")"
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations/$operation_id" | assert_json 'data.ok === true && data.operation.operation_id !== undefined'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operation-mates?operation_id=$operation_id" | assert_json 'data.ok === true'
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "normal user operation delete"
+curl -fsS -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" | assert_json 'data.ok === true && data.operation_id'
+assert_status "404" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id")" "deleted operation detail"
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/players" | assert_json 'data.ok === true && data.players.some((player) => player.last_name === "RBAC Player" && player.player_uid === null)'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" "$BASE_URL/v1/players.csv")" "normal user CSV"
 
@@ -217,5 +220,12 @@ machine_token_id="$(printf "%s" "$machine_token_response" | json_value ".token_r
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $machine_token" | assert_json 'data.ok === true'
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$machine_token_id" | assert_json 'data.ok === true && data.token_record.is_active === false'
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $API_TOKEN" | assert_json 'data.ok === true'
+owner_delete_response="$(curl -fsS -X POST "$BASE_URL/v1/operations/start" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"request_id\":\"rbac-owner-delete-$STAMP\",\"server_key\":\"$server_key-owner-delete\",\"mission\":{\"mission_name\":\"RBAC Owner Delete\",\"world_name\":\"Altis\"}}")"
+owner_delete_id="$(printf "%s" "$owner_delete_response" | json_value ".operation_id")"
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" | assert_json 'data.ok === true && data.ingest_requests_deleted >= 1'
+assert_status "404" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$owner_delete_id")" "owner deleted operation detail"
 
 echo "[smoke:rbac] OK"

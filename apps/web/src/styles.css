@@ -141,6 +141,17 @@ button.secondary {
   background: rgba(4, 12, 24, 0.88);
 }
 
+button.danger {
+  color: #ffe7e7;
+  border-color: rgba(255, 107, 107, 0.58);
+  background: linear-gradient(180deg, rgba(123, 31, 45, 0.96), rgba(65, 16, 28, 0.96));
+}
+
+button.danger:hover {
+  border-color: var(--danger-red);
+  background: linear-gradient(180deg, rgba(150, 39, 55, 0.96), rgba(80, 20, 34, 0.96));
+}
+
 input,
 select {
   width: 100%;
