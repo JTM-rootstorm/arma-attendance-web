@@ -25,6 +25,7 @@ export function PlayersPage({
   selectedPlayerUid,
   onSearchChange,
   onSearch,
+  onRefresh,
   onSelectPlayer,
   canExport,
   canResetPlayerNames,
@@ -38,6 +39,7 @@ export function PlayersPage({
   selectedPlayerUid: string;
   onSearchChange: (value: string) => void;
   onSearch: () => void;
+  onRefresh: () => void;
   onSelectPlayer: (playerUid: string) => void;
   canExport: boolean;
   canResetPlayerNames: boolean;
@@ -50,7 +52,23 @@ export function PlayersPage({
 
   return (
     <div className="view-grid">
-      <CommandPanel title="Player Registry" eyebrow="Roster uplink" wide actions={canExport ? <button type="button" onClick={onExportPlayers}>Players CSV</button> : null}>
+      <CommandPanel
+        title="Player Registry"
+        eyebrow="Roster uplink"
+        wide
+        actions={
+          <div className="inline-actions">
+            <button type="button" onClick={onRefresh}>
+              Refresh
+            </button>
+            {canExport ? (
+              <button type="button" onClick={onExportPlayers}>
+                Players CSV
+              </button>
+            ) : null}
+          </div>
+        }
+      >
         <div className={isDetailOpen ? "drilldown-stage is-open" : "drilldown-stage"}>
           <div className={isDetailOpen ? "drilldown-base is-obscured" : "drilldown-base"}>
             <form className="filters roster-filter" onSubmit={(event) => event.preventDefault()}>

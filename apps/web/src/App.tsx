@@ -512,6 +512,14 @@ export function App() {
     await loadPlayerDetail(playerUid);
   }
 
+  async function refreshRoster() {
+    await loadPlayers();
+
+    if (selectedPlayerUid.length > 0) {
+      await loadPlayerDetail(selectedPlayerUid);
+    }
+  }
+
   const content =
     view === "me" && sessionUser ? (
       <MyStatsPage
@@ -566,6 +574,7 @@ export function App() {
         selectedPlayerUid={selectedPlayerUid}
         onSearchChange={setPlayerSearch}
         onSearch={() => void loadPlayers()}
+        onRefresh={() => void refreshRoster()}
         onSelectPlayer={setSelectedPlayerUid}
         canExport={canExportViews}
         canResetPlayerNames={canResetRosterNames}
