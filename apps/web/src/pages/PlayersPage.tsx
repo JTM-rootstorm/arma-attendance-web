@@ -67,18 +67,24 @@ export function PlayersPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {players.data.players.map((player) => (
-                    <tr
-                      key={player.player_uid}
-                      className={player.player_uid === selectedPlayerUid ? "selected" : ""}
-                      onClick={() => onSelectPlayer(player.player_uid)}
-                    >
-                      <td className="mono">{player.player_uid}</td>
-                      <td>{displayValue(player.last_name)}</td>
-                      <td>{formatDate(player.last_seen_at)}</td>
-                      <td>{player.operation_count}</td>
-                    </tr>
-                  ))}
+                  {players.data.players.map((player, index) => {
+                    const playerUid = player.player_uid;
+                    const canSelectPlayer = playerUid !== null;
+                    const rowKey = playerUid ?? `${player.last_name ?? "restricted"}-${player.last_seen_at}-${index}`;
+
+                    return (
+                      <tr
+                        key={rowKey}
+                        className={canSelectPlayer && playerUid === selectedPlayerUid ? "selected" : ""}
+                        onClick={playerUid ? () => onSelectPlayer(playerUid) : undefined}
+                      >
+                        <td className="mono">{playerUid ?? "Restricted"}</td>
+                        <td>{displayValue(player.last_name)}</td>
+                        <td>{formatDate(player.last_seen_at)}</td>
+                        <td>{player.operation_count}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </TacticalTable>
             ) : null}

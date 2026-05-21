@@ -140,7 +140,7 @@ export type OperationAttendanceResponse = {
 export type PlayersResponse = {
   ok: true;
   players: Array<{
-    player_uid: string;
+    player_uid: string | null;
     last_name: string | null;
     first_seen_at: string;
     last_seen_at: string;

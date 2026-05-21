@@ -70,6 +70,17 @@ type UserIdentityRow = {
   user_id: string;
 };
 
+type AuthIdentityRow = {
+  provider: "discord" | "steam";
+  provider_user_id: string;
+  display_name: string | null;
+  last_seen_at: Date;
+};
+
+type AuthUserProfileRow = {
+  display_name: string | null;
+};
+
 type LinkedPlayerRow = {
   player_uid: string;
   last_name: string | null;
@@ -356,6 +367,7 @@ async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Pr
       `,
       [profile.id, existingUserId, displayName, avatarUrl, JSON.stringify(profile)]
     );
+    await ensureAuthenticatedUserRosterEntry(tx, existingUserId);
     return existingUserId;
   }
 
@@ -381,7 +393,151 @@ async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Pr
     [userId, profile.id, displayName, avatarUrl, JSON.stringify(profile)]
   );
 
+  await ensureAuthenticatedUserRosterEntry(tx, userId);
   return userId;
+}
+
+function getAuthPlayerUid(identity: AuthIdentityRow): string {
+  if (identity.provider === "steam") {
+    return identity.provider_user_id;
+  }
+
+  return `discord:${identity.provider_user_id}`;
+}
+
+async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: string): Promise<string | null> {
+  const userResult = await tx.query<AuthUserProfileRow>(
+    "SELECT display_name FROM app_users WHERE id = $1 AND disabled_at IS NULL",
+    [userId]
+  );
+  const identitiesResult = await tx.query<AuthIdentityRow>(
+    `
+    SELECT provider, provider_user_id, display_name, last_seen_at
+    FROM user_identities
+    WHERE user_id = $1
+    ORDER BY CASE WHEN provider = 'steam' THEN 0 ELSE 1 END, last_seen_at DESC
+    `,
+    [userId]
+  );
+  const user = userResult.rows[0];
+  const identities = identitiesResult.rows;
+
+  if (!user || identities.length === 0) {
+    return null;
+  }
+
+  const chosenIdentity = identities[0];
+  if (!chosenIdentity) {
+    return null;
+  }
+
+  const playerUid = getAuthPlayerUid(chosenIdentity);
+  const displayName =
+    chosenIdentity.display_name ?? user.display_name ?? `${chosenIdentity.provider} ${chosenIdentity.provider_user_id}`;
+  const unitResult = await tx.query<{ id: string }>(
+    `
+    INSERT INTO units (unit_key, name, description)
+    VALUES ('tcw', 'TCW', 'Default unit')
+    ON CONFLICT (unit_key) DO UPDATE SET updated_at = now()
+    RETURNING id
+    `
+  );
+  const unitId = unitResult.rows[0]?.id;
+
+  if (!unitId) {
+    throw new Error("Default unit upsert returned no row.");
+  }
+
+  await tx.query(
+    `
+    INSERT INTO players (player_uid, last_name, raw_last_player)
+    VALUES ($1, $2, $3::jsonb)
+    ON CONFLICT (player_uid) DO UPDATE
+    SET
+      last_name = COALESCE(players.last_name, EXCLUDED.last_name),
+      updated_at = now()
+    `,
+    [
+      playerUid,
+      displayName,
+      JSON.stringify({
+        source: "auth",
+        user_id: userId,
+        provider: chosenIdentity.provider,
+        provider_user_id: chosenIdentity.provider_user_id
+      })
+    ]
+  );
+  await tx.query(
+    `
+    INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
+    VALUES ($1, $2, 'member', 'auth-default')
+    ON CONFLICT DO NOTHING
+    `,
+    [unitId, userId]
+  );
+  await tx.query(
+    `
+    INSERT INTO unit_players (unit_id, player_uid, roster_name)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (unit_id, player_uid) DO UPDATE
+    SET
+      roster_name = COALESCE(unit_players.roster_name, EXCLUDED.roster_name),
+      is_active = true,
+      updated_at = now()
+    `,
+    [unitId, playerUid, displayName]
+  );
+
+  const discordIdentity = identities.find((identity) => identity.provider === "discord");
+
+  if (discordIdentity) {
+    await tx.query(
+      `
+      INSERT INTO player_discord_links (
+        player_uid, discord_user_id, discord_display_name, source, verified_at, raw_link
+      )
+      VALUES ($1, $2, $3, 'auth', now(), $4::jsonb)
+      ON CONFLICT (discord_user_id) DO UPDATE
+      SET
+        player_uid = EXCLUDED.player_uid,
+        discord_display_name = EXCLUDED.discord_display_name,
+        source = EXCLUDED.source,
+        verified_at = COALESCE(player_discord_links.verified_at, EXCLUDED.verified_at),
+        raw_link = EXCLUDED.raw_link,
+        updated_at = now()
+      WHERE player_discord_links.source = 'auth'
+      `,
+      [
+        playerUid,
+        discordIdentity.provider_user_id,
+        discordIdentity.display_name ?? user.display_name,
+        JSON.stringify({ source: "auth", user_id: userId })
+      ]
+    );
+  }
+
+  const staleAuthPlayerUids = identities
+    .filter((identity) => identity.provider === "discord")
+    .map(getAuthPlayerUid)
+    .filter((uid) => uid !== playerUid);
+
+  if (staleAuthPlayerUids.length > 0) {
+    await tx.query(
+      `
+      DELETE FROM players p
+      WHERE p.player_uid = ANY($1::text[])
+        AND p.raw_last_player->>'source' = 'auth'
+        AND NOT EXISTS (
+          SELECT 1 FROM operation_players op
+          WHERE op.player_uid = p.player_uid
+        )
+      `,
+      [staleAuthPlayerUids]
+    );
+  }
+
+  return playerUid;
 }
 
 async function applyInitialAdminFallback(tx: DbTransaction, userId: string, discordId: string, request: FastifyRequest) {
@@ -430,6 +586,7 @@ async function upsertSteamIdentity(tx: DbTransaction, userId: string, steamId: s
     `,
     [userId, steamId, JSON.stringify({ steam_id: steamId })]
   );
+  await ensureAuthenticatedUserRosterEntry(tx, userId);
   await tx.query(
     `
     INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)

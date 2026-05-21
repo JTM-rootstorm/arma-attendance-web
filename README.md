@@ -491,6 +491,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0005_auth_identity.sql`
 - `0006_unit_rbac.sql`
 - `0007_rbac_session_machine_tokens.sql`
+- `0008_authenticated_roster_defaults.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 

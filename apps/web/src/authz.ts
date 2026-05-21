@@ -28,7 +28,7 @@ export function canOpenOperations(user: AuthUser | null): boolean {
 }
 
 export function canOpenRoster(user: AuthUser | null): boolean {
-  return canOpenOperations(user);
+  return Boolean(user);
 }
 
 export function canOpenComms(user: AuthUser | null): boolean {
