@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { hasRole, requireBearerToken, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
-import { getDefaultUnitId, hasUnitRole, requireUnitRead } from "../auth/units.js";
+import { getDefaultUnitId, requireUnitRead } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
@@ -239,16 +239,8 @@ async function insertIngestRequest(
   );
 }
 
-async function canDeleteOperation(user: CurrentUser, unitId: string | null): Promise<boolean> {
-  if (hasRole(user, ["admin"])) {
-    return true;
-  }
-
-  if (!unitId) {
-    return false;
-  }
-
-  return hasUnitRole(user, unitId, "admin");
+function canDeleteOperation(user: CurrentUser): boolean {
+  return hasRole(user, ["admin"]);
 }
 
 function getMissionField(
@@ -617,7 +609,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
         }
 
-        if (!(await canDeleteOperation(auth.user, operation.unit_id))) {
+        if (!canDeleteOperation(auth.user)) {
           throw new OperationRouteError(403, "forbidden", "The authenticated user does not have permission for this action.");
         }
 
