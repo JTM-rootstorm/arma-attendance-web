@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { apiFetch, fetchCsv } from "./api";
+import { ApiClientError, apiFetch, fetchCsv } from "./api";
 import {
   canDeleteOperations,
   canExport,
@@ -515,7 +515,14 @@ export function App() {
   }
 
   async function deleteOperation(operationId: string) {
-    await apiFetch(`/v1/operations/${encodeURIComponent(operationId)}`, { method: "DELETE" });
+    try {
+      await apiFetch(`/v1/operations/${encodeURIComponent(operationId)}`, { method: "DELETE" });
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.code !== "operation_not_found") {
+        throw error;
+      }
+    }
+
     setSelectedOperationId("");
     setOperationDetail(emptyResult);
     setOperationSummary(emptyResult);
