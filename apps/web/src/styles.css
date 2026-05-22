@@ -888,11 +888,29 @@ tbody tr.selected {
   background: rgba(2, 9, 19, 0.58);
 }
 
-.roster-member-card > div:first-child {
+.roster-member-identity {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.4rem 0.55rem;
+}
+
+.roster-member-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.roster-member-fields label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.roster-member-fields label > span {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .roster-member-card strong {
@@ -1196,6 +1214,7 @@ pre {
   .assignment-controls,
   .identity-account-grid,
   .leaderboard-podium,
+  .roster-member-fields,
   .squad-mode-controls,
   .squad-sections-grid,
   .view-grid,
