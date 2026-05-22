@@ -94,6 +94,17 @@ type LinkedPlayerRow = {
   last_seen_at: Date;
 };
 
+type SelfUnitMembershipRow = {
+  unit_id: string;
+  unit_key: string;
+  name: string;
+  display_name: string | null;
+  callsign: string | null;
+  rank: string | null;
+  roster_name: string | null;
+  roster_status: string;
+};
+
 type SelfOperationRow = {
   operation_id: string;
   status: "started" | "finished" | "abandoned";
@@ -255,12 +266,16 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
     SELECT
       p.player_uid,
       p.last_name,
-      up.rank,
+      COALESCE(ur.name, up.rank) AS rank,
       up.roster_name,
       p.first_seen_at,
       p.last_seen_at
     FROM players p
-    LEFT JOIN unit_players up ON up.player_uid = p.player_uid
+    LEFT JOIN unit_players up
+      ON up.player_uid = p.player_uid
+      AND up.is_active = true
+      AND up.roster_status <> 'inactive'
+    LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
     WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
        OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
@@ -813,15 +828,47 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         armor_kills: 0,
         air_kills: 0
       };
+      const membershipResult = await queryDb<SelfUnitMembershipRow>(
+        `
+        SELECT
+          u.id AS unit_id,
+          u.unit_key,
+          u.name,
+          u.display_name,
+          u.callsign,
+          COALESCE(ur.name, up.rank) AS rank,
+          up.roster_name,
+          up.roster_status
+        FROM unit_players up
+        JOIN units u ON u.id = up.unit_id
+        LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
+        WHERE up.player_uid = $1
+          AND up.is_active = true
+          AND up.roster_status <> 'inactive'
+          AND u.is_active = true
+          AND u.deleted_at IS NULL
+        ORDER BY u.sort_order, u.name
+        `,
+        [player.player_uid]
+      );
 
       return {
         ok: true,
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
-          rank: player.rank,
+          rank: membershipResult.rows[0]?.rank ?? player.rank,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         },
+        battalion_memberships: membershipResult.rows.map((membership) => ({
+          unit_id: membership.unit_id,
+          unit_key: membership.unit_key,
+          name: membership.display_name ?? membership.name,
+          callsign: membership.callsign,
+          rank: membership.rank,
+          roster_name: membership.roster_name,
+          roster_status: membership.roster_status
+        })),
         summary,
         scoreboard_totals: {
           infantry_kills: summary.infantry_kills,

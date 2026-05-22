@@ -14,6 +14,11 @@ const listUnitsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0)
 });
 
+const playerCandidateQuerySchema = z.object({
+  q: z.string().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25)
+});
+
 const unitParamsSchema = z.object({
   unit_id: z.string().uuid()
 });
@@ -195,6 +200,13 @@ type RosterPlayerRow = {
   squad_id: string | null;
   billet: string | null;
   assignment_sort: number | null;
+};
+
+type PlayerCandidateRow = {
+  player_uid: string;
+  last_name: string | null;
+  last_seen_at: Date;
+  operation_count: number;
 };
 
 type AdminRow = {
@@ -810,6 +822,73 @@ export async function registerUnitRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch unit roster");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/v1/units/:unit_id/player-candidates", async (request, reply) => {
+    const auth = await getAuthContext(request, reply);
+
+    if (!auth || !auth.user) {
+      return;
+    }
+
+    const parsedParams = unitParamsSchema.safeParse(request.params);
+    const parsedQuery = playerCandidateQuerySchema.safeParse(request.query);
+
+    if (!parsedParams.success || !parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const { unit_id: unitId } = parsedParams.data;
+
+    if (!(await ensureUnitAdmin(auth.user, unitId, reply))) {
+      return;
+    }
+
+    const values: unknown[] = [];
+    const where = [
+      `NOT EXISTS (
+        SELECT 1
+        FROM unit_players up_existing
+        JOIN units u_existing ON u_existing.id = up_existing.unit_id
+        WHERE up_existing.player_uid = p.player_uid
+          AND up_existing.is_active = true
+          AND up_existing.roster_status <> 'inactive'
+          AND u_existing.is_active = true
+          AND u_existing.deleted_at IS NULL
+      )`
+    ];
+
+    if (parsedQuery.data.q && parsedQuery.data.q.trim().length > 0) {
+      values.push(`%${parsedQuery.data.q.trim()}%`);
+      where.push(`(p.player_uid ILIKE $${values.length} OR p.last_name ILIKE $${values.length})`);
+    }
+
+    values.push(parsedQuery.data.limit);
+    const limitParam = values.length;
+
+    try {
+      const result = await queryDb<PlayerCandidateRow>(
+        `
+        SELECT
+          p.player_uid,
+          p.last_name,
+          p.last_seen_at,
+          COUNT(DISTINCT op.operation_id)::int AS operation_count
+        FROM players p
+        LEFT JOIN operation_players op ON op.player_uid = p.player_uid
+        WHERE ${where.join(" AND ")}
+        GROUP BY p.player_uid
+        ORDER BY p.last_seen_at DESC, p.player_uid
+        LIMIT $${limitParam}
+        `,
+        values
+      );
+
+      return { ok: true, players: result.rows };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list unit player candidates");
       return sendDatabaseUnavailable(reply);
     }
   });

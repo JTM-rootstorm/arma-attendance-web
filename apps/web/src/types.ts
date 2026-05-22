@@ -162,14 +162,14 @@ export type PlayersResponse = {
     last_name: string | null;
     first_seen_at: string;
     last_seen_at: string;
-    operation_count: number;
+    operation_count: number | null;
   }>;
 };
 
 export type PlayerDetailResponse = {
   ok: true;
   player: {
-    player_uid: string;
+    player_uid: string | null;
     last_name: string | null;
     first_seen_at: string;
     last_seen_at: string;
@@ -193,9 +193,9 @@ export type PlayerDetailResponse = {
 export type PlayerSummaryResponse = {
   ok: true;
   summary: {
-    operation_count: number;
-    present_at_start_count: number;
-    present_at_end_count: number;
+    operation_count: number | null;
+    present_at_start_count: number | null;
+    present_at_end_count: number | null;
     infantry_kills: number;
     vehicle_kills: number;
     player_kills: number;
@@ -426,6 +426,15 @@ export type MyPlayerResponse = {
     first_seen_at?: string;
     last_seen_at?: string;
   } | null;
+  battalion_memberships?: Array<{
+    unit_id: string;
+    unit_key: string;
+    name: string;
+    callsign: string | null;
+    rank: string | null;
+    roster_name: string | null;
+    roster_status: string;
+  }>;
   summary?: PlayerSummaryResponse["summary"];
   scoreboard_totals?: ScoreboardStats;
   message?: string;
@@ -570,6 +579,16 @@ export type BattalionRosterResponse = {
   ranks: BattalionRank[];
   unassigned: BattalionRosterPlayer[];
   squads: BattalionSquadNode[];
+};
+
+export type BattalionPlayerCandidatesResponse = {
+  ok: true;
+  players: Array<{
+    player_uid: string;
+    last_name: string | null;
+    last_seen_at: string;
+    operation_count: number;
+  }>;
 };
 
 export type UnitLeaderboardResponse = {

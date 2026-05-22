@@ -24,6 +24,8 @@ export function MyStatsPage({
   const steamIdentity = user.identities.find((identity) => identity.provider === "steam");
   const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
   const player = myPlayer.status === "ready" ? myPlayer.data.linked_player : null;
+  const battalionMemberships = myPlayer.status === "ready" ? myPlayer.data.battalion_memberships ?? [] : [];
+  const primaryBattalion = battalionMemberships[0] ?? null;
   const summary = myPlayer.status === "ready" ? myPlayer.data.summary : null;
   const scoreboardTotals = myPlayer.status === "ready" ? myPlayer.data.scoreboard_totals : null;
   const operations = myOperations.status === "ready" ? myOperations.data.operations.slice(0, 5) : [];
@@ -78,7 +80,11 @@ export function MyStatsPage({
         </div>
         <div>
           <span>Rank</span>
-          <strong>{player?.rank ?? "Unassigned"}</strong>
+          <strong>{primaryBattalion?.rank ?? player?.rank ?? "Unassigned"}</strong>
+        </div>
+        <div>
+          <span>Battalion</span>
+          <strong>{primaryBattalion?.name ?? "Unassigned"}</strong>
         </div>
         <div>
           <span>Ops</span>
@@ -105,6 +111,18 @@ export function MyStatsPage({
           <strong>{scoreboardTotals?.air_kills ?? summary?.air_kills ?? 0}</strong>
         </div>
       </div>
+
+      {battalionMemberships.length > 0 ? (
+        <div className="stack-list battalion-memberships">
+          {battalionMemberships.map((membership) => (
+            <div key={membership.unit_id} className="stack-row">
+              <span>{membership.callsign ?? membership.unit_key}</span>
+              <strong>{membership.name}</strong>
+              <small>{membership.rank ?? "Unassigned rank"}</small>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="identity-strip">
         <div>

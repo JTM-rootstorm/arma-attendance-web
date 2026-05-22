@@ -88,6 +88,7 @@ player_one="7656119${STAMP}01"
 player_two="7656119${STAMP}02"
 player_three="7656119${STAMP}03"
 player_four="7656119${STAMP}04"
+candidate_player="7656119${STAMP}05"
 
 echo "[smoke:battalions] Creating test sessions..."
 owner_id="$(login_user "$OWNER_COOKIE_JAR" "$owner_discord" "Battalion Smoke Owner" '["owner"]')"
@@ -134,6 +135,20 @@ for player in "$player_one" "$player_two" "$player_three" "$player_four"; do
     -H "Content-Type: application/json" \
     -d "{\"player_uid\":\"$player\",\"roster_name\":\"Trooper $player\",\"rank_id\":\"$rank_id\",\"roster_status\":\"active\"}" | assert_json 'data.ok === true'
 done
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -v candidate_player="$candidate_player" <<'SQL'
+INSERT INTO players (player_uid, last_name, raw_last_player)
+VALUES (:'candidate_player', 'Candidate Trooper', '{}'::jsonb)
+ON CONFLICT (player_uid) DO UPDATE SET last_name = EXCLUDED.last_name, updated_at = now();
+SQL
+
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/player-candidates?q=$candidate_player" |
+  assert_json "data.ok === true && data.players.some((player) => player.player_uid === '$candidate_player')"
+
+curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/players" \
+  -H "Content-Type: application/json" \
+  -d "{\"player_uid\":\"$candidate_player\",\"roster_name\":\"Candidate Trooper\",\"roster_status\":\"active\"}" | assert_json 'data.ok === true'
 
 squad_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/squads" \

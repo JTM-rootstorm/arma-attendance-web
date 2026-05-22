@@ -47,9 +47,9 @@ export function PayloadInspector({
           <section>
             <div className="inspection-title">
               <strong>{displayValue(playerDetail.player.last_name)}</strong>
-              <StatusChip label={`${playerDetail.recent_operations.length} recent`} tone="ready" />
+              {playerDetail.recent_operations.length > 0 ? <StatusChip label={`${playerDetail.recent_operations.length} recent`} tone="ready" /> : null}
             </div>
-            <p className="mono">{playerDetail.player.player_uid}</p>
+            {playerDetail.player.player_uid ? <p className="mono">{playerDetail.player.player_uid}</p> : null}
           </section>
         ) : null}
 

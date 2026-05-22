@@ -6,10 +6,11 @@ import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue } from "../format";
+import { displayValue, formatDate } from "../format";
 import type {
   ApiResult,
   AuthUser,
+  BattalionPlayerCandidatesResponse,
   BattalionRosterPlayer,
   BattalionRosterResponse,
   BattalionSquadNode,
@@ -28,6 +29,7 @@ type AssignmentDraft = Record<
 
 const emptyUnits: ApiResult<UnitsResponse> = { status: "idle", data: null, error: null };
 const emptyRoster: ApiResult<BattalionRosterResponse> = { status: "idle", data: null, error: null };
+const emptyCandidates: ApiResult<BattalionPlayerCandidatesResponse> = { status: "idle", data: null, error: null };
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   return {
@@ -101,7 +103,9 @@ function canManageBattalion(user: AuthUser, unit: BattalionSummary | null): bool
 export function BattalionPage({ user }: { user: AuthUser }) {
   const [units, setUnits] = useState<ApiResult<UnitsResponse>>(emptyUnits);
   const [roster, setRoster] = useState<ApiResult<BattalionRosterResponse>>(emptyRoster);
+  const [playerCandidates, setPlayerCandidates] = useState<ApiResult<BattalionPlayerCandidatesResponse>>(emptyCandidates);
   const [selectedUnitId, setSelectedUnitId] = useState("");
+  const [candidateSearch, setCandidateSearch] = useState("");
   const [assignmentDraft, setAssignmentDraft] = useState<AssignmentDraft>({});
   const [message, setMessage] = useState("");
   const [newUnit, setNewUnit] = useState({ unit_key: "", name: "", callsign: "" });
@@ -145,6 +149,27 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     }
   }, []);
 
+  const loadPlayerCandidates = useCallback(async (unitId: string, search: string) => {
+    if (!unitId || !canManage) {
+      setPlayerCandidates(emptyCandidates);
+      return;
+    }
+
+    setPlayerCandidates({ status: "loading", data: null, error: null });
+
+    try {
+      setPlayerCandidates({
+        status: "ready",
+        data: await apiFetch<BattalionPlayerCandidatesResponse>(`/v1/units/${unitId}/player-candidates`, {
+          params: { q: search, limit: "25" }
+        }),
+        error: null
+      });
+    } catch (error) {
+      setPlayerCandidates(errorResult(error, "Player candidates failed."));
+    }
+  }, [canManage]);
+
   useEffect(() => {
     void loadUnits();
   }, [loadUnits]);
@@ -152,6 +177,10 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   useEffect(() => {
     void loadRoster(selectedUnitId);
   }, [loadRoster, selectedUnitId]);
+
+  useEffect(() => {
+    void loadPlayerCandidates(selectedUnitId, candidateSearch);
+  }, [candidateSearch, loadPlayerCandidates, selectedUnitId]);
 
   useEffect(() => {
     const nextDraft: AssignmentDraft = {};
@@ -227,6 +256,25 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     setNewPlayer({ player_uid: "", roster_name: "", rank: "" });
     setMessage("Roster player added.");
     await loadRoster(selectedUnit.unit_id);
+    await loadPlayerCandidates(selectedUnit.unit_id, candidateSearch);
+  }
+
+  async function addCandidatePlayer(playerUid: string, rosterName: string | null) {
+    if (!selectedUnit) {
+      return;
+    }
+
+    await apiFetch(`/v1/units/${selectedUnit.unit_id}/players`, {
+      method: "POST",
+      body: {
+        player_uid: playerUid,
+        roster_name: rosterName || playerUid,
+        roster_status: "active"
+      }
+    });
+    setMessage("Roster player added.");
+    await loadRoster(selectedUnit.unit_id);
+    await loadPlayerCandidates(selectedUnit.unit_id, candidateSearch);
   }
 
   async function removePlayer(playerUid: string) {
@@ -237,6 +285,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     await apiFetch(`/v1/units/${selectedUnit.unit_id}/players/${encodeURIComponent(playerUid)}`, { method: "DELETE" });
     setMessage("Roster player removed.");
     await loadRoster(selectedUnit.unit_id);
+    await loadPlayerCandidates(selectedUnit.unit_id, candidateSearch);
   }
 
   async function createRank() {
@@ -358,88 +407,146 @@ export function BattalionPage({ user }: { user: AuthUser }) {
       <CommandPanel title="Roster Deck" eyebrow="Personnel">
         <DataMessage result={roster} />
         {rosterData ? (
-          <TacticalTable label="Battalion roster" maxVisibleRows={10}>
-            <thead>
-              <tr>
-                <th>Trooper</th>
-                <th>Rank</th>
-                <th>Status</th>
-                <th>Squad</th>
-                <th>Billet</th>
-                {canManage ? <th>Manage</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {rosterPlayers.map((player) => {
-                const playerUid = player.player_uid ?? "";
-                const draft = assignmentDraft[playerUid] ?? { squad_id: player.squad_id ?? "", billet: player.billet, sort_order: player.sort_order };
+          <>
+            <TacticalTable label="Battalion roster" maxVisibleRows={10}>
+              <thead>
+                <tr>
+                  <th>Trooper</th>
+                  <th>Rank</th>
+                  <th>Status</th>
+                  <th>Squad</th>
+                  <th>Billet</th>
+                  {canManage ? <th>Manage</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {rosterPlayers.map((player) => {
+                  const playerUid = player.player_uid ?? "";
+                  const draft = assignmentDraft[playerUid] ?? { squad_id: player.squad_id ?? "", billet: player.billet, sort_order: player.sort_order };
 
-                return (
-                  <tr key={playerUid || player.roster_name}>
-                    <td>
-                      <strong>{player.roster_name}</strong>
-                      {canRevealIds && playerUid ? <p className="mono">{playerUid}</p> : null}
-                    </td>
-                    <td>{displayValue(player.rank)}</td>
-                    <td>{player.roster_status}</td>
-                    <td>
-                      {canManage && playerUid ? (
-                        <select
-                          value={draft.squad_id}
-                          onChange={(event) =>
-                            setAssignmentDraft((current) => ({
-                              ...current,
-                              [playerUid]: { ...draft, squad_id: event.target.value }
-                            }))
-                          }
-                        >
-                          <option value="">Unassigned</option>
-                          {allSquads.map((squad) => (
-                            <option key={squad.id} value={squad.id}>
-                              {squadLabel(squad)}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        allSquads.find((squad) => squad.id === player.squad_id)?.name ?? "Unassigned"
-                      )}
-                    </td>
-                    <td>
-                      {canManage && playerUid ? (
-                        <select
-                          value={draft.billet}
-                          onChange={(event) =>
-                            setAssignmentDraft((current) => ({
-                              ...current,
-                              [playerUid]: { ...draft, billet: event.target.value as BattalionRosterPlayer["billet"] }
-                            }))
-                          }
-                        >
-                          <option value="trooper">Trooper</option>
-                          <option value="squad_lead">Squad lead</option>
-                          <option value="fireteam_lead">Fireteam lead</option>
-                          <option value="unassigned">Unassigned</option>
-                        </select>
-                      ) : (
-                        player.billet.replaceAll("_", " ")
-                      )}
-                    </td>
-                    {canManage ? (
+                  return (
+                    <tr key={playerUid || player.roster_name}>
                       <td>
-                        {playerUid ? (
-                          <button type="button" className="danger" onClick={() => void removePlayer(playerUid)}>
-                            Remove
-                          </button>
+                        <strong>{player.roster_name}</strong>
+                        {canRevealIds && playerUid ? <p className="mono">{playerUid}</p> : null}
+                      </td>
+                      <td>{displayValue(player.rank)}</td>
+                      <td>{player.roster_status}</td>
+                      <td>
+                        {canManage && playerUid ? (
+                          <select
+                            value={draft.squad_id}
+                            onChange={(event) =>
+                              setAssignmentDraft((current) => ({
+                                ...current,
+                                [playerUid]: { ...draft, squad_id: event.target.value }
+                              }))
+                            }
+                          >
+                            <option value="">Unassigned</option>
+                            {allSquads.map((squad) => (
+                              <option key={squad.id} value={squad.id}>
+                                {squadLabel(squad)}
+                              </option>
+                            ))}
+                          </select>
                         ) : (
-                          <StatusChip label="restricted" tone="muted" />
+                          allSquads.find((squad) => squad.id === player.squad_id)?.name ?? "Unassigned"
                         )}
                       </td>
-                    ) : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </TacticalTable>
+                      <td>
+                        {canManage && playerUid ? (
+                          <select
+                            value={draft.billet}
+                            onChange={(event) =>
+                              setAssignmentDraft((current) => ({
+                                ...current,
+                                [playerUid]: { ...draft, billet: event.target.value as BattalionRosterPlayer["billet"] }
+                              }))
+                            }
+                          >
+                            <option value="trooper">Trooper</option>
+                            <option value="squad_lead">Squad lead</option>
+                            <option value="fireteam_lead">Fireteam lead</option>
+                            <option value="unassigned">Unassigned</option>
+                          </select>
+                        ) : (
+                          player.billet.replaceAll("_", " ")
+                        )}
+                      </td>
+                      {canManage ? (
+                        <td>
+                          {playerUid ? (
+                            <button type="button" className="danger" onClick={() => void removePlayer(playerUid)}>
+                              Remove
+                            </button>
+                          ) : (
+                            <StatusChip label="restricted" tone="muted" />
+                          )}
+                        </td>
+                      ) : null}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </TacticalTable>
+            {canManage ? (
+              <section className="candidate-roster">
+                <div className="panel-heading slim">
+                  <h3>Available Players</h3>
+                  <button type="button" onClick={() => void loadPlayerCandidates(selectedUnitId, candidateSearch)}>
+                    Search
+                  </button>
+                </div>
+                <form className="filters roster-filter" onSubmit={(event) => event.preventDefault()}>
+                  <input
+                    value={candidateSearch}
+                    onChange={(event) => setCandidateSearch(event.target.value)}
+                    placeholder="Search unassigned players"
+                    aria-label="Search unassigned players"
+                  />
+                  <button type="button" onClick={() => void loadPlayerCandidates(selectedUnitId, candidateSearch)}>
+                    Refresh
+                  </button>
+                </form>
+                <DataMessage result={playerCandidates} />
+                {playerCandidates.status === "ready" ? (
+                  <TacticalTable label="Available players" maxVisibleRows={6}>
+                    <thead>
+                      <tr>
+                        <th>Player</th>
+                        <th>Last Seen</th>
+                        <th>Ops</th>
+                        <th>Add</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {playerCandidates.data.players.map((player) => (
+                        <tr key={player.player_uid}>
+                          <td>
+                            <strong>{displayValue(player.last_name)}</strong>
+                            <p className="mono">{player.player_uid}</p>
+                          </td>
+                          <td>{formatDate(player.last_seen_at)}</td>
+                          <td>{player.operation_count}</td>
+                          <td>
+                            <button type="button" onClick={() => void addCandidatePlayer(player.player_uid, player.last_name)}>
+                              Add
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {playerCandidates.data.players.length === 0 ? (
+                        <tr>
+                          <td colSpan={4}>No unassigned players found.</td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </TacticalTable>
+                ) : null}
+              </section>
+            ) : null}
+          </>
         ) : null}
       </CommandPanel>
 

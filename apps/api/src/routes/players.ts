@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
+import { hasRole, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -67,6 +68,23 @@ type PlayerOperationRow = {
   scoreboard_score: number | null;
 };
 
+function canSeeRosterOperationalDetails(user: CurrentUser | null): boolean {
+  return user === null || hasRole(user, ["admin"]);
+}
+
+function canSeePlayerOperationalDetails(user: CurrentUser | null): boolean {
+  return canSeeRosterOperationalDetails(user);
+}
+
+function redactPlayerForRoster<T extends PlayerRow>(row: T, revealSensitive: boolean, revealOperationalDetails: boolean) {
+  const redacted = redactPlayer(row, revealSensitive);
+
+  return {
+    ...redacted,
+    operation_count: revealOperationalDetails ? row.operation_count : null
+  };
+}
+
 function sendValidationFailed(reply: FastifyReply) {
   return reply.code(400).send({
     ok: false,
@@ -105,6 +123,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     const where: string[] = [];
     const values: unknown[] = [];
     const unitFilter = await getReadableUnitFilter(auth.user);
+    const revealOperationalDetails = canSeeRosterOperationalDetails(auth.user);
+    const revealSensitive = canSeeSensitiveIds(auth.user) || revealOperationalDetails;
 
     if (!unitFilter.all) {
       if (unitFilter.unitIds.length === 0) {
@@ -153,7 +173,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        players: playersResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user))),
+        players: playersResult.rows.map((row) => redactPlayerForRoster(row, revealSensitive, revealOperationalDetails)),
         pagination: {
           limit: query.limit,
           offset: query.offset,
@@ -229,6 +249,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         }
       }
 
+      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user);
+      const revealSensitive = canSeeSensitiveIds(auth.user) || revealOperationalDetails;
       const operationsResult = await queryDb<PlayerOperationRow>(
         `
         SELECT
@@ -271,8 +293,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        player: redactPlayer(player, canSeeSensitiveIds(auth.user)),
-        recent_operations: operationsResult.rows.map((row) => redactOperationListItem({
+        player: redactPlayer(player, revealSensitive),
+        recent_operations: revealOperationalDetails ? operationsResult.rows.map((row) => redactOperationListItem({
           operation_id: row.operation_id,
           server_key: row.server_key,
           status: row.status,
@@ -309,7 +331,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
                   deaths: row.deaths ?? 0,
                   score: row.scoreboard_score ?? 0
                 }
-        }, canSeeSensitiveIds(auth.user)))
+        }, revealSensitive)) : []
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch player");

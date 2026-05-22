@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
+import { hasRole, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { canReadOperation } from "../auth/operationAccess.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
@@ -140,6 +141,10 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
       message: "Database is not available."
     }
   });
+}
+
+function canSeePlayerOperationalDetails(user: CurrentUser | null): boolean {
+  return user === null || hasRole(user, ["admin"]);
 }
 
 function buildDashboardWhere(
@@ -571,12 +576,20 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         all_vehicle_kills: 0,
         scoreboard_score: 0
       };
+      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user);
+      const revealSensitive = canSeeSensitiveIds(auth.user) || revealOperationalDetails;
+      const responseSummary = revealOperationalDetails ? summary : {
+        ...summary,
+        operation_count: null,
+        present_at_start_count: null,
+        present_at_end_count: null
+      };
 
       return {
         ok: true,
-        player_uid: canSeeSensitiveIds(auth.user) ? playerUid : null,
-        player: redactPlayer(player, canSeeSensitiveIds(auth.user)),
-        summary,
+        player_uid: revealSensitive ? playerUid : null,
+        player: redactPlayer(player, revealSensitive),
+        summary: responseSummary,
         scoreboard_totals: {
           infantry_kills: summary.infantry_kills,
           soft_vehicle_kills: summary.soft_vehicle_kills,
@@ -587,7 +600,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           deaths: summary.deaths,
           score: summary.scoreboard_score
         },
-        recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user)))
+        recent_operations: revealOperationalDetails ? recentOperationsResult.rows.map((row) => redactOperationListItem(row, revealSensitive)) : []
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch player summary");
