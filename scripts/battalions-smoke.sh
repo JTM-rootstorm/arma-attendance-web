@@ -225,5 +225,19 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_j
   && !JSON.stringify(data.squads).includes('Blue Fireteam')
   && data.unassigned.some((player) => player.player_uid === '$player_two')
 "
+recreated_fireteam_response="$(
+  curl -fsS -b "$ADMIN_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/squads" \
+    -H "Content-Type: application/json" \
+    -d "{\"parent_squad_id\":\"$squad_id\",\"squad_key\":\"torrent-blue\",\"name\":\"Blue Fireteam\",\"squad_type\":\"fireteam\",\"hierarchy_mode\":\"flat\",\"sort_order\":20}"
+)"
+recreated_fireteam_id="$(printf "%s" "$recreated_fireteam_response" | json_value ".squad.id")"
+if [[ "$recreated_fireteam_id" != "$fireteam_id" ]]; then
+  echo "[smoke:battalions] Expected deleted squad key recreation to reactivate $fireteam_id, got $recreated_fireteam_id" >&2
+  exit 1
+fi
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json '
+  data.ok === true
+  && data.squads.some((squad) => squad.name === "Torrent Squad" && squad.children.some((child) => child.name === "Blue Fireteam"))
+'
 
 echo "[smoke:battalions] OK unit_id=$unit_id owner_id=$owner_id admin_id=$admin_id"

@@ -273,6 +273,16 @@ function notFound(reply: FastifyReply, code: string, message: string) {
   });
 }
 
+function conflict(reply: FastifyReply, code: string, message: string) {
+  return reply.code(409).send({
+    ok: false,
+    error: {
+      code,
+      message
+    }
+  });
+}
+
 function actorLabel(user: CurrentUser): string {
   return user.display_name ?? user.id;
 }
@@ -1320,22 +1330,69 @@ export async function registerUnitRoutes(app: FastifyInstance) {
 
     try {
       return await withDbTransaction(async (tx) => {
-        const result = await tx.query<SquadRow>(
-          `
-          INSERT INTO unit_squads (unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-          RETURNING id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
-          `,
-          [
-            unitId,
-            parsedBody.data.parent_squad_id ?? null,
-            parsedBody.data.squad_key,
-            parsedBody.data.name,
-            parsedBody.data.squad_type,
-            parsedBody.data.hierarchy_mode,
-            parsedBody.data.sort_order
-          ]
+        const parentSquadId = parsedBody.data.parent_squad_id ?? null;
+
+        if (parentSquadId) {
+          const parentResult = await tx.query<{ id: string }>(
+            "SELECT id FROM unit_squads WHERE unit_id = $1 AND id = $2 AND is_active = true",
+            [unitId, parentSquadId]
+          );
+
+          if (!parentResult.rows[0]) {
+            return notFound(reply, "parent_squad_not_found", "Parent squad was not found in this battalion.");
+          }
+        }
+
+        const existingResult = await tx.query<{ id: string; is_active: boolean }>(
+          "SELECT id, is_active FROM unit_squads WHERE unit_id = $1 AND squad_key = $2 FOR UPDATE",
+          [unitId, parsedBody.data.squad_key]
         );
+        const existingSquad = existingResult.rows[0];
+
+        if (existingSquad?.is_active) {
+          return conflict(reply, "squad_key_conflict", "An active squad already uses that squad key.");
+        }
+
+        const result = existingSquad
+          ? await tx.query<SquadRow>(
+              `
+              UPDATE unit_squads
+              SET parent_squad_id = $3,
+                  name = $4,
+                  squad_type = $5,
+                  hierarchy_mode = $6,
+                  sort_order = $7,
+                  is_active = true,
+                  updated_at = now()
+              WHERE unit_id = $1 AND id = $2
+              RETURNING id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
+              `,
+              [
+                unitId,
+                existingSquad.id,
+                parentSquadId,
+                parsedBody.data.name,
+                parsedBody.data.squad_type,
+                parsedBody.data.hierarchy_mode,
+                parsedBody.data.sort_order
+              ]
+            )
+          : await tx.query<SquadRow>(
+              `
+              INSERT INTO unit_squads (unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order)
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+              RETURNING id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
+              `,
+              [
+                unitId,
+                parentSquadId,
+                parsedBody.data.squad_key,
+                parsedBody.data.name,
+                parsedBody.data.squad_type,
+                parsedBody.data.hierarchy_mode,
+                parsedBody.data.sort_order
+              ]
+            );
 
         await audit(tx, auth.user, "create_unit_squad", { unit_id: unitId, squad_id: result.rows[0]?.id });
 
