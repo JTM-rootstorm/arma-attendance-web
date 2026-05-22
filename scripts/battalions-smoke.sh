@@ -199,5 +199,18 @@ member_manage_status="$(
     -d '{"squad_key":"denied","name":"Denied"}'
 )"
 assert_status "403" "$member_manage_status" "member squad create"
+member_delete_status="$(
+  curl -sS -o /dev/null -w "%{http_code}" -b "$MEMBER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/units/$unit_id/squads/$fireteam_id"
+)"
+assert_status "403" "$member_delete_status" "member squad delete"
+
+echo "[smoke:battalions] Checking squad delete unassigns roster players..."
+curl -fsS -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/units/$unit_id/squads/$fireteam_id" |
+  assert_json "data.ok === true && data.deleted_squad_ids.includes('$fireteam_id') && data.unassigned_count >= 2"
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json "
+  data.ok === true
+  && !JSON.stringify(data.squads).includes('Blue Fireteam')
+  && data.unassigned.some((player) => player.player_uid === '$player_two')
+"
 
 echo "[smoke:battalions] OK unit_id=$unit_id owner_id=$owner_id admin_id=$admin_id"

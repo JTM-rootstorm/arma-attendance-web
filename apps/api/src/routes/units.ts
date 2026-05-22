@@ -1426,22 +1426,66 @@ export async function registerUnitRoutes(app: FastifyInstance) {
 
     try {
       return await withDbTransaction(async (tx) => {
-        await tx.query(
-          "UPDATE unit_roster_assignments SET squad_id = NULL, billet = 'unassigned', updated_at = now() WHERE unit_id = $1 AND squad_id = $2 AND ended_at IS NULL",
-          [unitId, squadId]
-        );
-        const result = await tx.query<{ id: string }>(
-          "UPDATE unit_squads SET is_active = false, updated_at = now() WHERE unit_id = $1 AND id = $2 RETURNING id",
+        const result = await tx.query<{ squad_ids: string[]; unassigned_count: number }>(
+          `
+          WITH RECURSIVE squad_tree AS (
+            SELECT id
+            FROM unit_squads
+            WHERE unit_id = $1 AND id = $2 AND is_active = true
+
+            UNION ALL
+
+            SELECT child.id
+            FROM unit_squads child
+            JOIN squad_tree parent ON parent.id = child.parent_squad_id
+            WHERE child.unit_id = $1 AND child.is_active = true
+          ),
+          unassigned AS (
+            UPDATE unit_roster_assignments
+            SET squad_id = NULL,
+                billet = 'unassigned',
+                updated_at = now()
+            WHERE unit_id = $1
+              AND squad_id IN (SELECT id FROM squad_tree)
+              AND ended_at IS NULL
+            RETURNING player_uid
+          ),
+          deleted AS (
+            UPDATE unit_squads
+            SET is_active = false,
+                parent_squad_id = NULL,
+                updated_at = now()
+            WHERE unit_id = $1
+              AND id IN (SELECT id FROM squad_tree)
+            RETURNING id
+          )
+          SELECT
+            ARRAY(SELECT id::text FROM deleted) AS squad_ids,
+            (SELECT COUNT(*)::int FROM unassigned) AS unassigned_count
+          `,
           [unitId, squadId]
         );
 
-        if (!result.rows[0]) {
+        const deletedSquadIds = result.rows[0]?.squad_ids ?? [];
+
+        if (deletedSquadIds.length === 0) {
           return notFound(reply, "squad_not_found", "Battalion squad was not found.");
         }
 
-        await audit(tx, auth.user, "delete_unit_squad", { unit_id: unitId, squad_id: squadId });
+        await audit(tx, auth.user, "delete_unit_squad", {
+          unit_id: unitId,
+          squad_id: squadId,
+          deleted_squad_ids: deletedSquadIds,
+          unassigned_count: result.rows[0]?.unassigned_count ?? 0
+        });
 
-        return { ok: true, squad_id: squadId, deleted: true };
+        return {
+          ok: true,
+          squad_id: squadId,
+          deleted_squad_ids: deletedSquadIds,
+          unassigned_count: result.rows[0]?.unassigned_count ?? 0,
+          deleted: true
+        };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to delete unit squad");

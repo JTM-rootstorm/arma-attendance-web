@@ -325,6 +325,22 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     setNewSquad({ squad_key: "", name: "", parent_squad_id: "", squad_type: "squad", hierarchy_mode: "flat" });
     setMessage("Squad node created.");
     await loadRoster(selectedUnit.unit_id);
+    await loadUnits();
+  }
+
+  async function deleteSquad(squad: BattalionSquadNode) {
+    if (!selectedUnit) {
+      return;
+    }
+
+    if (!window.confirm(`Delete ${squad.name} and unassign its players? Child squads will also be removed.`)) {
+      return;
+    }
+
+    await apiFetch(`/v1/units/${selectedUnit.unit_id}/squads/${squad.id}`, { method: "DELETE" });
+    setMessage("Squad node deleted.");
+    await loadRoster(selectedUnit.unit_id);
+    await loadUnits();
   }
 
   async function saveLayout() {
@@ -560,6 +576,11 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                   <span>{squad.squad_type}</span>
                 </div>
                 <p>{squad.leader ? `Lead: ${squad.leader.roster_name}` : "No lead assigned"}</p>
+                {canManage ? (
+                  <button type="button" className="danger" onClick={() => void deleteSquad(squad)}>
+                    Delete
+                  </button>
+                ) : null}
               </div>
             ))}
           </div>
