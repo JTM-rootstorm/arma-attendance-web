@@ -61,7 +61,7 @@ function flattenPlayers(roster: BattalionRosterResponse | null): BattalionRoster
   }
 
   const squadPlayers = flattenSquads(roster.squads).flatMap((squad) => [
-    ...(squad.leader ? [squad.leader] : []),
+    ...(squad.leaders ?? (squad.leader ? [squad.leader] : [])),
     ...squad.members
   ]);
   const players = [...roster.unassigned, ...squadPlayers];
@@ -608,7 +608,11 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                   <strong>{squad.name}</strong>
                   <span>{squad.squad_type}</span>
                 </div>
-                <p>{squad.leader ? `Lead: ${squad.leader.roster_name}` : "No lead assigned"}</p>
+                <p>
+                  {squad.leaders.length > 0
+                    ? `Leads: ${squad.leaders.map((leader) => leader.roster_name).join(", ")}`
+                    : "No lead assigned"}
+                </p>
                 {canManage ? (
                   <button type="button" className="danger" onClick={() => void deleteSquad(squad)}>
                     Delete

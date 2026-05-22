@@ -239,6 +239,7 @@ type SquadNode = {
   hierarchy_mode: string;
   sort_order: number;
   leader: SanitizedRosterPlayer | null;
+  leaders: SanitizedRosterPlayer[];
   members: SanitizedRosterPlayer[];
   children: SquadNode[];
 };
@@ -385,7 +386,8 @@ function buildSquadTree(squads: SquadRow[], players: SanitizedRosterPlayer[]): S
     }
 
     if (player.billet === "squad_lead" || player.billet === "fireteam_lead") {
-      node.leader = player;
+      node.leaders.push(player);
+      node.leader ??= player;
     } else {
       node.members.push(player);
     }
@@ -420,6 +422,7 @@ function buildSquadNode(squad: SquadRow): SquadNode {
     hierarchy_mode: squad.hierarchy_mode,
     sort_order: squad.sort_order,
     leader: null,
+    leaders: [],
     members: [],
     children: []
   };

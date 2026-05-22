@@ -179,6 +179,7 @@ curl -fsS -b "$OWNER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/squad-lay
     ],
     \"assignments\":[
       {\"player_uid\":\"$player_one\",\"squad_id\":\"$squad_id\",\"billet\":\"squad_lead\",\"sort_order\":10},
+      {\"player_uid\":\"$candidate_player\",\"squad_id\":\"$squad_id\",\"billet\":\"squad_lead\",\"sort_order\":15},
       {\"player_uid\":\"$player_two\",\"squad_id\":\"$fireteam_id\",\"billet\":\"fireteam_lead\",\"sort_order\":20},
       {\"player_uid\":\"$player_three\",\"squad_id\":\"$fireteam_id\",\"billet\":\"trooper\",\"sort_order\":30},
       {\"player_uid\":\"$player_four\",\"squad_id\":null,\"billet\":\"unassigned\",\"sort_order\":40}
@@ -189,7 +190,7 @@ echo "[smoke:battalions] Checking roster shape..."
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json '
   data.ok === true
   && data.unassigned.length >= 1
-  && data.squads.some((squad) => squad.name === "Torrent Squad" && squad.children.some((child) => child.name === "Blue Fireteam"))
+  && data.squads.some((squad) => squad.name === "Torrent Squad" && squad.leaders.length === 2 && squad.children.some((child) => child.name === "Blue Fireteam"))
 '
 
 echo "[smoke:battalions] Checking unit admin can update roster..."

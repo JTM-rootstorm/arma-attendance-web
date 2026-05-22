@@ -559,6 +559,7 @@ export type BattalionSquadNode = {
   hierarchy_mode: "flat" | "tree";
   sort_order: number;
   leader: BattalionRosterPlayer | null;
+  leaders: BattalionRosterPlayer[];
   members: BattalionRosterPlayer[];
   children: BattalionSquadNode[];
 };
