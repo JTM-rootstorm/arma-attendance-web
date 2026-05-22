@@ -129,6 +129,12 @@ rank_response="$(
     -d '{"rank_key":"arc-trooper","name":"ARC Trooper","short_name":"ARC","sort_order":25}'
 )"
 rank_id="$(printf "%s" "$rank_response" | json_value ".rank.id")"
+updated_rank_response="$(
+  curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/ranks" \
+    -H "Content-Type: application/json" \
+    -d '{"rank_key":"rookie","name":"Rookie","short_name":"RCT","sort_order":5}'
+)"
+updated_rank_id="$(printf "%s" "$updated_rank_response" | json_value ".rank.id")"
 
 for player in "$player_one" "$player_two" "$player_three" "$player_four"; do
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/players" \
@@ -190,6 +196,13 @@ echo "[smoke:battalions] Checking unit admin can update roster..."
 curl -fsS -b "$ADMIN_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/players/$player_three" \
   -H "Content-Type: application/json" \
   -d '{"roster_status":"reserve","notes":"smoke update"}' | assert_json 'data.ok === true && data.player.roster_status === "reserve"'
+curl -fsS -b "$ADMIN_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/players/$player_four" \
+  -H "Content-Type: application/json" \
+  -d "{\"rank\":null,\"rank_id\":\"$updated_rank_id\"}" | assert_json "data.ok === true && data.player.rank_id === '$updated_rank_id'"
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json "
+  data.ok === true
+  && data.unassigned.some((player) => player.player_uid === '$player_four' && player.rank === 'Rookie')
+"
 
 echo "[smoke:battalions] Checking member can read but not manage..."
 curl -fsS -b "$MEMBER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json 'data.ok === true'

@@ -1002,11 +1002,11 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           `
           UPDATE unit_players
           SET
-            roster_name = COALESCE($3, roster_name),
-            rank = COALESCE($4, rank),
-            rank_id = COALESCE($5, rank_id),
-            roster_status = COALESCE($6, roster_status),
-            notes = COALESCE($7, notes),
+            roster_name = CASE WHEN $3 THEN $4 ELSE roster_name END,
+            rank = CASE WHEN $5 THEN $6 ELSE rank END,
+            rank_id = CASE WHEN $7 THEN $8 ELSE rank_id END,
+            roster_status = CASE WHEN $9 THEN $10 ELSE roster_status END,
+            notes = CASE WHEN $11 THEN $12 ELSE notes END,
             updated_at = now()
           WHERE unit_id = $1 AND player_uid = $2
           RETURNING unit_id, player_uid, rank, rank_id, roster_name, roster_status, notes
@@ -1014,10 +1014,15 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           [
             unitId,
             playerUid,
+            Object.hasOwn(parsedBody.data, "roster_name"),
             parsedBody.data.roster_name ?? null,
+            Object.hasOwn(parsedBody.data, "rank"),
             parsedBody.data.rank ?? null,
+            Object.hasOwn(parsedBody.data, "rank_id"),
             parsedBody.data.rank_id ?? null,
+            Object.hasOwn(parsedBody.data, "roster_status"),
             parsedBody.data.roster_status ?? null,
+            Object.hasOwn(parsedBody.data, "notes"),
             parsedBody.data.notes ?? null
           ]
         );

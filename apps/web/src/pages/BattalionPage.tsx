@@ -288,6 +288,22 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     await loadPlayerCandidates(selectedUnit.unit_id, candidateSearch);
   }
 
+  async function updatePlayerRank(playerUid: string, rankId: string) {
+    if (!selectedUnit) {
+      return;
+    }
+
+    await apiFetch(`/v1/units/${selectedUnit.unit_id}/players/${encodeURIComponent(playerUid)}`, {
+      method: "PATCH",
+      body: {
+        rank: null,
+        rank_id: rankId || null
+      }
+    });
+    setMessage("Roster rank updated.");
+    await loadRoster(selectedUnit.unit_id);
+  }
+
   async function createRank() {
     if (!selectedUnit) {
       return;
@@ -446,7 +462,24 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                         <strong>{player.roster_name}</strong>
                         {canRevealIds && playerUid ? <p className="mono">{playerUid}</p> : null}
                       </td>
-                      <td>{displayValue(player.rank)}</td>
+                      <td>
+                        {canManage && playerUid ? (
+                          <select
+                            value={player.rank_id ?? ""}
+                            onChange={(event) => void updatePlayerRank(playerUid, event.target.value)}
+                            aria-label={`Rank for ${player.roster_name}`}
+                          >
+                            <option value="">Unassigned</option>
+                            {rosterData.ranks.map((rank) => (
+                              <option key={rank.id} value={rank.id}>
+                                {rank.short_name ?? rank.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          displayValue(player.rank)
+                        )}
+                      </td>
                       <td>{player.roster_status}</td>
                       <td>
                         {canManage && playerUid ? (
