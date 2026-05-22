@@ -190,7 +190,7 @@ echo "[smoke:battalions] Checking roster shape..."
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json '
   data.ok === true
   && data.unassigned.length >= 1
-  && data.squads.some((squad) => squad.name === "Torrent Squad" && squad.leaders.length === 2 && squad.children.some((child) => child.name === "Blue Fireteam"))
+  && data.squads.some((squad) => squad.name === "Torrent Squad" && squad.leaders.length === 2 && squad.squad_leaders.length === 2 && squad.fireteam_leaders.length === 0 && squad.children.some((child) => child.name === "Blue Fireteam" && child.fireteam_leaders.length === 1))
 '
 
 echo "[smoke:battalions] Checking unit admin can update roster..."

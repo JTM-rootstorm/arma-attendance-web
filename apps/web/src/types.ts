@@ -560,6 +560,8 @@ export type BattalionSquadNode = {
   sort_order: number;
   leader: BattalionRosterPlayer | null;
   leaders: BattalionRosterPlayer[];
+  squad_leaders: BattalionRosterPlayer[];
+  fireteam_leaders: BattalionRosterPlayer[];
   members: BattalionRosterPlayer[];
   children: BattalionSquadNode[];
 };

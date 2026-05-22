@@ -83,6 +83,24 @@ function squadLabel(squad: BattalionSquadNode): string {
   return `${squad.name} (${squad.squad_type})`;
 }
 
+function leaderNames(leaders: BattalionRosterPlayer[]): string {
+  return leaders.map((leader) => leader.roster_name).join(", ");
+}
+
+function squadLeadSummary(squad: BattalionSquadNode): string {
+  const parts = [];
+
+  if (squad.squad_leaders.length > 0) {
+    parts.push(`Squad leads: ${leaderNames(squad.squad_leaders)}`);
+  }
+
+  if (squad.fireteam_leaders.length > 0) {
+    parts.push(`Fireteam leads: ${leaderNames(squad.fireteam_leaders)}`);
+  }
+
+  return parts.length > 0 ? parts.join(" | ") : "No lead assigned";
+}
+
 function slugifyUnitKey(value: string): string {
   return value
     .trim()
@@ -608,11 +626,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                   <strong>{squad.name}</strong>
                   <span>{squad.squad_type}</span>
                 </div>
-                <p>
-                  {squad.leaders.length > 0
-                    ? `Leads: ${squad.leaders.map((leader) => leader.roster_name).join(", ")}`
-                    : "No lead assigned"}
-                </p>
+                <p>{squadLeadSummary(squad)}</p>
                 {canManage ? (
                   <button type="button" className="danger" onClick={() => void deleteSquad(squad)}>
                     Delete
