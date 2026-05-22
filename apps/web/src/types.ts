@@ -489,4 +489,119 @@ export type CreateMachineTokenResponse = {
   token_record: MachineTokenRecord;
 };
 
-export type ViewName = "me" | "dashboard" | "operations" | "players" | "discord" | "admin" | "system";
+export type UnitRole = "member" | "officer" | "admin" | "tcw_admin";
+
+export type BattalionSummary = {
+  unit_id: string;
+  unit_key: string;
+  name: string;
+  display_name: string;
+  callsign: string | null;
+  description: string | null;
+  emblem_url: string | null;
+  sort_order: number;
+  is_active: boolean;
+  member_count: number;
+  unassigned_count: number;
+  squad_count: number;
+  my_roles: UnitRole[];
+};
+
+export type UnitsResponse = {
+  ok: true;
+  units: BattalionSummary[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type BattalionRank = {
+  id: string;
+  unit_id: string;
+  rank_key: string;
+  name: string;
+  short_name: string | null;
+  sort_order: number;
+  is_active: boolean;
+};
+
+export type BattalionRosterPlayer = {
+  player_uid: string | null;
+  roster_name: string;
+  player_name: string | null;
+  rank: string | null;
+  rank_id: string | null;
+  rank_sort: number;
+  roster_status: "active" | "reserve" | "loa" | "inactive";
+  notes: string | null;
+  squad_id: string | null;
+  billet: "unassigned" | "squad_lead" | "fireteam_lead" | "trooper";
+  sort_order: number;
+};
+
+export type BattalionSquadNode = {
+  id: string;
+  parent_squad_id: string | null;
+  squad_key: string;
+  name: string;
+  squad_type: "company" | "platoon" | "squad" | "fireteam" | "detachment";
+  hierarchy_mode: "flat" | "tree";
+  sort_order: number;
+  leader: BattalionRosterPlayer | null;
+  members: BattalionRosterPlayer[];
+  children: BattalionSquadNode[];
+};
+
+export type BattalionRosterResponse = {
+  ok: true;
+  unit: {
+    id: string;
+    unit_key: string;
+    name: string;
+    display_name: string | null;
+    callsign: string | null;
+    description: string | null;
+    emblem_url: string | null;
+    sort_order: number;
+    is_active: boolean;
+  };
+  ranks: BattalionRank[];
+  unassigned: BattalionRosterPlayer[];
+  squads: BattalionSquadNode[];
+};
+
+export type UnitLeaderboardResponse = {
+  ok: true;
+  leaderboard: Array<{
+    rank: number;
+    unit_id: string | null;
+    unit_key: string | null;
+    name: string;
+    member_count: number;
+    operation_count: number;
+    total_kills: number;
+    infantry_kills: number;
+    soft_vehicle_kills: number;
+    armor_kills: number;
+    air_kills: number;
+    deaths: number;
+  }>;
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type ViewName =
+  | "me"
+  | "battalion"
+  | "leaderboard"
+  | "dashboard"
+  | "operations"
+  | "players"
+  | "discord"
+  | "admin"
+  | "system";

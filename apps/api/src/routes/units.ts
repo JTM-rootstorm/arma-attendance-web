@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { hasRole, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext } from "../auth/authorization.js";
-import { getUserUnitRoles, requireUnitAdmin, requireUnitMember } from "../auth/units.js";
+import { getUserUnitRoles, hasUnitRole, requireUnitAdmin, requireUnitMember } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
@@ -787,7 +787,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
         return notFound(reply, "unit_not_found", "Battalion was not found.");
       }
 
-      const revealSensitive = canSeeSensitiveIds(auth.user);
+      const revealSensitive = canSeeSensitiveIds(auth.user) || (await hasUnitRole(auth.user, unitId, "admin"));
       const rosterPlayers = playersResult.rows.map((row) => sanitizeRosterPlayer(row, revealSensitive));
       const unassigned = rosterPlayers.filter((player) => !player.squad_id || player.billet === "unassigned");
 

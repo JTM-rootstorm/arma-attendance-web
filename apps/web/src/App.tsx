@@ -4,9 +4,11 @@ import { ApiClientError, apiFetch, fetchCsv } from "./api";
 import {
   canDeleteOperations,
   canExport,
+  canOpenBattalion,
   canOpenComms,
   canOpenDashboard,
   canOpenIdentityAdmin,
+  canOpenLeaderboard,
   canOpenOperations,
   canOpenRoster,
   canManageMachineTokens,
@@ -19,8 +21,10 @@ import { PayloadInspector } from "./components/PayloadInspector";
 import { StatusChip } from "./components/StatusChip";
 import { emptyResult, resultError, statusLabel } from "./format";
 import { DashboardPage } from "./pages/DashboardPage";
+import { BattalionPage } from "./pages/BattalionPage";
 import { DiscordPage } from "./pages/DiscordPage";
 import { IdentityPage } from "./pages/IdentityPage";
+import { LeaderboardPage } from "./pages/LeaderboardPage";
 import { MyStatsPage } from "./pages/MyStatsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { PlayersPage } from "./pages/PlayersPage";
@@ -98,6 +102,8 @@ export function App() {
   const canAdmin = canOpenIdentityAdmin(sessionUser);
   const canManageSystem = canManageMachineTokens(sessionUser);
   const canViewDashboard = canOpenDashboard(sessionUser);
+  const canViewBattalion = canOpenBattalion(sessionUser);
+  const canViewLeaderboard = canOpenLeaderboard(sessionUser);
   const canViewOperations = canOpenOperations(sessionUser);
   const canViewRoster = canOpenRoster(sessionUser);
   const canViewComms = canOpenComms(sessionUser);
@@ -388,6 +394,8 @@ export function App() {
 
     const allowed =
       view === "me" ||
+      (view === "battalion" && canViewBattalion) ||
+      (view === "leaderboard" && canViewLeaderboard) ||
       (view === "dashboard" && canViewDashboard) ||
       (view === "operations" && canViewOperations) ||
       (view === "players" && canViewRoster) ||
@@ -398,7 +406,18 @@ export function App() {
     if (!allowed) {
       setView("me");
     }
-  }, [canAdmin, canManageSystem, canViewComms, canViewDashboard, canViewOperations, canViewRoster, sessionUser, view]);
+  }, [
+    canAdmin,
+    canManageSystem,
+    canViewBattalion,
+    canViewComms,
+    canViewDashboard,
+    canViewLeaderboard,
+    canViewOperations,
+    canViewRoster,
+    sessionUser,
+    view
+  ]);
 
   useEffect(() => {
     if (selectedOperationId) {
@@ -532,6 +551,10 @@ export function App() {
           await loadMyStats();
         }}
       />
+    ) : view === "battalion" && canViewBattalion && sessionUser ? (
+      <BattalionPage user={sessionUser} />
+    ) : view === "leaderboard" && canViewLeaderboard ? (
+      <LeaderboardPage />
     ) : view === "dashboard" && canViewDashboard ? (
       <DashboardPage
         hasToken={canViewDashboard}

@@ -27,6 +27,14 @@ export function canOpenOperations(user: AuthUser | null): boolean {
   return Boolean(user);
 }
 
+export function canOpenBattalion(user: AuthUser | null): boolean {
+  return isOwner(user) || isTcwAdmin(user) || Boolean(user?.unit_memberships.length);
+}
+
+export function canOpenLeaderboard(user: AuthUser | null): boolean {
+  return Boolean(user);
+}
+
 export function canOpenRoster(user: AuthUser | null): boolean {
   return Boolean(user);
 }

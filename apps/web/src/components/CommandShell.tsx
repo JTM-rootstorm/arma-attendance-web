@@ -2,9 +2,11 @@ import type { ReactNode } from "react";
 
 import {
   canManageMachineTokens,
+  canOpenBattalion,
   canOpenComms,
   canOpenDashboard,
   canOpenIdentityAdmin,
+  canOpenLeaderboard,
   canOpenOperations,
   canOpenRoster,
   isOwner
@@ -15,6 +17,8 @@ import { StatusChip } from "./StatusChip";
 
 const navigation: Array<{ view: ViewName; label: string; code: string; allowed: (user: AuthUser | null) => boolean }> = [
   { view: "me", label: "My Stats", code: "ME", allowed: (user) => Boolean(user) },
+  { view: "battalion", label: "Battalion", code: "BTN", allowed: canOpenBattalion },
+  { view: "leaderboard", label: "Leaderboard", code: "LDR", allowed: canOpenLeaderboard },
   { view: "dashboard", label: "Command", code: "CMD", allowed: canOpenDashboard },
   { view: "operations", label: "Operations", code: "OPS", allowed: canOpenOperations },
   { view: "players", label: "Roster", code: "RST", allowed: canOpenRoster },

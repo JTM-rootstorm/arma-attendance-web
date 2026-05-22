@@ -833,6 +833,59 @@ tbody tr.selected {
   margin-bottom: 0.85rem;
 }
 
+.battalion-view .metric-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.battalion-forms {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.filters.battalion-form {
+  grid-template-columns: repeat(3, minmax(8rem, 1fr)) auto;
+  margin: 0;
+}
+
+.squad-tree {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.squad-node {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid rgba(135, 196, 255, 0.18);
+  border-left: 3px solid var(--holo-cyan);
+  border-radius: 3px;
+  padding: 0.75rem;
+  background: rgba(5, 15, 29, 0.78);
+}
+
+.squad-node > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.squad-node span,
+.squad-node p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.layout-actions {
+  margin-top: 0.85rem;
+}
+
+.leaderboard-podium {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
 .identity-account-grid {
   display: grid;
   grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1fr);
@@ -984,7 +1037,9 @@ pre {
   .filters.discord-link-form,
   .filters.discord-rule-form,
   .filters.identity-role-form,
+  .filters.battalion-form,
   .identity-account-grid,
+  .leaderboard-podium,
   .view-grid,
   .metric-grid,
   .metric-grid.compact,
