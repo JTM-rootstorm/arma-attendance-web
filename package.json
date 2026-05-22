@@ -27,6 +27,8 @@
     "smoke:operations:observability": "bash scripts/operations-observability-smoke.sh",
     "smoke:attendance": "bash scripts/normalized-attendance-smoke.sh",
     "smoke:scoreboard": "bash scripts/scoreboard-stats-smoke.sh",
+    "smoke:battalions": "bash scripts/battalions-smoke.sh",
+    "smoke:leaderboard": "bash scripts/leaderboard-smoke.sh",
     "smoke:dashboard": "bash scripts/dashboard-smoke.sh",
     "smoke:exports": "bash scripts/exports-smoke.sh",
     "smoke:data-quality": "bash scripts/data-quality-smoke.sh",

@@ -2,7 +2,7 @@
 
 Web/API service for the Arma 3 Attendance Tracker.
 
-Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard. Discord readiness adds DB/API/admin surfaces for a future bot to sync guild roles and evaluate attendance-based role actions. Auth readiness adds Discord OAuth browser login, server-side sessions, local app roles, admin user management, and Steam identity linking.
+Phase 0 proves that the Arma extension can reach a deployed web API, send JSON with bearer-token auth, and receive compact JSON back. Phase 0.5 persists authenticated debug pokes to PostgreSQL so deployment can prove API-to-database connectivity before real attendance ingest begins. Phase 1-A adds raw operation ingest endpoints that persist start/finish operation payloads. Phase 1-B adds authenticated raw-operation observability endpoints. Phase 1-C/1-D adds normalized attendance/player/stat storage derived from raw operation payloads when player arrays are present. Phase 2 readiness adds internal summary APIs, CSV exports, data-quality checks, a rerunnable attendance backfill script, and an internal React dashboard. Discord readiness adds DB/API/admin surfaces for a future bot to sync guild roles and evaluate attendance-based role actions. Auth readiness adds Discord OAuth browser login, server-side sessions, local app roles, admin user management, and Steam identity linking. Battalion readiness treats backend `units` as battalions, adds roster/rank/squad management, and ranks battalions by scoreboard kill totals.
 
 Raw payloads remain the source of truth. Browser access is now session-cookie based with Discord OAuth, Steam identity linking, unit-scoped RBAC, and sensitive identifier redaction. Machine-token bearer auth remains for Arma ingest, smoke scripts, and future bot automation. Queues, Redis, and required Docker deployment are still intentionally out of scope.
 
@@ -108,6 +108,27 @@ GET  /v1/players
 GET  /v1/players.csv
 GET  /v1/players/:player_uid
 GET  /v1/players/:player_uid/summary
+GET  /v1/units
+POST /v1/units
+PATCH /v1/units/:unit_id
+DELETE /v1/units/:unit_id
+GET  /v1/units/:unit_id/roster
+POST /v1/units/:unit_id/players
+PATCH /v1/units/:unit_id/players/:player_uid
+DELETE /v1/units/:unit_id/players/:player_uid
+GET  /v1/units/:unit_id/ranks
+POST /v1/units/:unit_id/ranks
+PATCH /v1/units/:unit_id/ranks/:rank_id
+DELETE /v1/units/:unit_id/ranks/:rank_id
+GET  /v1/units/:unit_id/squads
+POST /v1/units/:unit_id/squads
+PATCH /v1/units/:unit_id/squads/:squad_id
+DELETE /v1/units/:unit_id/squads/:squad_id
+PATCH /v1/units/:unit_id/squad-layout
+GET  /v1/units/:unit_id/admins
+PUT  /v1/units/:unit_id/admins/:user_id
+DELETE /v1/units/:unit_id/admins/:user_id
+GET  /v1/leaderboard/units
 GET  /auth/discord/start
 GET  /auth/discord/callback
 POST /auth/logout
@@ -349,6 +370,37 @@ The backfill script is safe to rerun. It does not delete raw payload rows and do
 
 `pnpm db:backfill:units` creates or updates a default unit from `DEFAULT_UNIT_SLUG` / `DEFAULT_UNIT_NAME` or safe defaults. Mapping existing operations and players is opt-in through flags.
 
+## Battalion Command And Leaderboard
+
+Battalions are stored as backend `units`. The BTN page labels them as battalions and exposes roster, rank, squad, and placement management through session-cookie RBAC.
+
+Role behavior:
+
+- Owners manage the full battalion lifecycle, including create/deactivate and battalion admin assignments.
+- TCW admins can administer assigned battalions and see sensitive identifiers within their scope.
+- Unit admins can manage assigned battalion roster entries, ranks, squads, and squad placements.
+- Officers and members can read assigned battalion rosters.
+- Plain authenticated users with no unit assignment see no battalion roster.
+
+Roster management supports manual player adds/removals, battalion rank assignment, flat squads, nested squad/fireteam trees, squad lead/fireteam lead/trooper billets, and an unassigned intake section. The web page uses dropdown layout controls as the no-dependency fallback path for squad placement saves; a future Discord bot can import assignments through the same source-aware schema.
+
+The LDR page ranks active battalions by current active roster stats:
+
+```text
+total_kills = infantry_kills + soft_vehicle_kills + armor_kills + air_kills
+```
+
+Deaths are displayed separately and are not subtracted.
+
+Synthetic battalion validation:
+
+```bash
+pnpm smoke:battalions
+pnpm smoke:leaderboard
+```
+
+These scripts require a running API, migrated PostgreSQL database, and test auth enabled through non-production mode or `ENABLE_TEST_AUTH=true`.
+
 ## Authentication And Identity
 
 Discord OAuth is the primary browser login. The app stores local `app_users`, linked provider identities, app roles, and opaque server-side sessions. It does not store local passwords or Discord access tokens.
@@ -366,7 +418,7 @@ Role summary:
 | Anonymous | Login only | No | No | No |
 | Viewer | Own stats, own operations, identity | No | Self only | No |
 | Officer | Assigned-unit roster and operations, read-only | No | No | No |
-| Unit admin | Assigned-unit roster, mappings, attendance rules | Assigned units | No | No |
+| Unit admin | Assigned-unit roster, mappings, attendance rules, battalion layout | Assigned units | Assigned roster UID only | No |
 | TCW admin | Assigned multi-unit admin surfaces | Assigned units | Yes, within scope | No |
 | Owner | All surfaces | Yes | Yes | Yes |
 
@@ -493,6 +545,8 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0007_rbac_session_machine_tokens.sql`
 - `0008_authenticated_roster_defaults.sql`
 - `0009_discord_default_player_names.sql`
+- `0010_scoreboard_stats.sql`
+- `0011_battalion_roster_and_leaderboard.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -507,6 +561,9 @@ pnpm smoke:db
 pnpm smoke:operations
 pnpm smoke:operations:observability
 pnpm smoke:attendance
+pnpm smoke:scoreboard
+pnpm smoke:battalions
+pnpm smoke:leaderboard
 pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
@@ -515,7 +572,7 @@ pnpm smoke:auth
 pnpm smoke:rbac
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. `pnpm smoke:rbac` covers session-cookie RBAC, unit scoping, redaction boundaries, and owner machine-token management. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:scoreboard` covers split scoreboard stats. `pnpm smoke:battalions` covers battalion creation, roster, ranks, squads, assignments, unit-admin management, and member read-only access. `pnpm smoke:leaderboard` covers battalion ranking and the total-kills formula. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. `pnpm smoke:rbac` covers session-cookie RBAC, unit scoping, redaction boundaries, and owner machine-token management. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
 
 Normalized attendance tables:
 
@@ -530,7 +587,7 @@ pnpm release:check
 RUN_DB_SMOKE=1 pnpm release:check
 ```
 
-The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including dashboard, exports, data quality, Discord readiness, and auth readiness.
+The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` also runs DB-backed smoke scripts, including scoreboard stats, battalion management, leaderboard, dashboard, exports, data quality, Discord readiness, and auth readiness.
 
 ## Debian 13 LXC Setup
 
@@ -688,6 +745,9 @@ pnpm smoke:db
 pnpm smoke:operations
 pnpm smoke:operations:observability
 pnpm smoke:attendance
+pnpm smoke:scoreboard
+pnpm smoke:battalions
+pnpm smoke:leaderboard
 pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
