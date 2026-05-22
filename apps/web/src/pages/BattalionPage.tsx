@@ -448,45 +448,61 @@ export function BattalionPage({ user }: { user: AuthUser }) {
       {canManage ? (
         <CommandPanel title="Command Assignment" eyebrow="Admin controls" wide>
           <div className="battalion-forms">
-            <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-              <input value={newPlayer.player_uid} onChange={(event) => setNewPlayer({ ...newPlayer, player_uid: event.target.value })} placeholder="Player UID" />
-              <input value={newPlayer.roster_name} onChange={(event) => setNewPlayer({ ...newPlayer, roster_name: event.target.value })} placeholder="Roster name" />
-              <input value={newPlayer.rank} onChange={(event) => setNewPlayer({ ...newPlayer, rank: event.target.value })} placeholder="Rank" />
-              <button type="button" onClick={() => void addPlayer()} disabled={!newPlayer.player_uid}>
-                Add trooper
-              </button>
-            </form>
-            <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-              <input value={newSquad.squad_key} onChange={(event) => setNewSquad({ ...newSquad, squad_key: event.target.value })} placeholder="Squad key" />
-              <input value={newSquad.name} onChange={(event) => setNewSquad({ ...newSquad, name: event.target.value })} placeholder="Squad name" />
-              <select value={newSquad.parent_squad_id} onChange={(event) => setNewSquad({ ...newSquad, parent_squad_id: event.target.value })}>
-                <option value="">No parent</option>
-                {allSquads.map((squad) => (
-                  <option key={squad.id} value={squad.id}>
-                    {squad.name}
-                  </option>
-                ))}
-              </select>
-              <select value={newSquad.squad_type} onChange={(event) => setNewSquad({ ...newSquad, squad_type: event.target.value })}>
-                <option value="squad">Squad</option>
-                <option value="fireteam">Fireteam</option>
-                <option value="platoon">Platoon</option>
-                <option value="company">Company</option>
-                <option value="detachment">Detachment</option>
-              </select>
-              <button type="button" onClick={() => void createSquad()} disabled={!newSquad.squad_key || !newSquad.name}>
-                Create squad
-              </button>
-            </form>
-            <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-              <input value={newRank.rank_key} onChange={(event) => setNewRank({ ...newRank, rank_key: event.target.value })} placeholder="Rank key" />
-              <input value={newRank.name} onChange={(event) => setNewRank({ ...newRank, name: event.target.value })} placeholder="Rank name" />
-              <input value={newRank.short_name} onChange={(event) => setNewRank({ ...newRank, short_name: event.target.value })} placeholder="Short" />
-              <input value={newRank.sort_order} onChange={(event) => setNewRank({ ...newRank, sort_order: event.target.value })} placeholder="Sort" />
-              <button type="button" onClick={() => void createRank()} disabled={!newRank.rank_key || !newRank.name}>
-                Add rank
-              </button>
-            </form>
+            {isOwner(user) ? (
+              <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+                <input value={newUnit.unit_key} onChange={(event) => setNewUnit({ ...newUnit, unit_key: event.target.value })} placeholder="battalion-key" />
+                <input value={newUnit.name} onChange={(event) => setNewUnit({ ...newUnit, name: event.target.value })} placeholder="Battalion name" />
+                <input value={newUnit.callsign} onChange={(event) => setNewUnit({ ...newUnit, callsign: event.target.value })} placeholder="Callsign" />
+                <button type="button" onClick={() => void createUnit()} disabled={!newUnit.unit_key || !newUnit.name}>
+                  Create battalion
+                </button>
+              </form>
+            ) : null}
+
+            {selectedUnit ? (
+              <>
+                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+                  <input value={newPlayer.player_uid} onChange={(event) => setNewPlayer({ ...newPlayer, player_uid: event.target.value })} placeholder="Player UID" />
+                  <input value={newPlayer.roster_name} onChange={(event) => setNewPlayer({ ...newPlayer, roster_name: event.target.value })} placeholder="Roster name" />
+                  <input value={newPlayer.rank} onChange={(event) => setNewPlayer({ ...newPlayer, rank: event.target.value })} placeholder="Rank" />
+                  <button type="button" onClick={() => void addPlayer()} disabled={!newPlayer.player_uid}>
+                    Add trooper
+                  </button>
+                </form>
+                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+                  <input value={newSquad.squad_key} onChange={(event) => setNewSquad({ ...newSquad, squad_key: event.target.value })} placeholder="Squad key" />
+                  <input value={newSquad.name} onChange={(event) => setNewSquad({ ...newSquad, name: event.target.value })} placeholder="Squad name" />
+                  <select value={newSquad.parent_squad_id} onChange={(event) => setNewSquad({ ...newSquad, parent_squad_id: event.target.value })}>
+                    <option value="">No parent</option>
+                    {allSquads.map((squad) => (
+                      <option key={squad.id} value={squad.id}>
+                        {squad.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select value={newSquad.squad_type} onChange={(event) => setNewSquad({ ...newSquad, squad_type: event.target.value })}>
+                    <option value="squad">Squad</option>
+                    <option value="fireteam">Fireteam</option>
+                    <option value="platoon">Platoon</option>
+                    <option value="company">Company</option>
+                    <option value="detachment">Detachment</option>
+                  </select>
+                  <button type="button" onClick={() => void createSquad()} disabled={!newSquad.squad_key || !newSquad.name}>
+                    Create squad
+                  </button>
+                </form>
+                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+                  <input value={newRank.rank_key} onChange={(event) => setNewRank({ ...newRank, rank_key: event.target.value })} placeholder="Rank key" />
+                  <input value={newRank.name} onChange={(event) => setNewRank({ ...newRank, name: event.target.value })} placeholder="Rank name" />
+                  <input value={newRank.short_name} onChange={(event) => setNewRank({ ...newRank, short_name: event.target.value })} placeholder="Short" />
+                  <input value={newRank.sort_order} onChange={(event) => setNewRank({ ...newRank, sort_order: event.target.value })} placeholder="Sort" />
+                  <button type="button" onClick={() => void createRank()} disabled={!newRank.rank_key || !newRank.name}>
+                    Add rank
+                  </button>
+                </form>
+              </>
+            ) : null}
+
             {isOwner(user) && selectedUnit ? (
               <>
                 <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
@@ -501,14 +517,6 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                   </button>
                   <button type="button" className="danger" onClick={() => void deleteUnit()}>
                     Deactivate battalion
-                  </button>
-                </form>
-                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-                  <input value={newUnit.unit_key} onChange={(event) => setNewUnit({ ...newUnit, unit_key: event.target.value })} placeholder="battalion-key" />
-                  <input value={newUnit.name} onChange={(event) => setNewUnit({ ...newUnit, name: event.target.value })} placeholder="Battalion name" />
-                  <input value={newUnit.callsign} onChange={(event) => setNewUnit({ ...newUnit, callsign: event.target.value })} placeholder="Callsign" />
-                  <button type="button" onClick={() => void createUnit()} disabled={!newUnit.unit_key || !newUnit.name}>
-                    Create battalion
                   </button>
                 </form>
               </>
