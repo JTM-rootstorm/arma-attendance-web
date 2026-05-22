@@ -27,6 +27,10 @@ type AssignmentDraft = Record<
   }
 >;
 
+type AssignmentPatch = Partial<AssignmentDraft[string]>;
+
+type SquadPatch = Partial<Pick<BattalionSquadNode, "parent_squad_id" | "hierarchy_mode" | "sort_order">>;
+
 const emptyUnits: ApiResult<UnitsResponse> = { status: "idle", data: null, error: null };
 const emptyRoster: ApiResult<BattalionRosterResponse> = { status: "idle", data: null, error: null };
 const emptyCandidates: ApiResult<BattalionPlayerCandidatesResponse> = { status: "idle", data: null, error: null };
@@ -53,6 +57,40 @@ function DataMessage({ result }: { result: ApiResult<unknown> }) {
 
 function flattenSquads(squads: BattalionSquadNode[]): BattalionSquadNode[] {
   return squads.flatMap((squad) => [squad, ...flattenSquads(squad.children)]);
+}
+
+function findSquad(squads: BattalionSquadNode[], squadId: string): BattalionSquadNode | null {
+  for (const squad of squads) {
+    if (squad.id === squadId) {
+      return squad;
+    }
+
+    const child = findSquad(squad.children, squadId);
+
+    if (child) {
+      return child;
+    }
+  }
+
+  return null;
+}
+
+function findSquadPath(squads: BattalionSquadNode[], squadId: string, path: BattalionSquadNode[] = []): BattalionSquadNode[] {
+  for (const squad of squads) {
+    const nextPath = [...path, squad];
+
+    if (squad.id === squadId) {
+      return nextPath;
+    }
+
+    const childPath = findSquadPath(squad.children, squadId, nextPath);
+
+    if (childPath.length > 0) {
+      return childPath;
+    }
+  }
+
+  return [];
 }
 
 function flattenPlayers(roster: BattalionRosterResponse | null): BattalionRosterPlayer[] {
@@ -101,6 +139,10 @@ function squadLeadSummary(squad: BattalionSquadNode): string {
   return parts.length > 0 ? parts.join(" | ") : "No lead assigned";
 }
 
+function billetLabel(billet: BattalionRosterPlayer["billet"]): string {
+  return billet.replaceAll("_", " ").toUpperCase();
+}
+
 function slugifyUnitKey(value: string): string {
   return value
     .trim()
@@ -118,6 +160,331 @@ function canManageBattalion(user: AuthUser, unit: BattalionSummary | null): bool
   return Boolean(unit?.my_roles.some((role) => role === "admin" || role === "tcw_admin"));
 }
 
+function RosterMemberCard({
+  player,
+  allSquads,
+  canManage,
+  canRevealIds,
+  draft,
+  onDraftChange
+}: {
+  player: BattalionRosterPlayer;
+  allSquads: BattalionSquadNode[];
+  canManage: boolean;
+  canRevealIds: boolean;
+  draft: AssignmentDraft[string] | null;
+  onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+}) {
+  const playerUid = player.player_uid ?? "";
+
+  return (
+    <article className="roster-member-card">
+      <div>
+        <strong>{player.roster_name}</strong>
+        <span>{displayValue(player.rank)}</span>
+        <span>{billetLabel(player.billet)}</span>
+        {canRevealIds && playerUid ? <p className="mono">{playerUid}</p> : null}
+      </div>
+      {canManage && playerUid && draft ? (
+        <div className="assignment-controls">
+          <select
+            value={draft.squad_id}
+            onChange={(event) => onDraftChange(playerUid, { squad_id: event.target.value })}
+            aria-label={`Squad assignment for ${player.roster_name}`}
+          >
+            <option value="">UNASSIGNED POOL</option>
+            {allSquads.map((squad) => (
+              <option key={squad.id} value={squad.id}>
+                {squadLabel(squad)}
+              </option>
+            ))}
+          </select>
+          <select
+            value={draft.billet}
+            onChange={(event) => onDraftChange(playerUid, { billet: event.target.value as BattalionRosterPlayer["billet"] })}
+            aria-label={`Billet assignment for ${player.roster_name}`}
+          >
+            <option value="trooper">Trooper</option>
+            <option value="squad_lead">Squad lead</option>
+            <option value="fireteam_lead">Fireteam lead</option>
+            <option value="unassigned">Unassigned</option>
+          </select>
+          <input
+            type="number"
+            value={draft.sort_order}
+            onChange={(event) => onDraftChange(playerUid, { sort_order: Number(event.target.value || "0") })}
+            aria-label={`Sort order for ${player.roster_name}`}
+          />
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function SquadSection({
+  title,
+  players,
+  allSquads,
+  canManage,
+  canRevealIds,
+  assignmentDraft,
+  onDraftChange
+}: {
+  title: string;
+  players: BattalionRosterPlayer[];
+  allSquads: BattalionSquadNode[];
+  canManage: boolean;
+  canRevealIds: boolean;
+  assignmentDraft: AssignmentDraft;
+  onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+}) {
+  return (
+    <section className="squad-section">
+      <h4>{title}</h4>
+      <div className="squad-members-list">
+        {players.length > 0 ? (
+          players.map((player) => {
+            const playerUid = player.player_uid ?? "";
+
+            return (
+              <RosterMemberCard
+                key={playerUid || player.roster_name}
+                player={player}
+                allSquads={allSquads}
+                canManage={canManage}
+                canRevealIds={canRevealIds}
+                draft={playerUid ? assignmentDraft[playerUid] ?? null : null}
+                onDraftChange={onDraftChange}
+              />
+            );
+          })
+        ) : (
+          <p className="empty-copy small">No troopers assigned.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function UnassignedPool({
+  members,
+  allSquads,
+  canManage,
+  canRevealIds,
+  assignmentDraft,
+  onDraftChange
+}: {
+  members: BattalionRosterPlayer[];
+  allSquads: BattalionSquadNode[];
+  canManage: boolean;
+  canRevealIds: boolean;
+  assignmentDraft: AssignmentDraft;
+  onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+}) {
+  return (
+    <section className="unassigned-pool">
+      <div className="panel-heading slim">
+        <h3>UNASSIGNED INTAKE</h3>
+        <StatusChip label={`${members.length} pending`} tone={members.length > 0 ? "warn" : "muted"} />
+      </div>
+      <div className="unassigned-pool-list">
+        {members.length > 0 ? (
+          members.map((player) => {
+            const playerUid = player.player_uid ?? "";
+
+            return (
+              <RosterMemberCard
+                key={playerUid || player.roster_name}
+                player={player}
+                allSquads={allSquads}
+                canManage={canManage}
+                canRevealIds={canRevealIds}
+                draft={playerUid ? assignmentDraft[playerUid] ?? null : null}
+                onDraftChange={onDraftChange}
+              />
+            );
+          })
+        ) : (
+          <p className="empty-copy small">No troopers awaiting command assignment.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SquadPanel({
+  squad,
+  depth,
+  allSquads,
+  canManage,
+  canRevealIds,
+  assignmentDraft,
+  collapsedSquadIds,
+  onDraftChange,
+  onDeleteSquad,
+  onFocusSquad,
+  onToggleCollapse,
+  onPrepareChild,
+  onUpdateSquad
+}: {
+  squad: BattalionSquadNode;
+  depth: number;
+  allSquads: BattalionSquadNode[];
+  canManage: boolean;
+  canRevealIds: boolean;
+  assignmentDraft: AssignmentDraft;
+  collapsedSquadIds: Set<string>;
+  onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+  onDeleteSquad: (squad: BattalionSquadNode) => void;
+  onFocusSquad: (squadId: string) => void;
+  onToggleCollapse: (squadId: string) => void;
+  onPrepareChild: (squad: BattalionSquadNode) => void;
+  onUpdateSquad: (squad: BattalionSquadNode, patch: SquadPatch) => void;
+}) {
+  const hasChildren = squad.children.length > 0;
+  const collapsed = collapsedSquadIds.has(squad.id);
+
+  if (depth >= 3) {
+    return (
+      <article className="squad-panel depth-3 compact">
+        <div className="squad-panel-header">
+          <div>
+            <strong>Nested element: {squad.name}</strong>
+            <span>
+              Members: {squad.leaders.length + squad.members.length} / Attached: {squad.children.length}
+            </span>
+          </div>
+          <div className="inline-actions">
+            <button type="button" onClick={() => onFocusSquad(squad.id)}>
+              Open detail
+            </button>
+            {canManage && squad.parent_squad_id ? (
+              <button type="button" onClick={() => onUpdateSquad(squad, { parent_squad_id: null })}>
+                Move to parent
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <article className={`squad-panel depth-${depth} ${depth === 0 ? "parented" : "child-card"}`}>
+      <header className="squad-panel-header">
+        <div>
+          <strong>{squad.name}</strong>
+          <span>
+            {squad.squad_type.toUpperCase()} / {squad.hierarchy_mode.toUpperCase()} / {squad.leaders.length + squad.members.length} TROOPERS
+          </span>
+          <p>{squadLeadSummary(squad)}</p>
+        </div>
+        <div className="inline-actions">
+          {hasChildren ? (
+            <button type="button" onClick={() => onToggleCollapse(squad.id)}>
+              {collapsed ? "Expand" : "Collapse"}
+            </button>
+          ) : null}
+          {depth > 0 ? (
+            <button type="button" onClick={() => onFocusSquad(squad.id)}>
+              Focus
+            </button>
+          ) : null}
+          {canManage ? (
+            <>
+              <button type="button" onClick={() => onPrepareChild(squad)}>
+                Add child
+              </button>
+              {squad.parent_squad_id ? (
+                <button type="button" onClick={() => onUpdateSquad(squad, { parent_squad_id: null })}>
+                  Detach
+                </button>
+              ) : null}
+              <button type="button" className="danger" onClick={() => onDeleteSquad(squad)}>
+                Delete
+              </button>
+            </>
+          ) : null}
+        </div>
+      </header>
+
+      {canManage ? (
+        <div className="squad-mode-controls">
+          <label>
+            Mode
+            <select
+              value={squad.hierarchy_mode}
+              onChange={(event) => onUpdateSquad(squad, { hierarchy_mode: event.target.value as BattalionSquadNode["hierarchy_mode"] })}
+            >
+              <option value="flat">Flat</option>
+              <option value="tree">Tree</option>
+            </select>
+          </label>
+          <label>
+            Sort
+            <input
+              type="number"
+              value={squad.sort_order}
+              onChange={(event) => onUpdateSquad(squad, { sort_order: Number(event.target.value || "0") })}
+            />
+          </label>
+        </div>
+      ) : null}
+
+      <div className="squad-sections-grid">
+        <SquadSection
+          title="LEADERS"
+          players={squad.leaders}
+          allSquads={allSquads}
+          canManage={canManage}
+          canRevealIds={canRevealIds}
+          assignmentDraft={assignmentDraft}
+          onDraftChange={onDraftChange}
+        />
+        <SquadSection
+          title="DIRECT MEMBERS"
+          players={squad.members}
+          allSquads={allSquads}
+          canManage={canManage}
+          canRevealIds={canRevealIds}
+          assignmentDraft={assignmentDraft}
+          onDraftChange={onDraftChange}
+        />
+      </div>
+
+      {hasChildren && squad.hierarchy_mode === "flat" ? (
+        <p className="message warning">This squad has child elements but is set to FLAT mode. Switch to TREE mode to manage child squads.</p>
+      ) : null}
+
+      {hasChildren && squad.hierarchy_mode === "tree" && !collapsed ? (
+        <section className="squad-section attached-elements">
+          <h4>ATTACHED ELEMENTS</h4>
+          <div className="squad-children-grid">
+            {squad.children.map((child) => (
+              <SquadPanel
+                key={child.id}
+                squad={child}
+                depth={depth + 1}
+                allSquads={allSquads}
+                canManage={canManage}
+                canRevealIds={canRevealIds}
+                assignmentDraft={assignmentDraft}
+                collapsedSquadIds={collapsedSquadIds}
+                onDraftChange={onDraftChange}
+                onDeleteSquad={onDeleteSquad}
+                onFocusSquad={onFocusSquad}
+                onToggleCollapse={onToggleCollapse}
+                onPrepareChild={onPrepareChild}
+                onUpdateSquad={onUpdateSquad}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
 export function BattalionPage({ user }: { user: AuthUser }) {
   const [units, setUnits] = useState<ApiResult<UnitsResponse>>(emptyUnits);
   const [roster, setRoster] = useState<ApiResult<BattalionRosterResponse>>(emptyRoster);
@@ -125,6 +492,8 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   const [selectedUnitId, setSelectedUnitId] = useState("");
   const [candidateSearch, setCandidateSearch] = useState("");
   const [assignmentDraft, setAssignmentDraft] = useState<AssignmentDraft>({});
+  const [focusedSquadId, setFocusedSquadId] = useState("");
+  const [collapsedSquadIds, setCollapsedSquadIds] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const [newUnit, setNewUnit] = useState({ unit_key: "", name: "", callsign: "" });
   const [newPlayer, setNewPlayer] = useState({ player_uid: "", roster_name: "", rank: "" });
@@ -136,6 +505,9 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   const selectedUnit = unitList.find((unit) => unit.unit_id === selectedUnitId) ?? unitList[0] ?? null;
   const rosterData = roster.status === "ready" ? roster.data : null;
   const allSquads = useMemo(() => flattenSquads(rosterData?.squads ?? []), [rosterData]);
+  const focusedSquad = useMemo(() => (focusedSquadId ? findSquad(rosterData?.squads ?? [], focusedSquadId) : null), [focusedSquadId, rosterData]);
+  const focusedPath = useMemo(() => (focusedSquadId ? findSquadPath(rosterData?.squads ?? [], focusedSquadId) : []), [focusedSquadId, rosterData]);
+  const visibleSquads = focusedSquad ? [focusedSquad] : rosterData?.squads ?? [];
   const rosterPlayers = useMemo(() => flattenPlayers(rosterData), [rosterData]);
   const canManage = canManageBattalion(user, selectedUnit);
   const canRevealIds = canSeeSensitiveIds(user) || canManage;
@@ -217,6 +589,54 @@ export function BattalionPage({ user }: { user: AuthUser }) {
 
     setAssignmentDraft(nextDraft);
   }, [rosterPlayers]);
+
+  useEffect(() => {
+    if (focusedSquadId && !findSquad(rosterData?.squads ?? [], focusedSquadId)) {
+      setFocusedSquadId("");
+    }
+  }, [focusedSquadId, rosterData]);
+
+  function updateAssignmentDraft(playerUid: string, patch: AssignmentPatch) {
+    setAssignmentDraft((current) => {
+      const existing = current[playerUid] ?? { squad_id: "", billet: "unassigned", sort_order: 0 };
+      const next = { ...existing, ...patch };
+
+      if (!next.squad_id) {
+        next.billet = "unassigned";
+      } else if (next.billet === "unassigned") {
+        next.billet = "trooper";
+      }
+
+      return {
+        ...current,
+        [playerUid]: next
+      };
+    });
+  }
+
+  function toggleSquadCollapse(squadId: string) {
+    setCollapsedSquadIds((current) => {
+      const next = new Set(current);
+
+      if (next.has(squadId)) {
+        next.delete(squadId);
+      } else {
+        next.add(squadId);
+      }
+
+      return next;
+    });
+  }
+
+  function prepareChildSquad(squad: BattalionSquadNode) {
+    setNewSquad((current) => ({
+      ...current,
+      parent_squad_id: squad.id,
+      hierarchy_mode: "flat",
+      squad_type: squad.squad_type === "fireteam" ? "detachment" : "fireteam"
+    }));
+    setMessage(`Child element will attach under ${squad.name}. Fill out the squad form below.`);
+  }
 
   async function createUnit() {
     const unitKey = slugifyUnitKey(newUnit.unit_key || newUnit.name);
@@ -377,6 +797,20 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     await loadUnits();
   }
 
+  async function updateSquad(squad: BattalionSquadNode, patch: SquadPatch) {
+    if (!selectedUnit) {
+      return;
+    }
+
+    await apiFetch(`/v1/units/${selectedUnit.unit_id}/squads/${squad.id}`, {
+      method: "PATCH",
+      body: patch
+    });
+    setMessage("Squad node updated.");
+    await loadRoster(selectedUnit.unit_id);
+    await loadUnits();
+  }
+
   async function saveLayout() {
     if (!selectedUnit) {
       return;
@@ -503,12 +937,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                         {canManage && playerUid ? (
                           <select
                             value={draft.squad_id}
-                            onChange={(event) =>
-                              setAssignmentDraft((current) => ({
-                                ...current,
-                                [playerUid]: { ...draft, squad_id: event.target.value }
-                              }))
-                            }
+                            onChange={(event) => updateAssignmentDraft(playerUid, { squad_id: event.target.value })}
                           >
                             <option value="">Unassigned</option>
                             {allSquads.map((squad) => (
@@ -525,12 +954,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                         {canManage && playerUid ? (
                           <select
                             value={draft.billet}
-                            onChange={(event) =>
-                              setAssignmentDraft((current) => ({
-                                ...current,
-                                [playerUid]: { ...draft, billet: event.target.value as BattalionRosterPlayer["billet"] }
-                              }))
-                            }
+                            onChange={(event) => updateAssignmentDraft(playerUid, { billet: event.target.value as BattalionRosterPlayer["billet"] })}
                           >
                             <option value="trooper">Trooper</option>
                             <option value="squad_lead">Squad lead</option>
@@ -618,25 +1042,51 @@ export function BattalionPage({ user }: { user: AuthUser }) {
       </CommandPanel>
 
       <CommandPanel title="Squad Layout" eyebrow="Tree control">
-        {rosterData && allSquads.length > 0 ? (
-          <div className="squad-tree">
-            {allSquads.map((squad) => (
-              <div key={squad.id} className="squad-node">
-                <div>
-                  <strong>{squad.name}</strong>
-                  <span>{squad.squad_type}</span>
-                </div>
-                <p>{squadLeadSummary(squad)}</p>
-                {canManage ? (
-                  <button type="button" className="danger" onClick={() => void deleteSquad(squad)}>
-                    Delete
-                  </button>
-                ) : null}
+        {rosterData ? (
+          <>
+            <UnassignedPool
+              members={rosterData.unassigned}
+              allSquads={allSquads}
+              canManage={canManage}
+              canRevealIds={canRevealIds}
+              assignmentDraft={assignmentDraft}
+              onDraftChange={updateAssignmentDraft}
+            />
+            {focusedSquad ? (
+              <div className="squad-focus-bar">
+                <p>{focusedPath.map((squad) => squad.name).join(" / ")}</p>
+                <button type="button" onClick={() => setFocusedSquadId("")}>
+                  Back to battalion layout
+                </button>
               </div>
-            ))}
-          </div>
+            ) : null}
+            {visibleSquads.length > 0 ? (
+              <div className="squad-tree">
+                {visibleSquads.map((squad) => (
+                  <SquadPanel
+                    key={squad.id}
+                    squad={squad}
+                    depth={0}
+                    allSquads={allSquads}
+                    canManage={canManage}
+                    canRevealIds={canRevealIds}
+                    assignmentDraft={assignmentDraft}
+                    collapsedSquadIds={collapsedSquadIds}
+                    onDraftChange={updateAssignmentDraft}
+                    onDeleteSquad={(target) => void deleteSquad(target)}
+                    onFocusSquad={setFocusedSquadId}
+                    onToggleCollapse={toggleSquadCollapse}
+                    onPrepareChild={prepareChildSquad}
+                    onUpdateSquad={(target, patch) => void updateSquad(target, patch)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="empty-copy">Create the first squad or keep this battalion flat.</p>
+            )}
+          </>
         ) : (
-          <p className="empty-copy">Create the first squad or keep this battalion flat.</p>
+          <DataMessage result={roster} />
         )}
         {canManage ? (
           <div className="inline-actions layout-actions">
@@ -688,6 +1138,10 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                     <option value="platoon">Platoon</option>
                     <option value="company">Company</option>
                     <option value="detachment">Detachment</option>
+                  </select>
+                  <select value={newSquad.hierarchy_mode} onChange={(event) => setNewSquad({ ...newSquad, hierarchy_mode: event.target.value })}>
+                    <option value="flat">Flat</option>
+                    <option value="tree">Tree</option>
                   </select>
                   <button type="button" onClick={() => void createSquad()} disabled={!newSquad.squad_key || !newSquad.name}>
                     Create squad

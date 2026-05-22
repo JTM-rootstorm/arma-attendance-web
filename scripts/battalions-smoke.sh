@@ -193,6 +193,20 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_j
   && data.squads.some((squad) => squad.name === "Torrent Squad" && squad.leaders.length === 2 && squad.squad_leaders.length === 2 && squad.fireteam_leaders.length === 0 && squad.children.some((child) => child.name === "Blue Fireteam" && child.fireteam_leaders.length === 1))
 '
 
+echo "[smoke:battalions] Checking squad cycle prevention..."
+cycle_response="$(
+  curl -sS -b "$OWNER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/squad-layout" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"squads\":[
+        {\"id\":\"$squad_id\",\"parent_squad_id\":\"$fireteam_id\",\"sort_order\":10},
+        {\"id\":\"$fireteam_id\",\"parent_squad_id\":\"$squad_id\",\"sort_order\":20}
+      ],
+      \"assignments\":[]
+    }"
+)"
+printf "%s" "$cycle_response" | assert_json 'data.ok === false && data.error.code === "squad_cycle_detected"'
+
 echo "[smoke:battalions] Checking unit admin can update roster..."
 curl -fsS -b "$ADMIN_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/players/$player_three" \
   -H "Content-Type: application/json" \

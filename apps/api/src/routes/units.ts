@@ -286,6 +286,16 @@ function conflict(reply: FastifyReply, code: string, message: string) {
   });
 }
 
+function sendSquadCycleDetected(reply: FastifyReply) {
+  return reply.code(400).send({
+    ok: false,
+    error: {
+      code: "squad_cycle_detected",
+      message: "Squad hierarchy cannot contain cycles."
+    }
+  });
+}
+
 function actorLabel(user: CurrentUser): string {
   return user.display_name ?? user.id;
 }
@@ -435,6 +445,54 @@ function buildSquadNode(squad: SquadRow): SquadNode {
     members: [],
     children: []
   };
+}
+
+async function validateSquadHierarchy(
+  tx: DbTransaction,
+  reply: FastifyReply,
+  unitId: string,
+  proposed: Array<{ id: string; parent_squad_id: string | null }>
+): Promise<boolean> {
+  const result = await tx.query<{ id: string; parent_squad_id: string | null }>(
+    `
+    SELECT id, parent_squad_id
+    FROM unit_squads
+    WHERE unit_id = $1 AND is_active = true
+    `,
+    [unitId]
+  );
+  const parents = new Map(result.rows.map((row) => [row.id, row.parent_squad_id]));
+
+  for (const squad of proposed) {
+    if (!parents.has(squad.id)) {
+      sendValidationFailed(reply);
+      return false;
+    }
+
+    if (squad.parent_squad_id && !parents.has(squad.parent_squad_id)) {
+      notFound(reply, "parent_squad_not_found", "Parent squad was not found in this battalion.");
+      return false;
+    }
+
+    parents.set(squad.id, squad.parent_squad_id);
+  }
+
+  for (const squadId of parents.keys()) {
+    const seen = new Set<string>();
+    let current: string | null | undefined = squadId;
+
+    while (current) {
+      if (seen.has(current)) {
+        sendSquadCycleDetected(reply);
+        return false;
+      }
+
+      seen.add(current);
+      current = parents.get(current) ?? null;
+    }
+  }
+
+  return true;
 }
 
 async function insertDefaultRanks(tx: DbTransaction, unitId: string) {
@@ -1365,6 +1423,10 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           return conflict(reply, "squad_key_conflict", "An active squad already uses that squad key.");
         }
 
+        if (existingSquad && parentSquadId === existingSquad.id) {
+          return sendSquadCycleDetected(reply);
+        }
+
         const result = existingSquad
           ? await tx.query<SquadRow>(
               `
@@ -1438,6 +1500,27 @@ export async function registerUnitRoutes(app: FastifyInstance) {
 
     try {
       return await withDbTransaction(async (tx) => {
+        const existingResult = await tx.query<SquadRow>(
+          `
+          SELECT id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
+          FROM unit_squads
+          WHERE unit_id = $1 AND id = $2 AND is_active = true
+          FOR UPDATE
+          `,
+          [unitId, squadId]
+        );
+        const existingSquad = existingResult.rows[0];
+
+        if (!existingSquad) {
+          return notFound(reply, "squad_not_found", "Battalion squad was not found.");
+        }
+
+        const parentSquadId = Object.hasOwn(parsedBody.data, "parent_squad_id") ? parsedBody.data.parent_squad_id ?? null : existingSquad.parent_squad_id;
+
+        if (!(await validateSquadHierarchy(tx, reply, unitId, [{ id: squadId, parent_squad_id: parentSquadId }]))) {
+          return;
+        }
+
         const result = await tx.query<SquadRow>(
           `
           UPDATE unit_squads
@@ -1455,7 +1538,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           [
             unitId,
             squadId,
-            parsedBody.data.parent_squad_id ?? null,
+            parentSquadId,
             parsedBody.data.squad_key ?? null,
             parsedBody.data.name ?? null,
             parsedBody.data.squad_type ?? null,
@@ -1464,10 +1547,6 @@ export async function registerUnitRoutes(app: FastifyInstance) {
             parsedBody.data.is_active ?? null
           ]
         );
-
-        if (!result.rows[0]) {
-          return notFound(reply, "squad_not_found", "Battalion squad was not found.");
-        }
 
         await audit(tx, auth.user, "update_unit_squad", { unit_id: unitId, squad_id: squadId });
 
@@ -1590,8 +1669,9 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     try {
       return await withDbTransaction(async (tx) => {
         const squadIds = parsedBody.data.squads.map((squad) => squad.id);
+        const parentSquadIds = parsedBody.data.squads.flatMap((squad) => squad.parent_squad_id ? [squad.parent_squad_id] : []);
         const assignmentSquadIds = parsedBody.data.assignments.flatMap((assignment) => assignment.squad_id ? [assignment.squad_id] : []);
-        const allSquadIds = Array.from(new Set([...squadIds, ...assignmentSquadIds]));
+        const allSquadIds = Array.from(new Set([...squadIds, ...parentSquadIds, ...assignmentSquadIds]));
 
         if (allSquadIds.length > 0) {
           const validSquads = await tx.query<{ id: string }>(
@@ -1602,6 +1682,10 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           if (validSquads.rows.length !== allSquadIds.length) {
             return sendValidationFailed(reply);
           }
+        }
+
+        if (!(await validateSquadHierarchy(tx, reply, unitId, parsedBody.data.squads))) {
+          return;
         }
 
         if (parsedBody.data.assignments.length > 0) {
