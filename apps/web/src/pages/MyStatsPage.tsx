@@ -2,15 +2,12 @@ import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
 
 import { formatDate } from "../format";
-import type { ApiResult, AuthUser, MyOperationMatesResponse, MyOperationsResponse, MyPlayerResponse } from "../types";
+import type { ApiResult, AuthUser, MyOperationsResponse, MyPlayerResponse } from "../types";
 
 export function MyStatsPage({
   user,
   myPlayer,
   myOperations,
-  mates,
-  selectedOperationId,
-  onSelectOperation,
   onRefresh,
   onUpdatePlayerName,
   onLinkSteam,
@@ -19,9 +16,6 @@ export function MyStatsPage({
   user: AuthUser;
   myPlayer: ApiResult<MyPlayerResponse>;
   myOperations: ApiResult<MyOperationsResponse>;
-  mates: ApiResult<MyOperationMatesResponse>;
-  selectedOperationId: string;
-  onSelectOperation: (operationId: string) => void;
   onRefresh: () => void;
   onUpdatePlayerName: (displayName: string) => Promise<void>;
   onLinkSteam: () => void;
@@ -141,65 +135,38 @@ export function MyStatsPage({
         <p className="empty-copy">{myPlayer.data.message}</p>
       ) : null}
 
-      <div className="split-grid">
-        <section>
-          <div className="panel-heading slim">
-            <h3>Recent Operations</h3>
-          </div>
-          <div className="table-wrap">
-            <table className="tactical-table">
-              <thead>
-                <tr>
-                  <th>Mission</th>
-                  <th>World</th>
-                  <th>Status</th>
-                  <th>Started</th>
+      <section>
+        <div className="panel-heading slim">
+          <h3>Recent Operations</h3>
+        </div>
+        <div className="table-wrap">
+          <table className="tactical-table static-table">
+            <thead>
+              <tr>
+                <th>Mission</th>
+                <th>World</th>
+                <th>Status</th>
+                <th>Started</th>
+              </tr>
+            </thead>
+            <tbody>
+              {operations.map((operation) => (
+                <tr key={operation.operation_id}>
+                  <td>{operation.mission_name ?? "Unknown"}</td>
+                  <td>{operation.world_name ?? "Unknown"}</td>
+                  <td>{operation.status}</td>
+                  <td>{formatDate(operation.started_at)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {operations.map((operation) => (
-                  <tr
-                    key={operation.operation_id}
-                    className={operation.operation_id === selectedOperationId ? "selected" : ""}
-                    onClick={() => onSelectOperation(operation.operation_id)}
-                  >
-                    <td>
-                      <button type="button" className="table-select-button" onClick={() => onSelectOperation(operation.operation_id)}>
-                        {operation.mission_name ?? "Unknown"}
-                      </button>
-                    </td>
-                    <td>{operation.world_name ?? "Unknown"}</td>
-                    <td>{operation.status}</td>
-                    <td>{formatDate(operation.started_at)}</td>
-                  </tr>
-                ))}
-                {operations.length === 0 ? (
-                  <tr>
-                    <td colSpan={4}>No linked operations yet.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section>
-          <div className="panel-heading slim">
-            <h3>Played With</h3>
-          </div>
-          <div className="stack-list">
-            {mates.status === "ready" && mates.data.mates.length > 0
-              ? mates.data.mates.map((mate, index) => (
-                  <div key={`${mate.name ?? "mate"}-${index}`} className="stack-row">
-                    <strong>{mate.name ?? "Unknown"}</strong>
-                    <span>{[mate.rank, mate.role, mate.group_name].filter(Boolean).join(" / ") || "No assignment"}</span>
-                  </div>
-                ))
-              : null}
-            {mates.status !== "ready" || mates.data.mates.length === 0 ? <p className="empty-copy">Select a recent operation.</p> : null}
-          </div>
-        </section>
-      </div>
+              ))}
+              {operations.length === 0 ? (
+                <tr>
+                  <td colSpan={4}>No linked operations yet.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </section>
   );
 }

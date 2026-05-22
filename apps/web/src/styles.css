@@ -733,21 +733,11 @@ tbody tr.selected {
   background: rgba(103, 199, 255, 0.1);
 }
 
-.table-select-button {
-  width: 100%;
-  min-height: 2rem;
-  padding: 0;
-  justify-content: flex-start;
-  border: 0;
-  background: transparent;
-  color: var(--text-strong);
-  font: inherit;
-  text-align: left;
+.static-table tbody tr {
+  cursor: default;
 }
 
-.table-select-button:hover,
-.table-select-button:focus-visible {
-  color: var(--holo-cyan);
+.static-table tbody tr:hover {
   background: transparent;
 }
 

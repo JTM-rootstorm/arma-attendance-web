@@ -35,7 +35,6 @@ import type {
   HealthResponse,
   MachineTokensResponse,
   MeResponse,
-  MyOperationMatesResponse,
   MyOperationsResponse,
   MyPlayerResponse,
   OperationAttendanceResponse,
@@ -80,7 +79,6 @@ export function App() {
   const [createdMachineToken, setCreatedMachineToken] = useState<CreateMachineTokenResponse | null>(null);
   const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
   const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
-  const [myOperationMates, setMyOperationMates] = useState<ApiResult<MyOperationMatesResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
   const [dataQuality, setDataQuality] = useState<ApiResult<DataQualityResponse>>(emptyResult);
   const [operations, setOperations] = useState<ApiResult<OperationsResponse>>(emptyResult);
@@ -201,7 +199,6 @@ export function App() {
     if (!sessionUser) {
       setMyPlayer(emptyResult);
       setMyOperations(emptyResult);
-      setMyOperationMates(emptyResult);
       return;
     }
 
@@ -359,25 +356,6 @@ export function App() {
     [canViewRoster]
   );
 
-  const loadMyOperationMates = useCallback(async (operationId: string) => {
-    if (!sessionUser || operationId.length === 0) {
-      setMyOperationMates(emptyResult);
-      return;
-    }
-
-    setMyOperationMates({ status: "loading", data: null, error: null });
-
-    try {
-      setMyOperationMates({
-        status: "ready",
-        data: await apiFetch<MyOperationMatesResponse>("/v1/me/operation-mates", { params: { operation_id: operationId } }),
-        error: null
-      });
-    } catch (error) {
-      setMyOperationMates(errorResult(error, "Operation mates failed."));
-    }
-  }, [sessionUser]);
-
   useEffect(() => {
     void loadHealth();
     void loadMe();
@@ -425,9 +403,8 @@ export function App() {
   useEffect(() => {
     if (selectedOperationId) {
       void loadOperationDetail(selectedOperationId);
-      void loadMyOperationMates(selectedOperationId);
     }
-  }, [loadMyOperationMates, loadOperationDetail, selectedOperationId]);
+  }, [loadOperationDetail, selectedOperationId]);
 
   useEffect(() => {
     if (selectedPlayerUid) {
@@ -544,9 +521,6 @@ export function App() {
         user={sessionUser}
         myPlayer={myPlayer}
         myOperations={myOperations}
-        mates={myOperationMates}
-        selectedOperationId={selectedOperationId}
-        onSelectOperation={setSelectedOperationId}
         onRefresh={() => void loadMyStats()}
         onUpdatePlayerName={updatePlayerName}
         onLinkSteam={() => {
@@ -625,9 +599,6 @@ export function App() {
         user={sessionUser}
         myPlayer={myPlayer}
         myOperations={myOperations}
-        mates={myOperationMates}
-        selectedOperationId={selectedOperationId}
-        onSelectOperation={setSelectedOperationId}
         onRefresh={() => void loadMyStats()}
         onUpdatePlayerName={updatePlayerName}
         onLinkSteam={() => {
