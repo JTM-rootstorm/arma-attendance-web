@@ -79,12 +79,12 @@ export function MyStatsPage({
           <strong>{player?.display_name ?? user.display_name ?? "Unlinked"}</strong>
         </div>
         <div>
-          <span>Rank</span>
-          <strong>{primaryBattalion?.rank ?? player?.rank ?? "Unassigned"}</strong>
-        </div>
-        <div>
           <span>Battalion</span>
           <strong>{primaryBattalion?.name ?? "Unassigned"}</strong>
+        </div>
+        <div>
+          <span>Rank</span>
+          <strong>{primaryBattalion?.rank ?? player?.rank ?? "Unassigned"}</strong>
         </div>
         <div>
           <span>Ops</span>
