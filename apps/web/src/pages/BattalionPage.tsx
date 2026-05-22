@@ -81,6 +81,15 @@ function squadLabel(squad: BattalionSquadNode): string {
   return `${squad.name} (${squad.squad_type})`;
 }
 
+function slugifyUnitKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
 function canManageBattalion(user: AuthUser, unit: BattalionSummary | null): boolean {
   if (isOwner(user) || isTcwAdmin(user)) {
     return true;
@@ -163,18 +172,32 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   }, [rosterPlayers]);
 
   async function createUnit() {
-    await apiFetch("/v1/units", {
-      method: "POST",
-      body: {
-        unit_key: newUnit.unit_key,
-        name: newUnit.name,
-        display_name: newUnit.name,
-        callsign: newUnit.callsign || null
-      }
-    });
-    setNewUnit({ unit_key: "", name: "", callsign: "" });
-    setMessage("Battalion created.");
-    await loadUnits();
+    const unitKey = slugifyUnitKey(newUnit.unit_key || newUnit.name);
+    const unitName = newUnit.name.trim();
+
+    if (!unitKey || !unitName) {
+      setMessage("Battalion key and name are required.");
+      return;
+    }
+
+    try {
+      const created = await apiFetch<{ ok: true; unit: { id: string } }>("/v1/units", {
+        method: "POST",
+        body: {
+          unit_key: unitKey,
+          name: unitName,
+          display_name: unitName,
+          callsign: newUnit.callsign.trim() || null
+        }
+      });
+      setNewUnit({ unit_key: "", name: "", callsign: "" });
+      setSelectedUnitId(created.unit.id);
+      setMessage("Battalion created.");
+      await loadUnits();
+      await loadRoster(created.unit.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Battalion could not be created.");
+    }
   }
 
   async function deleteUnit() {
@@ -453,7 +476,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                 <input value={newUnit.unit_key} onChange={(event) => setNewUnit({ ...newUnit, unit_key: event.target.value })} placeholder="battalion-key" />
                 <input value={newUnit.name} onChange={(event) => setNewUnit({ ...newUnit, name: event.target.value })} placeholder="Battalion name" />
                 <input value={newUnit.callsign} onChange={(event) => setNewUnit({ ...newUnit, callsign: event.target.value })} placeholder="Callsign" />
-                <button type="button" onClick={() => void createUnit()} disabled={!newUnit.unit_key || !newUnit.name}>
+                <button type="button" onClick={() => void createUnit()} disabled={!newUnit.name.trim()}>
                   Create battalion
                 </button>
               </form>

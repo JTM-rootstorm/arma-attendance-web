@@ -538,6 +538,16 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           `
           INSERT INTO units (unit_key, slug, name, display_name, callsign, description, emblem_url)
           VALUES ($1, $1, $2, $3, $4, $5, $6)
+          ON CONFLICT (unit_key) DO UPDATE
+          SET slug = EXCLUDED.slug,
+              name = EXCLUDED.name,
+              display_name = EXCLUDED.display_name,
+              callsign = EXCLUDED.callsign,
+              description = EXCLUDED.description,
+              emblem_url = EXCLUDED.emblem_url,
+              is_active = true,
+              deleted_at = NULL,
+              updated_at = now()
           RETURNING id, unit_key, name, display_name, callsign, description, emblem_url, sort_order, is_active
           `,
           [
