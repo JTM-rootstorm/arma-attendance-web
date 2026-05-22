@@ -156,11 +156,26 @@ FROM operations o
 WHERE o.server_key = :'server_key'
 ON CONFLICT (operation_id, player_uid) DO UPDATE SET present_at_end = true;
 
-INSERT INTO operation_player_stats (operation_id, player_uid, ai_kills, deaths)
-SELECT o.id, :'steam_id', 3, 1
+INSERT INTO operation_player_stats (
+  operation_id,
+  player_uid,
+  infantry_kills,
+  soft_vehicle_kills,
+  armor_kills,
+  air_kills,
+  ai_kills,
+  deaths
+)
+SELECT o.id, :'steam_id', 5, 1, 2, 3, 3, 1
 FROM operations o
 WHERE o.server_key = :'server_key'
-ON CONFLICT (operation_id, player_uid) DO UPDATE SET ai_kills = 3, deaths = 1;
+ON CONFLICT (operation_id, player_uid) DO UPDATE SET
+  infantry_kills = 5,
+  soft_vehicle_kills = 1,
+  armor_kills = 2,
+  air_kills = 3,
+  ai_kills = 3,
+  deaths = 1;
 SQL
 
 curl -fsS -b "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
@@ -193,7 +208,13 @@ curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operation-mates?operation_id=$o
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations?server_key=$server_key" | assert_json "data.ok === true && data.operations.length === 1 && data.operations[0].id === '$operation_id'"
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id" | assert_json 'data.ok === true && data.operation.id === null'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/summary" | assert_json "data.ok === true && data.operation_id === '$operation_id'"
-curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true && Array.isArray(data.attendance)'
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true
+  && Array.isArray(data.attendance)
+  && data.attendance.some((row) => row.player_uid === null && row.scoreboard_stats.infantry_kills === 5 && row.scoreboard_stats.soft_vehicle_kills === 1 && row.scoreboard_stats.armor_kills === 2 && row.scoreboard_stats.air_kills === 3 && row.scoreboard_stats.deaths === 1)'
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json "data.ok === true
+  && data.attendance.some((row) => row.player_uid === '$steam_id' && row.scoreboard_stats.infantry_kills === 5 && row.scoreboard_stats.soft_vehicle_kills === 1 && row.scoreboard_stats.armor_kills === 2 && row.scoreboard_stats.air_kills === 3 && row.scoreboard_stats.deaths === 1)"
+curl -fsS -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true
+  && data.attendance.some((row) => row.player_uid === null && row.scoreboard_stats.infantry_kills === 5)'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "normal user operation delete"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "unit admin operation delete"
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" | assert_json 'data.ok === true && data.operation_id'

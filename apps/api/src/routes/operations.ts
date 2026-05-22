@@ -183,6 +183,10 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
   });
 }
 
+function canSeeOperationPlayerIds(user: CurrentUser | null): boolean {
+  return user === null || hasRole(user, ["admin"]);
+}
+
 function replayResponse(response: unknown): OperationIngestResponse | unknown {
   if (typeof response === "object" && response !== null && !Array.isArray(response)) {
     return {
@@ -767,6 +771,8 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         [operationId]
       );
 
+      const revealPlayerIds = canSeeOperationPlayerIds(auth.user);
+
       return {
         ok: true,
         operation_id: operationId,
@@ -810,7 +816,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
                   deaths: row.deaths ?? 0,
                   score: row.scoreboard_score ?? 0
                 }
-        }, canSeeSensitiveIds(auth.user)))
+        }, revealPlayerIds))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch operation attendance");

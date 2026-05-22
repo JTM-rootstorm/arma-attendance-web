@@ -67,14 +67,18 @@ function OperationsTable({
   );
 }
 
+function statValue(row: OperationAttendanceResponse["attendance"][number], key: keyof NonNullable<OperationAttendanceResponse["attendance"][number]["scoreboard_stats"]>) {
+  return row.scoreboard_stats?.[key] ?? row.stats?.[key as keyof NonNullable<OperationAttendanceResponse["attendance"][number]["stats"]>];
+}
+
 function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendance"] }) {
-  const showSteamId = rows.some((row) => row.player_uid);
+  const showPlayerId = rows.some((row) => row.player_uid);
 
   return (
     <TacticalTable label="Operation attendance" maxVisibleRows={10}>
       <thead>
         <tr>
-          {showSteamId ? <th>Steam ID</th> : null}
+          {showPlayerId ? <th>Player ID</th> : null}
           <th>Name</th>
           <th>Infantry kills</th>
           <th>Soft armor kills</th>
@@ -86,13 +90,13 @@ function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendan
       <tbody>
         {rows.map((row, index) => (
           <tr key={row.player_uid ?? `${row.name_at_end ?? row.name_at_start ?? "player"}-${index}`}>
-            {showSteamId ? <td className="mono">{displayValue(row.player_uid)}</td> : null}
+            {showPlayerId ? <td className="mono">{displayValue(row.player_uid)}</td> : null}
             <td>{displayValue(row.name_at_end ?? row.name_at_start)}</td>
-            <td>{displayValue(row.scoreboard_stats?.infantry_kills ?? row.stats?.infantry_kills)}</td>
-            <td>{displayValue(row.scoreboard_stats?.soft_vehicle_kills)}</td>
-            <td>{displayValue(row.scoreboard_stats?.armor_kills)}</td>
-            <td>{displayValue(row.scoreboard_stats?.air_kills)}</td>
-            <td>{displayValue(row.scoreboard_stats?.deaths ?? row.stats?.deaths)}</td>
+            <td>{displayValue(statValue(row, "infantry_kills"))}</td>
+            <td>{displayValue(statValue(row, "soft_vehicle_kills"))}</td>
+            <td>{displayValue(statValue(row, "armor_kills"))}</td>
+            <td>{displayValue(statValue(row, "air_kills"))}</td>
+            <td>{displayValue(statValue(row, "deaths"))}</td>
           </tr>
         ))}
       </tbody>
