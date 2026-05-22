@@ -112,18 +112,6 @@ export function MyStatsPage({
         </div>
       </div>
 
-      {battalionMemberships.length > 0 ? (
-        <div className="stack-list battalion-memberships">
-          {battalionMemberships.map((membership) => (
-            <div key={membership.unit_id} className="stack-row">
-              <span>{membership.callsign ?? membership.unit_key}</span>
-              <strong>{membership.name}</strong>
-              <small>{membership.rank ?? "Unassigned rank"}</small>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
       <div className="identity-strip">
         <div>
           <span>Discord</span>
