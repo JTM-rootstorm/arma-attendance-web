@@ -187,8 +187,13 @@ curl -fsS -b "$USER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/me/player" \
   -d '{"display_name":"RBAC Owner Reset"}' | assert_json 'data.ok === true && data.linked_player.display_name === "RBAC Owner Reset"'
 curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/admin/players/$steam_id/reset-name" | assert_json 'data.ok === true && data.player.last_name === "RBAC Player"'
 operation_id="$(curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations" | json_value ".operations.0.operation_id")"
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations" | assert_json 'data.ok === true && data.operations.length <= 5'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations/$operation_id" | assert_json 'data.ok === true && data.operation.operation_id !== undefined'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operation-mates?operation_id=$operation_id" | assert_json 'data.ok === true'
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations?server_key=$server_key" | assert_json "data.ok === true && data.operations.length === 1 && data.operations[0].id === '$operation_id'"
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id" | assert_json 'data.ok === true && data.operation.id === null'
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/summary" | assert_json "data.ok === true && data.operation_id === '$operation_id'"
+curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true && Array.isArray(data.attendance)'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "normal user operation delete"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "unit admin operation delete"
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" | assert_json 'data.ok === true && data.operation_id'

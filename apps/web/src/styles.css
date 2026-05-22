@@ -733,6 +733,24 @@ tbody tr.selected {
   background: rgba(103, 199, 255, 0.1);
 }
 
+.table-select-button {
+  width: 100%;
+  min-height: 2rem;
+  padding: 0;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  text-align: left;
+}
+
+.table-select-button:hover,
+.table-select-button:focus-visible {
+  color: var(--holo-cyan);
+  background: transparent;
+}
+
 .filters {
   display: grid;
   grid-template-columns: minmax(9rem, 1fr) minmax(8rem, 0.7fr) minmax(9rem, 1fr);

@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import { hasRole, requireBearerToken, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
-import { getDefaultUnitId, requireUnitRead } from "../auth/units.js";
+import { canReadOperation, getLinkedPlayerUid } from "../auth/operationAccess.js";
+import { getDefaultUnitId, hasUnitRole } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
@@ -269,12 +270,37 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const values: unknown[] = [];
     const unitFilter = await getReadableUnitFilter(auth.user);
 
-    if (!unitFilter.all) {
-      if (unitFilter.unitIds.length === 0) {
-        return deny(reply);
+    const operationUnitIds =
+      auth.user && !unitFilter.all
+        ? (await Promise.all(
+            unitFilter.unitIds.map(async (unitId) => ((await hasUnitRole(auth.user as CurrentUser, unitId, "officer")) ? unitId : null))
+          )).filter((unitId): unitId is string => unitId !== null)
+        : unitFilter.unitIds;
+
+    if (auth.user && !unitFilter.all && operationUnitIds.length === 0) {
+      const playerUid = await getLinkedPlayerUid(auth.user);
+
+      if (!playerUid) {
+        return {
+          ok: true,
+          operations: [],
+          pagination: {
+            limit: query.limit,
+            offset: query.offset,
+            count: 0
+          }
+        };
       }
 
-      values.push(unitFilter.unitIds);
+      values.push(playerUid);
+      where.push(`EXISTS (
+        SELECT 1
+        FROM operation_players self_op
+        WHERE self_op.operation_id = o.id
+          AND self_op.player_uid = $${values.length}
+      )`);
+    } else if (!unitFilter.all) {
+      values.push(operationUnitIds);
       where.push(`o.unit_id = ANY($${values.length}::uuid[])`);
     }
 
@@ -552,8 +578,8 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         });
       }
 
-      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
-        return;
+      if (auth.user && !(await canReadOperation(auth.user, operation.id, operation.unit_id))) {
+        return deny(reply);
       }
 
       const payloadResult = await queryDb<OperationPayloadRow>(
@@ -690,8 +716,8 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         });
       }
 
-      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
-        return;
+      if (auth.user && !(await canReadOperation(auth.user, operation.id, operation.unit_id))) {
+        return deny(reply);
       }
 
       const attendanceResult = await queryDb<OperationAttendanceRow>(
@@ -813,8 +839,8 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         });
       }
 
-      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
-        return;
+      if (auth.user && !(await canReadOperation(auth.user, operation.id, operation.unit_id))) {
+        return deny(reply);
       }
 
       const payloadResult = await queryDb<{

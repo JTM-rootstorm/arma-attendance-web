@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
-import { requireUnitRead } from "../auth/units.js";
+import { canReadOperation } from "../auth/operationAccess.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { redactOperationListItem, redactPlayer } from "../privacy/redaction.js";
@@ -352,8 +352,8 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         });
       }
 
-      if (auth.user && operation.unit_id && !(await requireUnitRead(auth.user, operation.unit_id, reply))) {
-        return;
+      if (auth.user && !(await canReadOperation(auth.user, operation.id, operation.unit_id))) {
+        return deny(reply);
       }
 
       const attendanceResult = await queryDb<OperationAttendanceSummaryRow>(

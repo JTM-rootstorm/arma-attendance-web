@@ -20,11 +20,11 @@ function hasUnitRole(user: AuthUser | null, role: "member" | "officer" | "admin"
 }
 
 export function canOpenDashboard(user: AuthUser | null): boolean {
-  return canOpenOperations(user);
+  return isTcwAdmin(user) || hasGlobalRole(user, "admin") || hasGlobalRole(user, "officer") || hasUnitRole(user, "officer");
 }
 
 export function canOpenOperations(user: AuthUser | null): boolean {
-  return isTcwAdmin(user) || hasGlobalRole(user, "admin") || hasGlobalRole(user, "officer") || hasUnitRole(user, "officer");
+  return Boolean(user);
 }
 
 export function canOpenRoster(user: AuthUser | null): boolean {

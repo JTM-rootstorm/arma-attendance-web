@@ -900,7 +900,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         JOIN operations o ON o.id = op.operation_id
         WHERE op.player_uid = $1
         ORDER BY o.started_at DESC
-        LIMIT 50
+        LIMIT 5
         `,
         [player.player_uid]
       );

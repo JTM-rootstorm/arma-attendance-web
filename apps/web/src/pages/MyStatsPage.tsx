@@ -31,7 +31,7 @@ export function MyStatsPage({
   const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
   const player = myPlayer.status === "ready" ? myPlayer.data.linked_player : null;
   const summary = myPlayer.status === "ready" ? myPlayer.data.summary : null;
-  const operations = myOperations.status === "ready" ? myOperations.data.operations : [];
+  const operations = myOperations.status === "ready" ? myOperations.data.operations.slice(0, 5) : [];
   const [playerName, setPlayerName] = useState(player?.display_name ?? "");
   const [playerNameState, setPlayerNameState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [playerNameError, setPlayerNameError] = useState("");
@@ -163,7 +163,11 @@ export function MyStatsPage({
                     className={operation.operation_id === selectedOperationId ? "selected" : ""}
                     onClick={() => onSelectOperation(operation.operation_id)}
                   >
-                    <td>{operation.mission_name ?? "Unknown"}</td>
+                    <td>
+                      <button type="button" className="table-select-button" onClick={() => onSelectOperation(operation.operation_id)}>
+                        {operation.mission_name ?? "Unknown"}
+                      </button>
+                    </td>
                     <td>{operation.world_name ?? "Unknown"}</td>
                     <td>{operation.status}</td>
                     <td>{formatDate(operation.started_at)}</td>
