@@ -11,6 +11,7 @@ import { registerExportRoutes } from "./routes/exports.js";
 import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerIngestRequestRoutes } from "./routes/ingestRequests.js";
+import { registerLeaderboardRoutes } from "./routes/leaderboards.js";
 import { registerOperationRoutes } from "./routes/operations.js";
 import { registerOwnerRoutes } from "./routes/owner.js";
 import { registerPlayerRoutes } from "./routes/players.js";
@@ -93,6 +94,7 @@ await registerOwnerRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
 await registerUnitRoutes(app);
+await registerLeaderboardRoutes(app);
 await registerWebRoutes(app);
 
 try {
