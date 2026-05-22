@@ -15,6 +15,7 @@ import { registerOperationRoutes } from "./routes/operations.js";
 import { registerOwnerRoutes } from "./routes/owner.js";
 import { registerPlayerRoutes } from "./routes/players.js";
 import { registerSummaryRoutes } from "./routes/summaries.js";
+import { registerUnitRoutes } from "./routes/units.js";
 import { registerWebRoutes } from "./routes/web.js";
 
 const app = Fastify({
@@ -91,6 +92,7 @@ await registerOperationRoutes(app);
 await registerOwnerRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
+await registerUnitRoutes(app);
 await registerWebRoutes(app);
 
 try {

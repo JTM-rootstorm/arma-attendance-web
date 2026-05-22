@@ -135,6 +135,15 @@ export async function requireUnitRead(user: CurrentUser, unitId: string, reply: 
   return false;
 }
 
+export async function requireUnitMember(user: CurrentUser, unitId: string, reply: FastifyReply): Promise<boolean> {
+  if (await hasUnitRole(user, unitId, "member")) {
+    return true;
+  }
+
+  forbidden(reply);
+  return false;
+}
+
 export async function requireUnitAdmin(user: CurrentUser, unitId: string, reply: FastifyReply): Promise<boolean> {
   if (await hasUnitRole(user, unitId, "admin")) {
     return true;
