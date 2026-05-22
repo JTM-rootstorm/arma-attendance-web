@@ -17,6 +17,7 @@ if [[ "${RUN_DB_SMOKE:-0}" == "1" ]]; then
   run pnpm smoke:operations
   run pnpm smoke:operations:observability
   run pnpm smoke:attendance
+  run pnpm smoke:scoreboard
   run pnpm smoke:dashboard
   run pnpm smoke:exports
   run pnpm smoke:data-quality

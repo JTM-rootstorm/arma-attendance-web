@@ -95,6 +95,17 @@ export type OperationDetailResponse = {
   }>;
 };
 
+export type ScoreboardStats = {
+  infantry_kills: number;
+  soft_vehicle_kills: number;
+  armor_kills: number;
+  ground_vehicle_kills?: number;
+  air_kills: number;
+  all_vehicle_kills?: number;
+  deaths: number;
+  score?: number;
+};
+
 export type OperationSummaryResponse = {
   ok: true;
   attendance: {
@@ -111,6 +122,12 @@ export type OperationSummaryResponse = {
     ai_kills: number;
     friendly_kills: number;
     deaths: number;
+    soft_vehicle_kills?: number;
+    armor_kills?: number;
+    air_kills?: number;
+    ground_vehicle_kills?: number;
+    all_vehicle_kills?: number;
+    scoreboard_score?: number;
   };
   payloads: {
     total: number;
@@ -122,7 +139,7 @@ export type OperationSummaryResponse = {
 export type OperationAttendanceResponse = {
   ok: true;
   attendance: Array<{
-    player_uid: string;
+    player_uid: string | null;
     name_at_start: string | null;
     name_at_end: string | null;
     side_at_start: string | null;
@@ -134,6 +151,7 @@ export type OperationAttendanceResponse = {
     present_at_start: boolean;
     present_at_end: boolean;
     stats: OperationSummaryResponse["stats"] | null;
+    scoreboard_stats: ScoreboardStats | null;
   }>;
 };
 
@@ -168,6 +186,7 @@ export type PlayerDetailResponse = {
     present_at_start: boolean;
     present_at_end: boolean;
     stats: OperationSummaryResponse["stats"] | null;
+    scoreboard_stats?: ScoreboardStats | null;
   }>;
 };
 
@@ -183,7 +202,11 @@ export type PlayerSummaryResponse = {
     ai_kills: number;
     friendly_kills: number;
     deaths: number;
+    soft_vehicle_kills?: number;
+    armor_kills?: number;
+    air_kills?: number;
   };
+  scoreboard_totals?: ScoreboardStats;
   recent_operations: Array<{
     operation_id: string;
     server_key: string;
@@ -404,6 +427,7 @@ export type MyPlayerResponse = {
     last_seen_at?: string;
   } | null;
   summary?: PlayerSummaryResponse["summary"];
+  scoreboard_totals?: ScoreboardStats;
   message?: string;
 };
 

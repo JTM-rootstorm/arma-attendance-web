@@ -33,6 +33,10 @@ type AttendanceCsvRow = {
   ai_kills: number | null;
   friendly_kills: number | null;
   deaths: number | null;
+  soft_vehicle_kills: number | null;
+  armor_kills: number | null;
+  air_kills: number | null;
+  scoreboard_score: number | null;
 };
 
 type PlayerCsvRow = {
@@ -43,6 +47,10 @@ type PlayerCsvRow = {
   operation_count: number;
   total_ai_kills: number;
   total_deaths: number;
+  total_infantry_kills: number;
+  total_soft_vehicle_kills: number;
+  total_armor_kills: number;
+  total_air_kills: number;
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -146,7 +154,11 @@ export async function registerExportRoutes(app: FastifyInstance) {
           COALESCE(ops.player_kills, 0)::int AS player_kills,
           COALESCE(ops.ai_kills, 0)::int AS ai_kills,
           COALESCE(ops.friendly_kills, 0)::int AS friendly_kills,
-          COALESCE(ops.deaths, 0)::int AS deaths
+          COALESCE(ops.deaths, 0)::int AS deaths,
+          COALESCE(ops.soft_vehicle_kills, 0)::int AS soft_vehicle_kills,
+          COALESCE(ops.armor_kills, 0)::int AS armor_kills,
+          COALESCE(ops.air_kills, 0)::int AS air_kills,
+          COALESCE(ops.scoreboard_score, 0)::int AS scoreboard_score
         FROM operation_players op
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
@@ -171,6 +183,10 @@ export async function registerExportRoutes(app: FastifyInstance) {
         "role_at_start",
         "role_at_end",
         "infantry_kills",
+        "soft_vehicle_kills",
+        "armor_kills",
+        "air_kills",
+        "scoreboard_score",
         "vehicle_kills",
         "player_kills",
         "ai_kills",
@@ -243,6 +259,10 @@ export async function registerExportRoutes(app: FastifyInstance) {
           p.first_seen_at,
           p.last_seen_at,
           COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          COALESCE(SUM(ops.infantry_kills), 0)::int AS total_infantry_kills,
+          COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS total_soft_vehicle_kills,
+          COALESCE(SUM(ops.armor_kills), 0)::int AS total_armor_kills,
+          COALESCE(SUM(ops.air_kills), 0)::int AS total_air_kills,
           COALESCE(SUM(ops.ai_kills), 0)::int AS total_ai_kills,
           COALESCE(SUM(ops.deaths), 0)::int AS total_deaths
         FROM players p
@@ -264,6 +284,10 @@ export async function registerExportRoutes(app: FastifyInstance) {
         "first_seen_at",
         "last_seen_at",
         "operation_count",
+        "total_infantry_kills",
+        "total_soft_vehicle_kills",
+        "total_armor_kills",
+        "total_air_kills",
         "total_ai_kills",
         "total_deaths"
       ];

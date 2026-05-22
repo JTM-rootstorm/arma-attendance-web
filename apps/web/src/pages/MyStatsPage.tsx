@@ -25,6 +25,7 @@ export function MyStatsPage({
   const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
   const player = myPlayer.status === "ready" ? myPlayer.data.linked_player : null;
   const summary = myPlayer.status === "ready" ? myPlayer.data.summary : null;
+  const scoreboardTotals = myPlayer.status === "ready" ? myPlayer.data.scoreboard_totals : null;
   const operations = myOperations.status === "ready" ? myOperations.data.operations.slice(0, 5) : [];
   const [playerName, setPlayerName] = useState(player?.display_name ?? "");
   const [playerNameState, setPlayerNameState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -86,6 +87,22 @@ export function MyStatsPage({
         <div>
           <span>Deaths</span>
           <strong>{summary?.deaths ?? 0}</strong>
+        </div>
+        <div>
+          <span>Infantry kills</span>
+          <strong>{scoreboardTotals?.infantry_kills ?? summary?.infantry_kills ?? 0}</strong>
+        </div>
+        <div>
+          <span>Soft armor kills</span>
+          <strong>{scoreboardTotals?.soft_vehicle_kills ?? summary?.soft_vehicle_kills ?? 0}</strong>
+        </div>
+        <div>
+          <span>Armor kills</span>
+          <strong>{scoreboardTotals?.armor_kills ?? summary?.armor_kills ?? 0}</strong>
+        </div>
+        <div>
+          <span>Plane kills</span>
+          <strong>{scoreboardTotals?.air_kills ?? summary?.air_kills ?? 0}</strong>
         </div>
       </div>
 

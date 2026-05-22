@@ -59,6 +59,12 @@ type PlayerOperationRow = {
   ai_kills: number | null;
   friendly_kills: number | null;
   deaths: number | null;
+  soft_vehicle_kills: number | null;
+  armor_kills: number | null;
+  air_kills: number | null;
+  ground_vehicle_kills: number | null;
+  all_vehicle_kills: number | null;
+  scoreboard_score: number | null;
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -244,7 +250,13 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
           ops.player_kills,
           ops.ai_kills,
           ops.friendly_kills,
-          ops.deaths
+          ops.deaths,
+          ops.soft_vehicle_kills,
+          ops.armor_kills,
+          ops.air_kills,
+          ops.ground_vehicle_kills,
+          ops.all_vehicle_kills,
+          ops.scoreboard_score
         FROM operation_players op
         JOIN operations o ON o.id = op.operation_id
         LEFT JOIN operation_player_stats ops
@@ -283,6 +295,19 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
                   ai_kills: row.ai_kills ?? 0,
                   friendly_kills: row.friendly_kills ?? 0,
                   deaths: row.deaths ?? 0
+                },
+          scoreboard_stats:
+            row.stats_player_uid === null
+              ? null
+              : {
+                  infantry_kills: row.infantry_kills ?? 0,
+                  soft_vehicle_kills: row.soft_vehicle_kills ?? 0,
+                  armor_kills: row.armor_kills ?? 0,
+                  ground_vehicle_kills: row.ground_vehicle_kills ?? 0,
+                  air_kills: row.air_kills ?? 0,
+                  all_vehicle_kills: row.all_vehicle_kills ?? 0,
+                  deaths: row.deaths ?? 0,
+                  score: row.scoreboard_score ?? 0
                 }
         }, canSeeSensitiveIds(auth.user)))
       };

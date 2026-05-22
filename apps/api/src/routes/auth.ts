@@ -115,6 +115,9 @@ type SelfSummaryRow = {
   ai_kills: number;
   friendly_kills: number;
   deaths: number;
+  soft_vehicle_kills: number;
+  armor_kills: number;
+  air_kills: number;
 };
 
 type OperationMateRow = {
@@ -783,7 +786,10 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           COALESCE(SUM(ops.player_kills), 0)::int AS player_kills,
           COALESCE(SUM(ops.ai_kills), 0)::int AS ai_kills,
           COALESCE(SUM(ops.friendly_kills), 0)::int AS friendly_kills,
-          COALESCE(SUM(ops.deaths), 0)::int AS deaths
+          COALESCE(SUM(ops.deaths), 0)::int AS deaths,
+          COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+          COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
+          COALESCE(SUM(ops.air_kills), 0)::int AS air_kills
         FROM operation_players op
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
@@ -793,6 +799,21 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         [player.player_uid]
       );
 
+      const summary = summaryResult.rows[0] ?? {
+        operation_count: 0,
+        present_at_start_count: 0,
+        present_at_end_count: 0,
+        infantry_kills: 0,
+        vehicle_kills: 0,
+        player_kills: 0,
+        ai_kills: 0,
+        friendly_kills: 0,
+        deaths: 0,
+        soft_vehicle_kills: 0,
+        armor_kills: 0,
+        air_kills: 0
+      };
+
       return {
         ok: true,
         linked_player: {
@@ -801,16 +822,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         },
-        summary: summaryResult.rows[0] ?? {
-          operation_count: 0,
-          present_at_start_count: 0,
-          present_at_end_count: 0,
-          infantry_kills: 0,
-          vehicle_kills: 0,
-          player_kills: 0,
-          ai_kills: 0,
-          friendly_kills: 0,
-          deaths: 0
+        summary,
+        scoreboard_totals: {
+          infantry_kills: summary.infantry_kills,
+          soft_vehicle_kills: summary.soft_vehicle_kills,
+          armor_kills: summary.armor_kills,
+          air_kills: summary.air_kills,
+          deaths: summary.deaths
         }
       };
     } catch (error) {

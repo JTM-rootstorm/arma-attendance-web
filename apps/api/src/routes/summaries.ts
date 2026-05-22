@@ -82,6 +82,12 @@ type StatsSummaryRow = {
   ai_kills: number;
   friendly_kills: number;
   deaths: number;
+  soft_vehicle_kills: number;
+  armor_kills: number;
+  air_kills: number;
+  ground_vehicle_kills: number;
+  all_vehicle_kills: number;
+  scoreboard_score: number;
 };
 
 type PayloadSummaryRow = {
@@ -378,7 +384,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COALESCE(SUM(player_kills), 0)::int AS player_kills,
           COALESCE(SUM(ai_kills), 0)::int AS ai_kills,
           COALESCE(SUM(friendly_kills), 0)::int AS friendly_kills,
-          COALESCE(SUM(deaths), 0)::int AS deaths
+          COALESCE(SUM(deaths), 0)::int AS deaths,
+          COALESCE(SUM(soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+          COALESCE(SUM(armor_kills), 0)::int AS armor_kills,
+          COALESCE(SUM(air_kills), 0)::int AS air_kills,
+          COALESCE(SUM(ground_vehicle_kills), 0)::int AS ground_vehicle_kills,
+          COALESCE(SUM(all_vehicle_kills), 0)::int AS all_vehicle_kills,
+          COALESCE(SUM(scoreboard_score), 0)::int AS scoreboard_score
         FROM operation_player_stats
         WHERE operation_id = $1
         `,
@@ -414,7 +426,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           player_kills: 0,
           ai_kills: 0,
           friendly_kills: 0,
-          deaths: 0
+          deaths: 0,
+          soft_vehicle_kills: 0,
+          armor_kills: 0,
+          air_kills: 0,
+          ground_vehicle_kills: 0,
+          all_vehicle_kills: 0,
+          scoreboard_score: 0
         },
         payloads: payloadResult.rows[0] ?? {
           total: 0,
@@ -498,7 +516,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COALESCE(SUM(ops.player_kills), 0)::int AS player_kills,
           COALESCE(SUM(ops.ai_kills), 0)::int AS ai_kills,
           COALESCE(SUM(ops.friendly_kills), 0)::int AS friendly_kills,
-          COALESCE(SUM(ops.deaths), 0)::int AS deaths
+          COALESCE(SUM(ops.deaths), 0)::int AS deaths,
+          COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+          COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
+          COALESCE(SUM(ops.air_kills), 0)::int AS air_kills,
+          COALESCE(SUM(ops.ground_vehicle_kills), 0)::int AS ground_vehicle_kills,
+          COALESCE(SUM(ops.all_vehicle_kills), 0)::int AS all_vehicle_kills,
+          COALESCE(SUM(ops.scoreboard_score), 0)::int AS scoreboard_score
         FROM operation_players op
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
@@ -530,20 +554,38 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         [playerUid]
       );
 
+      const summary = summaryResult.rows[0] ?? {
+        operation_count: 0,
+        present_at_start_count: 0,
+        present_at_end_count: 0,
+        infantry_kills: 0,
+        vehicle_kills: 0,
+        player_kills: 0,
+        ai_kills: 0,
+        friendly_kills: 0,
+        deaths: 0,
+        soft_vehicle_kills: 0,
+        armor_kills: 0,
+        air_kills: 0,
+        ground_vehicle_kills: 0,
+        all_vehicle_kills: 0,
+        scoreboard_score: 0
+      };
+
       return {
         ok: true,
         player_uid: canSeeSensitiveIds(auth.user) ? playerUid : null,
         player: redactPlayer(player, canSeeSensitiveIds(auth.user)),
-        summary: summaryResult.rows[0] ?? {
-          operation_count: 0,
-          present_at_start_count: 0,
-          present_at_end_count: 0,
-          infantry_kills: 0,
-          vehicle_kills: 0,
-          player_kills: 0,
-          ai_kills: 0,
-          friendly_kills: 0,
-          deaths: 0
+        summary,
+        scoreboard_totals: {
+          infantry_kills: summary.infantry_kills,
+          soft_vehicle_kills: summary.soft_vehicle_kills,
+          armor_kills: summary.armor_kills,
+          ground_vehicle_kills: summary.ground_vehicle_kills,
+          air_kills: summary.air_kills,
+          all_vehicle_kills: summary.all_vehicle_kills,
+          deaths: summary.deaths,
+          score: summary.scoreboard_score
         },
         recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user)))
       };

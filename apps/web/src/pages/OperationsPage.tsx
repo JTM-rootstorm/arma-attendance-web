@@ -68,34 +68,31 @@ function OperationsTable({
 }
 
 function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendance"] }) {
+  const showSteamId = rows.some((row) => row.player_uid);
+
   return (
     <TacticalTable label="Operation attendance" maxVisibleRows={10}>
       <thead>
         <tr>
-          <th>Player UID</th>
+          {showSteamId ? <th>Steam ID</th> : null}
           <th>Name</th>
-          <th>Present</th>
-          <th>Side</th>
-          <th>Group</th>
-          <th>Role</th>
-          <th>K/D</th>
+          <th>Infantry kills</th>
+          <th>Soft armor kills</th>
+          <th>Armor kills</th>
+          <th>Plane kills</th>
+          <th>Deaths</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr key={row.player_uid}>
-            <td className="mono">{row.player_uid}</td>
+        {rows.map((row, index) => (
+          <tr key={row.player_uid ?? `${row.name_at_end ?? row.name_at_start ?? "player"}-${index}`}>
+            {showSteamId ? <td className="mono">{displayValue(row.player_uid)}</td> : null}
             <td>{displayValue(row.name_at_end ?? row.name_at_start)}</td>
-            <td>
-              <span className="status-pair">
-                <StatusChip label="start" tone={row.present_at_start ? "ready" : "muted"} />
-                <StatusChip label="end" tone={row.present_at_end ? "ready" : "muted"} />
-              </span>
-            </td>
-            <td>{displayValue(row.side_at_end ?? row.side_at_start)}</td>
-            <td>{displayValue(row.group_at_end ?? row.group_at_start)}</td>
-            <td>{displayValue(row.role_at_end ?? row.role_at_start)}</td>
-            <td>{row.stats ? `${row.stats.ai_kills + row.stats.infantry_kills + row.stats.vehicle_kills}/${row.stats.deaths}` : "n/a"}</td>
+            <td>{displayValue(row.scoreboard_stats?.infantry_kills ?? row.stats?.infantry_kills)}</td>
+            <td>{displayValue(row.scoreboard_stats?.soft_vehicle_kills)}</td>
+            <td>{displayValue(row.scoreboard_stats?.armor_kills)}</td>
+            <td>{displayValue(row.scoreboard_stats?.air_kills)}</td>
+            <td>{displayValue(row.scoreboard_stats?.deaths ?? row.stats?.deaths)}</td>
           </tr>
         ))}
       </tbody>
