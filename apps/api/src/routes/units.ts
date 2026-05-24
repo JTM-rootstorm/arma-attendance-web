@@ -1,11 +1,16 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
+import { and, asc, countDistinct, desc, eq, ilike, inArray, isNull, ne, or, sql } from "drizzle-orm";
 
 import { hasRole, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext } from "../auth/authorization.js";
 import { getUserUnitRoles, hasUnitRole, requireUnitAdmin, requireUnitMember } from "../auth/units.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { appUsers } from "../db/schema/auth.js";
+import { operationPlayers, players } from "../db/schema/players.js";
+import { unitPlayers, unitRanks, unitRosterAssignments, unitSquads, unitUserRoles, units } from "../db/schema/units.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 
 const listUnitsQuerySchema = z.object({
@@ -548,62 +553,63 @@ export async function registerUnitRoutes(app: FastifyInstance) {
       };
     }
 
-    const values: unknown[] = [];
-    const where = ["u.deleted_at IS NULL"];
+    const where = [isNull(units.deletedAt)];
 
     if (!includeInactive) {
-      where.push("u.is_active = true");
+      where.push(eq(units.isActive, true));
     }
 
     if (!visible.all) {
-      values.push(visible.unitIds);
-      where.push(`u.id = ANY($${values.length}::uuid[])`);
+      where.push(inArray(units.id, visible.unitIds));
     }
 
-    values.push(query.limit);
-    const limitParam = values.length;
-    values.push(query.offset);
-    const offsetParam = values.length;
-
     try {
-      const result = await queryDb<UnitListRow>(
-        `
-        SELECT
-          u.id AS unit_id,
-          u.unit_key,
-          u.name,
-          u.display_name,
-          u.callsign,
-          u.description,
-          u.emblem_url,
-          u.sort_order,
-          u.is_active,
-          COUNT(DISTINCT up.player_uid)::int AS member_count,
-          COUNT(DISTINCT up.player_uid) FILTER (
-            WHERE up.is_active = true
-              AND (ura.id IS NULL OR ura.squad_id IS NULL OR ura.billet = 'unassigned')
-          )::int AS unassigned_count,
-          COUNT(DISTINCT us.id) FILTER (WHERE us.is_active = true)::int AS squad_count
-        FROM units u
-        LEFT JOIN unit_players up ON up.unit_id = u.id AND up.is_active = true AND up.roster_status <> 'inactive'
-        LEFT JOIN unit_roster_assignments ura
-          ON ura.unit_id = u.id
-          AND ura.player_uid = up.player_uid
-          AND ura.ended_at IS NULL
-          AND ura.is_primary = true
-        LEFT JOIN unit_squads us ON us.unit_id = u.id AND us.is_active = true
-        WHERE ${where.join(" AND ")}
-        GROUP BY u.id
-        ORDER BY u.sort_order ASC, u.name ASC
-        LIMIT $${limitParam} OFFSET $${offsetParam}
-        `,
-        values
-      );
+      const db = getDrizzleDb();
+      const rows = await db
+        .select({
+          unit_id: units.id,
+          unit_key: units.unitKey,
+          name: units.name,
+          display_name: units.displayName,
+          callsign: units.callsign,
+          description: units.description,
+          emblem_url: units.emblemUrl,
+          sort_order: units.sortOrder,
+          is_active: units.isActive,
+          member_count: sql<number>`COUNT(DISTINCT ${unitPlayers.playerUid})::int`,
+          unassigned_count: sql<number>`COUNT(DISTINCT ${unitPlayers.playerUid}) FILTER (
+            WHERE ${unitPlayers.isActive} = true
+              AND (${unitRosterAssignments.id} IS NULL
+                OR ${unitRosterAssignments.squadId} IS NULL
+                OR ${unitRosterAssignments.billet} = 'unassigned')
+          )::int`,
+          squad_count: sql<number>`COUNT(DISTINCT ${unitSquads.id}) FILTER (WHERE ${unitSquads.isActive} = true)::int`
+        })
+        .from(units)
+        .leftJoin(
+          unitPlayers,
+          and(eq(unitPlayers.unitId, units.id), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"))
+        )
+        .leftJoin(
+          unitRosterAssignments,
+          and(
+            eq(unitRosterAssignments.unitId, units.id),
+            eq(unitRosterAssignments.playerUid, unitPlayers.playerUid),
+            isNull(unitRosterAssignments.endedAt),
+            eq(unitRosterAssignments.isPrimary, true)
+          )
+        )
+        .leftJoin(unitSquads, and(eq(unitSquads.unitId, units.id), eq(unitSquads.isActive, true)))
+        .where(and(...where))
+        .groupBy(units.id)
+        .orderBy(asc(units.sortOrder), asc(units.name))
+        .limit(query.limit)
+        .offset(query.offset);
 
       return {
         ok: true,
-        units: result.rows.map((row) => withMyRoles(row, visible.roles)),
-        pagination: { limit: query.limit, offset: query.offset, count: result.rows.length }
+        units: rows.map((row) => withMyRoles(row, visible.roles)),
+        pagination: { limit: query.limit, offset: query.offset, count: rows.length }
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list units");
@@ -828,81 +834,101 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
+      const db = getDrizzleDb();
       const [unitResult, ranksResult, squadsResult, playersResult] = await Promise.all([
-        queryDb<UnitRow>(
-          `
-          SELECT id, unit_key, name, display_name, callsign, description, emblem_url, sort_order, is_active
-          FROM units
-          WHERE id = $1 AND deleted_at IS NULL
-          `,
-          [unitId]
-        ),
-        queryDb<RankRow>(
-          `
-          SELECT id, unit_id, rank_key, name, short_name, sort_order, is_active
-          FROM unit_ranks
-          WHERE unit_id = $1 AND is_active = true
-          ORDER BY sort_order, name
-          `,
-          [unitId]
-        ),
-        queryDb<SquadRow>(
-          `
-          SELECT id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
-          FROM unit_squads
-          WHERE unit_id = $1 AND is_active = true
-          ORDER BY sort_order, name
-          `,
-          [unitId]
-        ),
-        queryDb<RosterPlayerRow>(
-          `
-          SELECT
-            up.player_uid,
-            p.last_name,
-            up.roster_name,
-            up.rank,
-            up.rank_id,
-            ur.name AS rank_name,
-            up.rank_sort,
-            up.roster_status,
-            up.notes,
-            ura.squad_id,
-            ura.billet,
-            ura.sort_order AS assignment_sort
-          FROM unit_players up
-          JOIN players p ON p.player_uid = up.player_uid
-          LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
-          LEFT JOIN unit_roster_assignments ura
-            ON ura.unit_id = up.unit_id
-            AND ura.player_uid = up.player_uid
-            AND ura.ended_at IS NULL
-            AND ura.is_primary = true
-          WHERE up.unit_id = $1
-            AND up.is_active = true
-            AND up.roster_status <> 'inactive'
-          ORDER BY up.rank_sort, COALESCE(ura.sort_order, 0), COALESCE(up.roster_name, p.last_name, up.player_uid)
-          `,
-          [unitId]
-        )
+        db
+          .select({
+            id: units.id,
+            unit_key: units.unitKey,
+            name: units.name,
+            display_name: units.displayName,
+            callsign: units.callsign,
+            description: units.description,
+            emblem_url: units.emblemUrl,
+            sort_order: units.sortOrder,
+            is_active: units.isActive
+          })
+          .from(units)
+          .where(and(eq(units.id, unitId), isNull(units.deletedAt))),
+        db
+          .select({
+            id: unitRanks.id,
+            unit_id: unitRanks.unitId,
+            rank_key: unitRanks.rankKey,
+            name: unitRanks.name,
+            short_name: unitRanks.shortName,
+            sort_order: unitRanks.sortOrder,
+            is_active: unitRanks.isActive
+          })
+          .from(unitRanks)
+          .where(and(eq(unitRanks.unitId, unitId), eq(unitRanks.isActive, true)))
+          .orderBy(asc(unitRanks.sortOrder), asc(unitRanks.name)),
+        db
+          .select({
+            id: unitSquads.id,
+            unit_id: unitSquads.unitId,
+            parent_squad_id: unitSquads.parentSquadId,
+            squad_key: unitSquads.squadKey,
+            name: unitSquads.name,
+            squad_type: unitSquads.squadType,
+            hierarchy_mode: unitSquads.hierarchyMode,
+            sort_order: unitSquads.sortOrder,
+            is_active: unitSquads.isActive
+          })
+          .from(unitSquads)
+          .where(and(eq(unitSquads.unitId, unitId), eq(unitSquads.isActive, true)))
+          .orderBy(asc(unitSquads.sortOrder), asc(unitSquads.name)),
+        db
+          .select({
+            player_uid: unitPlayers.playerUid,
+            last_name: players.lastName,
+            roster_name: unitPlayers.rosterName,
+            rank: unitPlayers.rank,
+            rank_id: unitPlayers.rankId,
+            rank_name: unitRanks.name,
+            rank_sort: unitPlayers.rankSort,
+            roster_status: unitPlayers.rosterStatus,
+            notes: unitPlayers.notes,
+            squad_id: unitRosterAssignments.squadId,
+            billet: unitRosterAssignments.billet,
+            assignment_sort: unitRosterAssignments.sortOrder
+          })
+          .from(unitPlayers)
+          .innerJoin(players, eq(players.playerUid, unitPlayers.playerUid))
+          .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+          .leftJoin(
+            unitRosterAssignments,
+            and(
+              eq(unitRosterAssignments.unitId, unitPlayers.unitId),
+              eq(unitRosterAssignments.playerUid, unitPlayers.playerUid),
+              isNull(unitRosterAssignments.endedAt),
+              eq(unitRosterAssignments.isPrimary, true)
+            )
+          )
+          .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive")))
+          .orderBy(
+            asc(unitPlayers.rankSort),
+            sql`COALESCE(${unitRosterAssignments.sortOrder}, 0)`,
+            sql`COALESCE(${unitPlayers.rosterName}, ${players.lastName}, ${unitPlayers.playerUid})`
+          )
       ]);
 
-      const unit = unitResult.rows[0];
+      const unit = unitResult[0];
 
       if (!unit) {
         return notFound(reply, "unit_not_found", "Battalion was not found.");
       }
 
       const revealSensitive = canSeeSensitiveIds(auth.user) || (await hasUnitRole(auth.user, unitId, "admin"));
-      const rosterPlayers = playersResult.rows.map((row) => sanitizeRosterPlayer(row, revealSensitive));
+      const rosterPlayers = playersResult.map((row) => sanitizeRosterPlayer(row, revealSensitive));
       const unassigned = rosterPlayers.filter((player) => !player.squad_id || player.billet === "unassigned");
 
       return {
         ok: true,
         unit,
-        ranks: ranksResult.rows,
+        ranks: ranksResult,
         unassigned,
-        squads: buildSquadTree(squadsResult.rows, rosterPlayers)
+        squads: buildSquadTree(squadsResult, rosterPlayers)
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch unit roster");
@@ -930,13 +956,12 @@ export async function registerUnitRoutes(app: FastifyInstance) {
       return;
     }
 
-    const values: unknown[] = [];
     const where = [
-      `NOT EXISTS (
+      sql`NOT EXISTS (
         SELECT 1
         FROM unit_players up_existing
         JOIN units u_existing ON u_existing.id = up_existing.unit_id
-        WHERE up_existing.player_uid = p.player_uid
+        WHERE up_existing.player_uid = ${players.playerUid}
           AND up_existing.is_active = true
           AND up_existing.roster_status <> 'inactive'
           AND u_existing.is_active = true
@@ -945,32 +970,31 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     ];
 
     if (parsedQuery.data.q && parsedQuery.data.q.trim().length > 0) {
-      values.push(`%${parsedQuery.data.q.trim()}%`);
-      where.push(`(p.player_uid ILIKE $${values.length} OR p.last_name ILIKE $${values.length})`);
+      const pattern = `%${parsedQuery.data.q.trim()}%`;
+      const searchCondition = or(ilike(players.playerUid, pattern), ilike(players.lastName, pattern));
+
+      if (searchCondition) {
+        where.push(searchCondition);
+      }
     }
 
-    values.push(parsedQuery.data.limit);
-    const limitParam = values.length;
-
     try {
-      const result = await queryDb<PlayerCandidateRow>(
-        `
-        SELECT
-          p.player_uid,
-          p.last_name,
-          p.last_seen_at,
-          COUNT(DISTINCT op.operation_id)::int AS operation_count
-        FROM players p
-        LEFT JOIN operation_players op ON op.player_uid = p.player_uid
-        WHERE ${where.join(" AND ")}
-        GROUP BY p.player_uid
-        ORDER BY p.last_seen_at DESC, p.player_uid
-        LIMIT $${limitParam}
-        `,
-        values
-      );
+      const db = getDrizzleDb();
+      const rows = await db
+        .select({
+          player_uid: players.playerUid,
+          last_name: players.lastName,
+          last_seen_at: players.lastSeenAt,
+          operation_count: countDistinct(operationPlayers.operationId).mapWith(Number)
+        })
+        .from(players)
+        .leftJoin(operationPlayers, eq(operationPlayers.playerUid, players.playerUid))
+        .where(and(...where))
+        .groupBy(players.playerUid)
+        .orderBy(desc(players.lastSeenAt), asc(players.playerUid))
+        .limit(parsedQuery.data.limit);
 
-      return { ok: true, players: result.rows };
+      return { ok: true, players: rows };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list unit player candidates");
       return sendDatabaseUnavailable(reply);
@@ -1199,17 +1223,22 @@ export async function registerUnitRoutes(app: FastifyInstance) {
       return;
     }
 
-    const result = await queryDb<RankRow>(
-      `
-      SELECT id, unit_id, rank_key, name, short_name, sort_order, is_active
-      FROM unit_ranks
-      WHERE unit_id = $1 AND is_active = true
-      ORDER BY sort_order, name
-      `,
-      [parsedParams.data.unit_id]
-    );
+    const db = getDrizzleDb();
+    const rows = await db
+      .select({
+        id: unitRanks.id,
+        unit_id: unitRanks.unitId,
+        rank_key: unitRanks.rankKey,
+        name: unitRanks.name,
+        short_name: unitRanks.shortName,
+        sort_order: unitRanks.sortOrder,
+        is_active: unitRanks.isActive
+      })
+      .from(unitRanks)
+      .where(and(eq(unitRanks.unitId, parsedParams.data.unit_id), eq(unitRanks.isActive, true)))
+      .orderBy(asc(unitRanks.sortOrder), asc(unitRanks.name));
 
-    return { ok: true, ranks: result.rows };
+    return { ok: true, ranks: rows };
   });
 
   app.post("/v1/units/:unit_id/ranks", async (request, reply) => {
@@ -1369,17 +1398,24 @@ export async function registerUnitRoutes(app: FastifyInstance) {
       return;
     }
 
-    const result = await queryDb<SquadRow>(
-      `
-      SELECT id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
-      FROM unit_squads
-      WHERE unit_id = $1 AND is_active = true
-      ORDER BY sort_order, name
-      `,
-      [parsedParams.data.unit_id]
-    );
+    const db = getDrizzleDb();
+    const rows = await db
+      .select({
+        id: unitSquads.id,
+        unit_id: unitSquads.unitId,
+        parent_squad_id: unitSquads.parentSquadId,
+        squad_key: unitSquads.squadKey,
+        name: unitSquads.name,
+        squad_type: unitSquads.squadType,
+        hierarchy_mode: unitSquads.hierarchyMode,
+        sort_order: unitSquads.sortOrder,
+        is_active: unitSquads.isActive
+      })
+      .from(unitSquads)
+      .where(and(eq(unitSquads.unitId, parsedParams.data.unit_id), eq(unitSquads.isActive, true)))
+      .orderBy(asc(unitSquads.sortOrder), asc(unitSquads.name));
 
-    return { ok: true, squads: result.rows };
+    return { ok: true, squads: rows };
   });
 
   app.post("/v1/units/:unit_id/squads", async (request, reply) => {
@@ -1775,18 +1811,20 @@ export async function registerUnitRoutes(app: FastifyInstance) {
       return sendValidationFailed(reply);
     }
 
-    const result = await queryDb<AdminRow>(
-      `
-      SELECT uur.user_id, au.display_name, uur.role, uur.granted_at
-      FROM unit_user_roles uur
-      JOIN app_users au ON au.id = uur.user_id
-      WHERE uur.unit_id = $1
-      ORDER BY uur.role, au.display_name NULLS LAST
-      `,
-      [parsedParams.data.unit_id]
-    );
+    const db = getDrizzleDb();
+    const rows = await db
+      .select({
+        user_id: unitUserRoles.userId,
+        display_name: appUsers.displayName,
+        role: unitUserRoles.role,
+        granted_at: unitUserRoles.grantedAt
+      })
+      .from(unitUserRoles)
+      .innerJoin(appUsers, eq(appUsers.id, unitUserRoles.userId))
+      .where(eq(unitUserRoles.unitId, parsedParams.data.unit_id))
+      .orderBy(asc(unitUserRoles.role), sql`${appUsers.displayName} NULLS LAST`);
 
-    return { ok: true, admins: result.rows };
+    return { ok: true, admins: rows };
   });
 
   app.put("/v1/units/:unit_id/admins/:user_id", async (request, reply) => {
