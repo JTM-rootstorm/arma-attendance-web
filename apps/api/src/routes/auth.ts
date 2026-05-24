@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
@@ -17,8 +18,13 @@ import { createCsrfToken } from "../auth/csrf.js";
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { playerDiscordLinks } from "../db/schema/discord.js";
+import { operations } from "../db/schema/operations.js";
+import { operationPlayers, players } from "../db/schema/players.js";
+import { unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 
 const discordStartQuerySchema = z.object({
@@ -234,23 +240,48 @@ async function serializeUser(user: CurrentUser) {
 async function getSelfPlayerUids(user: CurrentUser): Promise<string[]> {
   const steamId = user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null;
   const discordId = user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null;
-  const result = await queryDb<{ player_uid: string }>(
-    `
+
+  const result = await getDrizzleDb().execute<{ player_uid: string }>(sql`
     SELECT DISTINCT p.player_uid
     FROM players p
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
-    WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
-       OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+    WHERE (${steamId}::text IS NOT NULL AND p.player_uid = ${steamId})
+       OR (${discordId}::text IS NOT NULL AND pdl.discord_user_id = ${discordId})
     ORDER BY p.player_uid
-    `,
-    [steamId, discordId]
-  );
+  `);
 
   return result.rows.map((row) => row.player_uid);
 }
 
 async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | null> {
-  return findLinkedPlayerWithClient({ query: queryDb }, user);
+  const steamId = user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null;
+  const discordId = user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null;
+  const rows = await getDrizzleDb()
+    .select({
+      player_uid: players.playerUid,
+      last_name: players.lastName,
+      rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
+      roster_name: unitPlayers.rosterName,
+      first_seen_at: players.firstSeenAt,
+      last_seen_at: players.lastSeenAt
+    })
+    .from(players)
+    .leftJoin(
+      unitPlayers,
+      and(eq(unitPlayers.playerUid, players.playerUid), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"))
+    )
+    .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+    .leftJoin(playerDiscordLinks, eq(playerDiscordLinks.playerUid, players.playerUid))
+    .where(
+      or(
+        and(sql`${steamId}::text IS NOT NULL`, eq(players.playerUid, steamId ?? "")),
+        and(sql`${discordId}::text IS NOT NULL`, eq(playerDiscordLinks.discordUserId, discordId ?? ""))
+      )
+    )
+    .orderBy(desc(players.lastSeenAt))
+    .limit(1);
+
+  return rows[0] ?? null;
 }
 
 async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUser): Promise<LinkedPlayerRow | null> {
@@ -851,39 +882,40 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         armor_kills: 0,
         air_kills: 0
       };
-      const membershipResult = await queryDb<SelfUnitMembershipRow>(
-        `
-        SELECT
-          u.id AS unit_id,
-          u.unit_key,
-          u.name,
-          u.display_name,
-          u.callsign,
-          COALESCE(ur.name, up.rank) AS rank,
-          up.roster_name,
-          up.roster_status
-        FROM unit_players up
-        JOIN units u ON u.id = up.unit_id
-        LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
-        WHERE up.player_uid = $1
-          AND up.is_active = true
-          AND up.roster_status <> 'inactive'
-          AND u.is_active = true
-          AND u.deleted_at IS NULL
-        ORDER BY u.sort_order, u.name
-        `,
-        [player.player_uid]
-      );
+      const membershipRows = await getDrizzleDb()
+        .select({
+          unit_id: units.id,
+          unit_key: units.unitKey,
+          name: units.name,
+          display_name: units.displayName,
+          callsign: units.callsign,
+          rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
+          roster_name: unitPlayers.rosterName,
+          roster_status: unitPlayers.rosterStatus
+        })
+        .from(unitPlayers)
+        .innerJoin(units, eq(units.id, unitPlayers.unitId))
+        .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+        .where(
+          and(
+            eq(unitPlayers.playerUid, player.player_uid),
+            eq(unitPlayers.isActive, true),
+            ne(unitPlayers.rosterStatus, "inactive"),
+            eq(units.isActive, true),
+            sql`${units.deletedAt} IS NULL`
+          )
+        )
+        .orderBy(units.sortOrder, units.name);
 
       return {
         ok: true,
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
-          rank: membershipResult.rows[0]?.rank ?? player.rank,
+          rank: membershipRows[0]?.rank ?? player.rank,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         },
-        battalion_memberships: membershipResult.rows.map((membership) => ({
+        battalion_memberships: membershipRows.map((membership: SelfUnitMembershipRow) => ({
           unit_id: membership.unit_id,
           unit_key: membership.unit_key,
           name: membership.display_name ?? membership.name,
@@ -973,25 +1005,22 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         };
       }
 
-      const result = await queryDb<SelfOperationRow>(
-        `
-        SELECT
-          o.id AS operation_id,
-          o.status,
-          o.mission_name,
-          o.world_name,
-          o.started_at,
-          o.ended_at,
-          op.present_at_start,
-          op.present_at_end
-        FROM operation_players op
-        JOIN operations o ON o.id = op.operation_id
-        WHERE op.player_uid = $1
-        ORDER BY o.started_at DESC
-        LIMIT 5
-        `,
-        [player.player_uid]
-      );
+      const rows = await getDrizzleDb()
+        .select({
+          operation_id: operations.id,
+          status: operations.status,
+          mission_name: operations.missionName,
+          world_name: operations.worldName,
+          started_at: operations.startedAt,
+          ended_at: operations.endedAt,
+          present_at_start: operationPlayers.presentAtStart,
+          present_at_end: operationPlayers.presentAtEnd
+        })
+        .from(operationPlayers)
+        .innerJoin(operations, eq(operations.id, operationPlayers.operationId))
+        .where(eq(operationPlayers.playerUid, player.player_uid))
+        .orderBy(desc(operations.startedAt))
+        .limit(5);
 
       return {
         ok: true,
@@ -999,7 +1028,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           display_name: player.roster_name ?? player.last_name,
           rank: player.rank
         },
-        operations: result.rows
+        operations: rows as SelfOperationRow[]
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch self operations");
@@ -1039,26 +1068,21 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         };
       }
 
-      const operationResult = await queryDb<SelfOperationRow>(
-        `
-        SELECT
-          o.id AS operation_id,
-          o.status,
-          o.mission_name,
-          o.world_name,
-          o.started_at,
-          o.ended_at,
-          op.present_at_start,
-          op.present_at_end
-        FROM operation_players op
-        JOIN operations o ON o.id = op.operation_id
-        WHERE op.player_uid = $1
-          AND op.operation_id = $2
-        LIMIT 1
-        `,
-        [player.player_uid, parsedParams.data.operation_id]
-      );
-      const operation = operationResult.rows[0];
+      const [operation] = (await getDrizzleDb()
+        .select({
+          operation_id: operations.id,
+          status: operations.status,
+          mission_name: operations.missionName,
+          world_name: operations.worldName,
+          started_at: operations.startedAt,
+          ended_at: operations.endedAt,
+          present_at_start: operationPlayers.presentAtStart,
+          present_at_end: operationPlayers.presentAtEnd
+        })
+        .from(operationPlayers)
+        .innerJoin(operations, eq(operations.id, operationPlayers.operationId))
+        .where(and(eq(operationPlayers.playerUid, player.player_uid), eq(operationPlayers.operationId, parsedParams.data.operation_id)))
+        .limit(1)) as SelfOperationRow[];
 
       if (!operation) {
         return reply.code(404).send({
@@ -1135,17 +1159,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         };
       }
 
-      const attended = await queryDb<{ exists: boolean }>(
-        `
-        SELECT EXISTS (
-          SELECT 1 FROM operation_players
-          WHERE operation_id = $1 AND player_uid = $2
-        ) AS exists
-        `,
-        [parsedQuery.data.operation_id, player.player_uid]
-      );
+      const attended = await getDrizzleDb()
+        .select({ player_uid: operationPlayers.playerUid })
+        .from(operationPlayers)
+        .where(and(eq(operationPlayers.operationId, parsedQuery.data.operation_id), eq(operationPlayers.playerUid, player.player_uid)))
+        .limit(1);
 
-      if (!attended.rows[0]?.exists) {
+      if (!attended[0]) {
         return reply.code(404).send({
           ok: false,
           error: {

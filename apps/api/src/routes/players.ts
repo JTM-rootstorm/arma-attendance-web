@@ -1,10 +1,14 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { players } from "../db/schema/players.js";
+import { unitPlayers } from "../db/schema/units.js";
 import { redactOperationListItem, redactPlayer } from "../privacy/redaction.js";
 
 const playerListQuerySchema = z.object({
@@ -24,10 +28,6 @@ type PlayerRow = {
   last_seen_at: Date;
   raw_last_player: unknown;
   operation_count: number;
-};
-
-type PlayerUnitRow = {
-  unit_id: string;
 };
 
 type PlayerDetailRow = {
@@ -202,23 +202,19 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     const { player_uid: playerUid } = parsedParams.data;
 
     try {
-      const playerResult = await queryDb<PlayerDetailRow>(
-        `
-        SELECT
-          player_uid,
-          last_name,
-          first_seen_at,
-          last_seen_at,
-          raw_last_player,
-          created_at,
-          updated_at
-        FROM players
-        WHERE player_uid = $1
-        `,
-        [playerUid]
-      );
-
-      const player = playerResult.rows[0];
+      const [player] = await getDrizzleDb()
+        .select({
+          player_uid: players.playerUid,
+          last_name: players.lastName,
+          first_seen_at: players.firstSeenAt,
+          last_seen_at: players.lastSeenAt,
+          raw_last_player: players.rawLastPlayer,
+          created_at: players.createdAt,
+          updated_at: players.updatedAt
+        })
+        .from(players)
+        .where(eq(players.playerUid, playerUid))
+        .limit(1);
 
       if (!player) {
         return reply.code(404).send({
@@ -236,14 +232,17 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
         if (!ownsPlayer) {
           const unitFilter = await getReadableUnitFilter(auth.user);
-          const visibleResult = unitFilter.all
-            ? await queryDb<PlayerUnitRow>("SELECT unit_id FROM unit_players WHERE player_uid = $1 LIMIT 1", [playerUid])
-            : await queryDb<PlayerUnitRow>(
-                "SELECT unit_id FROM unit_players WHERE player_uid = $1 AND unit_id = ANY($2::uuid[]) LIMIT 1",
-                [playerUid, unitFilter.unitIds]
-              );
+          const visibleRows = await getDrizzleDb()
+            .select({ unit_id: unitPlayers.unitId })
+            .from(unitPlayers)
+            .where(
+              unitFilter.all
+                ? eq(unitPlayers.playerUid, playerUid)
+                : and(eq(unitPlayers.playerUid, playerUid), inArray(unitPlayers.unitId, unitFilter.unitIds))
+            )
+            .limit(1);
 
-          if (!visibleResult.rows[0]) {
+          if (!visibleRows[0]) {
             return deny(reply);
           }
         }
