@@ -76,6 +76,12 @@ if not (data.get("ok") is True and role in data.get("user", {}).get("roles", [])
   fi
 }
 
+csrf_token() {
+  local cookie_jar="$1"
+
+  curl -fsS -b "$cookie_jar" "$BASE_URL/auth/csrf" | json_value ".csrf_token"
+}
+
 echo "[smoke:auth] Creating fake owner Discord session..."
 owner_login_response="$(
   curl -fsS -c "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/login" \
@@ -118,6 +124,8 @@ printf '%s\n' "$admin_users_response" | assert_ok
 echo "[smoke:auth] Granting viewer role through admin API..."
 grant_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X PUT "$BASE_URL/v1/admin/users/$viewer_user_id/roles/viewer" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d '{"reason":"auth smoke"}'
 )"
@@ -127,6 +135,8 @@ printf '%s\n' "$grant_response" | assert_ok
 echo "[smoke:auth] Linking fake Steam identity..."
 steam_link_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d "{\"provider_user_id\":\"$STEAM_ID\"}"
 )"
@@ -134,12 +144,20 @@ printf '%s\n' "$steam_link_response" | print_json
 printf '%s\n' "$steam_link_response" | assert_ok
 
 echo "[smoke:auth] Unlinking fake Steam identity..."
-steam_unlink_response="$(curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/me/identities/steam")"
+steam_unlink_response="$(
+  curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/me/identities/steam" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")"
+)"
 printf '%s\n' "$steam_unlink_response" | print_json
 printf '%s\n' "$steam_unlink_response" | assert_ok
 
 echo "[smoke:auth] Logging out and checking session revocation..."
-logout_response="$(curl -fsS -b "$OWNER_COOKIE_JAR" -c "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/auth/logout")"
+logout_response="$(
+  curl -fsS -b "$OWNER_COOKIE_JAR" -c "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/auth/logout" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")"
+)"
 printf '%s\n' "$logout_response" | print_json
 printf '%s\n' "$logout_response" | assert_ok
 

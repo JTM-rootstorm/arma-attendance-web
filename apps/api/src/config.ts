@@ -35,6 +35,13 @@ const envSchema = z.object({
     .transform((value) => value === "true")
     .or(z.boolean())
     .default(true),
+  OAUTH_ALLOWED_RETURN_ORIGINS: z.string().optional(),
+  CSRF_ENABLED: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(true),
+  CSRF_TOKEN_TTL_MINUTES: z.coerce.number().int().min(1).max(24 * 60).default(120),
   INITIAL_ADMIN_DISCORD_IDS: z.string().optional(),
   ENABLE_TEST_AUTH: z
     .enum(["true", "false"])
@@ -93,6 +100,12 @@ export const config = {
     .map((value) => value.trim())
     .filter((value) => value.length > 0),
   corsAllowCredentials: env.CORS_ALLOW_CREDENTIALS,
+  oauthAllowedReturnOrigins: (env.OAUTH_ALLOWED_RETURN_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+  csrfEnabled: env.CSRF_ENABLED,
+  csrfTokenTtlMinutes: env.CSRF_TOKEN_TTL_MINUTES,
   initialAdminDiscordIds: (env.INITIAL_ADMIN_DISCORD_IDS ?? "")
     .split(",")
     .map((value) => value.trim())

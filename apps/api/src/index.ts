@@ -1,6 +1,9 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
 
+import { requireCsrfForUnsafeSessionRequest } from "./auth/csrf.js";
 import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
 import { registerAdminRoutes } from "./routes/admin.js";
@@ -38,6 +41,8 @@ app.log.info(
     sessionSameSite: config.sessionSameSite,
     corsAllowedOrigins: config.corsAllowedOrigins,
     corsAllowCredentials: config.corsAllowCredentials,
+    oauthAllowedReturnOrigins: config.oauthAllowedReturnOrigins,
+    csrfEnabled: config.csrfEnabled,
     initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
     testAuthEnabled: config.enableTestAuth,
     databaseUrlPresent: Boolean(config.databaseUrl)
@@ -86,6 +91,14 @@ app.addHook("onClose", async () => {
 
 const allowedCorsOrigins = new Set(config.corsAllowedOrigins);
 
+await app.register(helmet, {
+  contentSecurityPolicy: false
+});
+
+await app.register(rateLimit, {
+  global: false
+});
+
 await app.register(cors, {
   origin(origin, callback) {
     if (!origin) {
@@ -97,9 +110,15 @@ await app.register(cors, {
   },
   credentials: config.corsAllowCredentials,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Authorization", "Content-Type"],
+  allowedHeaders: ["Authorization", "Content-Type", "X-CSRF-Token"],
   exposedHeaders: ["Content-Disposition"],
   maxAge: 600
+});
+
+app.addHook("preHandler", async (request, reply) => {
+  if (!(await requireCsrfForUnsafeSessionRequest(request, reply))) {
+    return;
+  }
 });
 
 await registerHealthRoutes(app);

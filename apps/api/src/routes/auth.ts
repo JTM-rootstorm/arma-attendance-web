@@ -13,6 +13,8 @@ import {
   setSessionCookie,
   type CurrentUser
 } from "../auth.js";
+import { createCsrfToken } from "../auth/csrf.js";
+import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
@@ -20,6 +22,7 @@ import { queryDb } from "../db/pool.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 
 const discordStartQuerySchema = z.object({
+  return_to: z.string().max(1000).optional(),
   redirect_after: z.string().max(500).optional()
 });
 
@@ -29,6 +32,7 @@ const discordCallbackQuerySchema = z.object({
 });
 
 const steamStartQuerySchema = z.object({
+  return_to: z.string().max(1000).optional(),
   redirect_after: z.string().max(500).optional()
 });
 
@@ -181,14 +185,6 @@ function sendConflict(reply: FastifyReply, message: string) {
 
 function randomState(): string {
   return randomBytes(24).toString("base64url");
-}
-
-function isSafeRedirect(value: string | null | undefined): string {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
-    return "/";
-  }
-
-  return value;
 }
 
 function discordAvatarUrl(profile: DiscordProfile): string | null {
@@ -698,7 +694,7 @@ async function verifySteamCallback(query: Record<string, string>): Promise<boole
 }
 
 export async function registerAuthRoutes(app: FastifyInstance) {
-  app.get("/auth/discord/start", async (request, reply) => {
+  app.get("/auth/discord/start", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const parsedQuery = discordStartQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -710,7 +706,11 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     try {
-      const state = await insertOAuthState("discord", isSafeRedirect(parsedQuery.data.redirect_after), null);
+      const state = await insertOAuthState(
+        "discord",
+        getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after),
+        null
+      );
       const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
       authorizeUrl.searchParams.set("client_id", config.discordClientId);
       authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
@@ -725,7 +725,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/auth/discord/callback", async (request, reply) => {
+  app.get("/auth/discord/callback", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const parsedQuery = discordCallbackQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -749,7 +749,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const session = await createUserSession(userId, request);
       setSessionCookie(reply, session.token, session.expires_at);
 
-      return reply.redirect(isSafeRedirect(state.redirect_after));
+      return reply.redirect(getSafeReturnTo(state.redirect_after));
     } catch (error) {
       request.log.error({ err: error }, "Discord OAuth callback failed");
       return sendProviderFailure(reply);
@@ -770,6 +770,29 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     return { ok: true, user: await serializeUser(user) };
+  });
+
+  app.get("/auth/csrf", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    try {
+      const csrf = await createCsrfToken(user);
+      return {
+        ok: true,
+        csrf_token: csrf.token,
+        expires_at: csrf.expires_at
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create CSRF token");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
   });
 
   app.get("/v1/me/player", async (request, reply) => {
@@ -1161,7 +1184,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/auth/steam/start", async (request, reply) => {
+  app.get("/auth/steam/start", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const parsedQuery = steamStartQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -1178,7 +1201,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return sendAuthUnavailable(reply, "Steam OpenID is not configured.");
     }
 
-    const state = await insertOAuthState("steam", isSafeRedirect(parsedQuery.data.redirect_after), user.id);
+    const state = await insertOAuthState("steam", getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after), user.id);
     const steamUrl = new URL("https://steamcommunity.com/openid/login");
     steamUrl.searchParams.set("openid.ns", "http://specs.openid.net/auth/2.0");
     steamUrl.searchParams.set("openid.mode", "checkid_setup");
@@ -1190,7 +1213,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return reply.redirect(steamUrl.toString());
   });
 
-  app.get("/auth/steam/callback", async (request, reply) => {
+  app.get("/auth/steam/callback", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const parsedQuery = steamCallbackQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -1218,7 +1241,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       await withDbTransaction(async (tx) => {
         await upsertSteamIdentity(tx, state.code_verifier ?? "", steamId);
       });
-      return reply.redirect(isSafeRedirect(state.redirect_after));
+      return reply.redirect(getSafeReturnTo(state.redirect_after));
     } catch (error) {
       if (error instanceof Error && error.message === "steam_identity_conflict") {
         return sendConflict(reply, "That Steam identity is already linked to another user.");
@@ -1250,7 +1273,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.post("/auth/test/login", async (request, reply) => {
+  app.post("/auth/test/login", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     if (config.nodeEnv === "production" && !config.enableTestAuth) {
       return reply.code(404).send({ ok: false, error: { code: "not_found", message: "Route not found." } });
     }

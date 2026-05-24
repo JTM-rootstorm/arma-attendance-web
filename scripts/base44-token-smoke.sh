@@ -62,6 +62,10 @@ assert_status_one_of() {
   exit 1
 }
 
+csrf_token() {
+  curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/auth/csrf" | json_value ".csrf_token"
+}
+
 assert_cookie_attributes() {
   local headers="$1"
   local expected_same_site="${SESSION_SAME_SITE:-Lax}"
@@ -94,6 +98,8 @@ rm -f /tmp/base44-owner-login-body-"$STAMP".json
 echo "[smoke:base44] Creating Base44 integration token..."
 token_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/system/machine-tokens" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token)" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"base44-smoke-$STAMP\",\"token_kind\":\"base44_integration\"}"
 )"
@@ -112,7 +118,9 @@ owner_denied_status="$(
 assert_status_one_of "$owner_denied_status" "Base44 token owner endpoint" 401 403
 
 echo "[smoke:base44] Revoking Base44 integration token..."
-curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$base44_token_id" |
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$base44_token_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token)" |
   assert_json 'data.ok === true && data.token_record.is_active === false'
 
 echo "[smoke:base44] Checking revoked token no longer works..."

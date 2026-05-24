@@ -4,6 +4,8 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://127.0.0.1:3000}"
 STAMP="$(date +%Y%m%d%H%M%S)"
 API_TOKEN="${API_TOKEN:-dev-token}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 OWNER_COOKIE_JAR="$(mktemp)"
 TCW_COOKIE_JAR="$(mktemp)"
 ADMIN_COOKIE_JAR="$(mktemp)"
@@ -16,6 +18,13 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
 
 json_value() {
   local expression="$1"
@@ -62,6 +71,12 @@ login_user() {
   curl -fsS -c "$cookie_jar" -X POST "$BASE_URL/auth/test/login" \
     -H "Content-Type: application/json" \
     -d "{\"provider_user_id\":\"$discord_id\",\"display_name\":\"$display_name\"}" | json_value ".user_id"
+}
+
+csrf_token() {
+  local cookie_jar="$1"
+
+  curl -fsS -b "$cookie_jar" "$BASE_URL/auth/csrf" | json_value ".csrf_token"
 }
 
 require_database_url() {
@@ -179,9 +194,13 @@ ON CONFLICT (operation_id, player_uid) DO UPDATE SET
 SQL
 
 curl -fsS -b "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"$steam_id\"}" >/dev/null
 curl -fsS -b "$DEFAULT_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$DEFAULT_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"$default_steam_id\"}" >/dev/null
 
@@ -193,14 +212,22 @@ curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me" | assert_json 'data.ok === tru
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/player" | assert_json 'data.ok === true && data.linked_player !== null'
 curl -fsS -b "$DEFAULT_COOKIE_JAR" "$BASE_URL/v1/me/player" | assert_json 'data.ok === true && data.linked_player.display_name === "RBAC Steam Default"'
 curl -fsS -b "$USER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/me/player" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d '{"display_name":"RBAC Callsign"}' | assert_json 'data.ok === true && data.linked_player.display_name === "RBAC Callsign"'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me" | assert_json 'data.ok === true && data.user.identities.some((identity) => identity.provider === "discord" && identity.display_name === "RBAC Smoke Player")'
-curl -fsS -b "$ADMIN_COOKIE_JAR" -X POST "$BASE_URL/v1/admin/players/$steam_id/reset-name" | assert_json 'data.ok === true && data.player.last_name === "RBAC Player"'
+curl -fsS -b "$ADMIN_COOKIE_JAR" -X POST "$BASE_URL/v1/admin/players/$steam_id/reset-name" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")" | assert_json 'data.ok === true && data.player.last_name === "RBAC Player"'
 curl -fsS -b "$USER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/me/player" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d '{"display_name":"RBAC Owner Reset"}' | assert_json 'data.ok === true && data.linked_player.display_name === "RBAC Owner Reset"'
-curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/admin/players/$steam_id/reset-name" | assert_json 'data.ok === true && data.player.last_name === "RBAC Player"'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/admin/players/$steam_id/reset-name" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.player.last_name === "RBAC Player"'
 operation_id="$(curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations" | json_value ".operations.0.operation_id")"
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations" | assert_json 'data.ok === true && data.operations.length <= 5'
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me/operations/$operation_id" | assert_json 'data.ok === true && data.operation.operation_id !== undefined'
@@ -215,9 +242,11 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendan
   && data.attendance.some((row) => row.player_uid === '$steam_id' && row.scoreboard_stats.infantry_kills === 5 && row.scoreboard_stats.soft_vehicle_kills === 1 && row.scoreboard_stats.armor_kills === 2 && row.scoreboard_stats.air_kills === 3 && row.scoreboard_stats.deaths === 1)"
 curl -fsS -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true
   && data.attendance.some((row) => row.player_uid === null && row.scoreboard_stats.infantry_kills === 5)'
-assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "normal user operation delete"
-assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id")" "unit admin operation delete"
-curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" | assert_json 'data.ok === true && data.operation_id'
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")")" "normal user operation delete"
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")")" "unit admin operation delete"
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.operation_id'
 assert_status "404" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id")" "deleted operation detail"
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/players" | assert_json 'data.ok === true && data.players.some((player) => player.last_name === "RBAC Player" && player.player_uid === null)'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" "$BASE_URL/v1/players.csv")" "normal user CSV"
@@ -240,20 +269,28 @@ echo "[smoke:rbac] Checking owner-only paths and machine-token compatibility..."
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/owner/api-key" | assert_json 'data.ok === true && data.api_key.mutable === false'
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/system/machine-tokens" | assert_json 'data.ok === true && Array.isArray(data.tokens)'
 machine_token_response="$(curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/system/machine-tokens" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"name\":\"RBAC smoke token $STAMP\",\"token_kind\":\"api\"}")"
 machine_token="$(printf "%s" "$machine_token_response" | json_value ".token")"
 machine_token_id="$(printf "%s" "$machine_token_response" | json_value ".token_record.id")"
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $machine_token" | assert_json 'data.ok === true'
-curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$machine_token_id" | assert_json 'data.ok === true && data.token_record.is_active === false'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$machine_token_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.token_record.is_active === false'
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $API_TOKEN" | assert_json 'data.ok === true'
 owner_delete_response="$(curl -fsS -X POST "$BASE_URL/v1/operations/start" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"request_id\":\"rbac-owner-delete-$STAMP\",\"server_key\":\"$server_key-owner-delete\",\"mission\":{\"mission_name\":\"RBAC Owner Delete\",\"world_name\":\"Altis\"}}")"
 owner_delete_id="$(printf "%s" "$owner_delete_response" | json_value ".operation_id")"
-curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" | assert_json 'data.ok === true && data.operation_deleted === true && data.ingest_requests_deleted >= 1'
-curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" | assert_json 'data.ok === true && data.operation_deleted === false && data.ingest_requests_deleted === 0'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.operation_deleted === true && data.ingest_requests_deleted >= 1'
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$owner_delete_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.operation_deleted === false && data.ingest_requests_deleted === 0'
 assert_status "404" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$owner_delete_id")" "owner deleted operation detail"
 
 echo "[smoke:rbac] OK"

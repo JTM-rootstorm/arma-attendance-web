@@ -132,6 +132,7 @@ GET  /v1/leaderboard/units
 GET  /auth/discord/start
 GET  /auth/discord/callback
 POST /auth/logout
+GET  /auth/csrf
 GET  /auth/steam/start
 GET  /auth/steam/callback
 GET  /v1/me
@@ -413,23 +414,42 @@ Session cookies are `HttpOnly`, `Path=/`, use `SESSION_SAME_SITE` (`Lax` by defa
 
 ## Base44 Integration
 
-Base44 uses two auth paths:
+Base44 is a frontend for human users. User-facing Base44 screens should redirect through the API Discord OAuth flow, rely on the HttpOnly session cookie, and call the API with `credentials: "include"`. API keys and machine tokens must not be placed in Base44 client-side code.
+
+Base44 can still use two auth paths, but only the session path is appropriate for browser UI:
 
 ```text
-Automated/server-side Base44 actions:
-  dedicated DB-backed base44_integration machine token
-
 Human users:
-  Discord OAuth login + session cookie + RBAC
+  Base44 UI -> /auth/discord/start?return_to=... -> Discord OAuth -> session cookie -> RBAC
+
+Automated/server-side Base44 actions, only if Base44 can store secrets server-side:
+  dedicated DB-backed base44_integration machine token
 ```
 
-Production Base44 env:
+The API supports both `return_to` and `redirect_after` on `/auth/discord/start` and `/auth/steam/start`. Absolute return URLs are allowed only when their origin is listed in `OAUTH_ALLOWED_RETURN_ORIGINS`; relative app paths remain supported for the native/self-hosted web UI.
+
+For unsafe session-authenticated requests (`POST`, `PUT`, `PATCH`, `DELETE`), fetch `/auth/csrf` and send the returned value as `X-CSRF-Token`. Unsafe session requests also require an allowed browser `Origin`. Machine-token requests skip CSRF.
+
+The Base44 agent handoff is committed at [`docs/base44/BASE44_AGENT.md`](docs/base44/BASE44_AGENT.md).
+
+Required production Base44 env:
 
 ```env
-CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app
+CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
 CORS_ALLOW_CREDENTIALS=true
 SESSION_SAME_SITE=None
 SESSION_SECURE=true
+OAUTH_ALLOWED_RETURN_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
+CSRF_ENABLED=true
+CSRF_TOKEN_TTL_MINUTES=120
+```
+
+Fetch pattern:
+
+```js
+await fetch("https://arma-stats.root-storm.com/v1/me", {
+  credentials: "include"
+});
 ```
 
 Create a Base44 token from the browser:
@@ -447,9 +467,11 @@ After deploy, run:
 ```bash
 BASE_URL=https://YOUR_PUBLIC_HOST pnpm smoke:cors
 BASE_URL=https://YOUR_PUBLIC_HOST pnpm smoke:base44
+BASE_URL=https://YOUR_PUBLIC_HOST pnpm smoke:base44:oauth
+BASE_URL=https://YOUR_PUBLIC_HOST pnpm smoke:csrf
 ```
 
-Reverse proxies in front of the API must allow and forward `OPTIONS`, `Origin`, `Authorization`, `Content-Type`, `Access-Control-Request-Method`, `Access-Control-Request-Headers`, `Cookie`, and `Set-Cookie`.
+Reverse proxies in front of the API must allow and forward `OPTIONS`, `Origin`, `Authorization`, `Content-Type`, `X-CSRF-Token`, `Access-Control-Request-Method`, `Access-Control-Request-Headers`, `Cookie`, and `Set-Cookie`.
 
 Role summary:
 
@@ -565,8 +587,11 @@ SESSION_SECRET=change-this-session-secret
 SESSION_TTL_HOURS=168
 SESSION_SECURE=true
 SESSION_SAME_SITE=Lax
-CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app
+CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
 CORS_ALLOW_CREDENTIALS=true
+OAUTH_ALLOWED_RETURN_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
+CSRF_ENABLED=true
+CSRF_TOKEN_TTL_MINUTES=120
 INITIAL_ADMIN_DISCORD_IDS=
 ENABLE_TEST_AUTH=false
 ```
@@ -591,6 +616,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0010_scoreboard_stats.sql`
 - `0011_battalion_roster_and_leaderboard.sql`
 - `0012_base44_machine_token_kind_and_cors_sessions.sql`
+- `0013_base44_oauth_csrf_hardening.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -767,6 +793,12 @@ X-Forwarded-For
 X-Forwarded-Proto
 Authorization
 Content-Type
+X-CSRF-Token
+Origin
+Cookie
+Set-Cookie
+Access-Control-Request-Method
+Access-Control-Request-Headers
 ```
 
 `Authorization` is required for `/v1/debug/poke`.
@@ -794,6 +826,9 @@ pnpm smoke:attendance
 pnpm smoke:scoreboard
 pnpm smoke:battalions
 pnpm smoke:leaderboard
+pnpm smoke:cors
+pnpm smoke:base44:oauth
+pnpm smoke:csrf
 pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality

@@ -31,6 +31,8 @@
     "smoke:leaderboard": "bash scripts/leaderboard-smoke.sh",
     "smoke:cors": "bash scripts/cors-smoke.sh",
     "smoke:base44": "bash scripts/base44-token-smoke.sh",
+    "smoke:base44:oauth": "bash scripts/base44-oauth-smoke.sh",
+    "smoke:csrf": "bash scripts/csrf-smoke.sh",
     "smoke:dashboard": "bash scripts/dashboard-smoke.sh",
     "smoke:exports": "bash scripts/exports-smoke.sh",
     "smoke:data-quality": "bash scripts/data-quality-smoke.sh",

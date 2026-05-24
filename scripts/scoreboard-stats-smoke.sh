@@ -45,6 +45,10 @@ if (!ok) {
 ' "$expression"
 }
 
+csrf_token() {
+  curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/auth/csrf" | json_value ".csrf_token"
+}
+
 if [[ -z "$API_TOKEN" ]]; then
   echo "[smoke:scoreboard] API_TOKEN is required." >&2
   exit 1
@@ -186,6 +190,8 @@ curl -fsS -c "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/login" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"scoreboard-user-$STAMP\",\"display_name\":\"Scoreboard Smoke User\"}" >/dev/null
 curl -fsS -b "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token)" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"$PLAYER_ONE_UID\"}" >/dev/null
 

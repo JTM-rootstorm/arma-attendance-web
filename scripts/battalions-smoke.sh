@@ -78,6 +78,12 @@ login_user() {
     -d "{\"provider_user_id\":\"$discord_id\",\"display_name\":\"$display_name\",\"roles\":$roles_json}" | json_value ".user_id"
 }
 
+csrf_token() {
+  local cookie_jar="$1"
+
+  curl -fsS -b "$cookie_jar" "$BASE_URL/auth/csrf" | json_value ".csrf_token"
+}
+
 require_database_url
 
 owner_discord="battalion-owner-$STAMP"
@@ -98,6 +104,8 @@ member_id="$(login_user "$MEMBER_COOKIE_JAR" "$member_discord" "Battalion Smoke 
 echo "[smoke:battalions] Creating battalion..."
 unit_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d "{
       \"unit_key\":\"$unit_key\",
@@ -111,6 +119,8 @@ unit_id="$(printf "%s" "$unit_response" | json_value ".unit.id")"
 
 echo "[smoke:battalions] Granting unit admin and member role..."
 curl -fsS -b "$OWNER_COOKIE_JAR" -X PUT "$BASE_URL/v1/units/$unit_id/admins/$admin_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d '{"role":"admin"}' | assert_json 'data.ok === true && data.role === "admin"'
 
@@ -125,12 +135,16 @@ SQL
 echo "[smoke:battalions] Creating ranks, roster players, and squad tree..."
 rank_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/ranks" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d '{"rank_key":"arc-trooper","name":"ARC Trooper","short_name":"ARC","sort_order":25}'
 )"
 rank_id="$(printf "%s" "$rank_response" | json_value ".rank.id")"
 updated_rank_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/ranks" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d '{"rank_key":"rookie","name":"Rookie","short_name":"RCT","sort_order":5}'
 )"
@@ -138,6 +152,8 @@ updated_rank_id="$(printf "%s" "$updated_rank_response" | json_value ".rank.id")
 
 for player in "$player_one" "$player_two" "$player_three" "$player_four"; do
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/players" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d "{\"player_uid\":\"$player\",\"roster_name\":\"Trooper $player\",\"rank_id\":\"$rank_id\",\"roster_status\":\"active\"}" | assert_json 'data.ok === true'
 done
@@ -153,11 +169,15 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/player-candidates?
   assert_json "data.ok === true && data.players.some((player) => player.player_uid === '$candidate_player')"
 
 curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/players" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"player_uid\":\"$candidate_player\",\"roster_name\":\"Candidate Trooper\",\"roster_status\":\"active\"}" | assert_json 'data.ok === true'
 
 squad_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/squads" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d '{"squad_key":"torrent","name":"Torrent Squad","squad_type":"squad","hierarchy_mode":"tree","sort_order":10}'
 )"
@@ -165,12 +185,16 @@ squad_id="$(printf "%s" "$squad_response" | json_value ".squad.id")"
 
 fireteam_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/squads" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d "{\"parent_squad_id\":\"$squad_id\",\"squad_key\":\"torrent-blue\",\"name\":\"Blue Fireteam\",\"squad_type\":\"fireteam\",\"hierarchy_mode\":\"flat\",\"sort_order\":20}"
 )"
 fireteam_id="$(printf "%s" "$fireteam_response" | json_value ".squad.id")"
 
 curl -fsS -b "$OWNER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/squad-layout" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{
     \"squads\":[
@@ -196,6 +220,8 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_j
 echo "[smoke:battalions] Checking squad cycle prevention..."
 cycle_response="$(
   curl -sS -b "$OWNER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/squad-layout" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d "{
       \"squads\":[
@@ -209,9 +235,13 @@ printf "%s" "$cycle_response" | assert_json 'data.ok === false && data.error.cod
 
 echo "[smoke:battalions] Checking unit admin can update roster..."
 curl -fsS -b "$ADMIN_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/players/$player_three" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d '{"roster_status":"reserve","notes":"smoke update"}' | assert_json 'data.ok === true && data.player.roster_status === "reserve"'
 curl -fsS -b "$ADMIN_COOKIE_JAR" -X PATCH "$BASE_URL/v1/units/$unit_id/players/$player_four" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"rank\":null,\"rank_id\":\"$updated_rank_id\"}" | assert_json "data.ok === true && data.player.rank_id === '$updated_rank_id'"
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json "
@@ -223,17 +253,23 @@ echo "[smoke:battalions] Checking member can read but not manage..."
 curl -fsS -b "$MEMBER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json 'data.ok === true'
 member_manage_status="$(
   curl -sS -o /dev/null -w "%{http_code}" -b "$MEMBER_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/squads" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$MEMBER_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d '{"squad_key":"denied","name":"Denied"}'
 )"
 assert_status "403" "$member_manage_status" "member squad create"
 member_delete_status="$(
-  curl -sS -o /dev/null -w "%{http_code}" -b "$MEMBER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/units/$unit_id/squads/$fireteam_id"
+  curl -sS -o /dev/null -w "%{http_code}" -b "$MEMBER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/units/$unit_id/squads/$fireteam_id" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$MEMBER_COOKIE_JAR")"
 )"
 assert_status "403" "$member_delete_status" "member squad delete"
 
 echo "[smoke:battalions] Checking squad delete unassigns roster players..."
-curl -fsS -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/units/$unit_id/squads/$fireteam_id" |
+curl -fsS -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/units/$unit_id/squads/$fireteam_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")" |
   assert_json "data.ok === true && data.deleted_squad_ids.includes('$fireteam_id') && data.unassigned_count >= 2"
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_json "
   data.ok === true
@@ -242,6 +278,8 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/units/$unit_id/roster" | assert_j
 "
 recreated_fireteam_response="$(
   curl -fsS -b "$ADMIN_COOKIE_JAR" -X POST "$BASE_URL/v1/units/$unit_id/squads" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")" \
     -H "Content-Type: application/json" \
     -d "{\"parent_squad_id\":\"$squad_id\",\"squad_key\":\"torrent-blue\",\"name\":\"Blue Fireteam\",\"squad_type\":\"fireteam\",\"hierarchy_mode\":\"flat\",\"sort_order\":20}"
 )"

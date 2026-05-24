@@ -52,13 +52,14 @@ preflight_headers="$(
   curl -sS -D - -o /dev/null -X OPTIONS "$BASE_URL/v1/me" \
     -H "Origin: $BASE44_ORIGIN" \
     -H "Access-Control-Request-Method: GET" \
-    -H "Access-Control-Request-Headers: Authorization, Content-Type" | normalize_headers
+    -H "Access-Control-Request-Headers: Authorization, Content-Type, X-CSRF-Token" | normalize_headers
 )"
 assert_eq "$BASE44_ORIGIN" "$(printf "%s\n" "$preflight_headers" | header_value "access-control-allow-origin")" "preflight allow-origin"
 assert_eq "true" "$(printf "%s\n" "$preflight_headers" | header_value "access-control-allow-credentials")" "preflight allow-credentials"
 allow_headers="$(printf "%s\n" "$preflight_headers" | header_value "access-control-allow-headers")"
 assert_contains "$allow_headers" "Authorization" "preflight allow-headers"
 assert_contains "$allow_headers" "Content-Type" "preflight allow-headers"
+assert_contains "$allow_headers" "X-CSRF-Token" "preflight allow-headers"
 
 echo "[smoke:cors] Checking Base44 simple request..."
 health_headers="$(
