@@ -2,7 +2,7 @@
 
 Base44 is a frontend for Arma Attendance. The Arma Attendance API remains the source of truth for login, sessions, roles, permissions, and redaction.
 
-Do not store API keys, bearer tokens, machine tokens, Discord bot tokens, or production secrets in Base44 client-side code. User-facing Base44 screens must authenticate humans through the API's Discord OAuth flow and use the browser session cookie.
+Do not store API keys, bearer tokens, machine tokens, Discord bot tokens, or production secrets in Base44 client-side code. User-facing Base44 screens should use public aggregate endpoints when that data is enough, and must authenticate humans through the API's Discord OAuth flow before showing personalized, role-gated, or writable data.
 
 ## Login Flow
 
@@ -38,6 +38,33 @@ const response = await fetch("https://arma-stats.root-storm.com/v1/me", {
 
 Use `/v1/me` to drive UI permissions. Do not assume a visible button means the API will allow the action; the API enforces RBAC on every request.
 
+## Public Aggregate Reads
+
+Base44 may call these API endpoints without login or API keys:
+
+- `GET /v1/operations`
+- `GET /v1/leaderboard/units`
+
+Use unauthenticated `GET /v1/operations` for a recent public operations feed. Anonymous responses are capped to the most recent 20 operations, force `offset=0`, ignore sensitive filters such as `server_key` and `mission_uid`, and redact internal IDs, server keys, mission UIDs, unit IDs, and payload counts.
+
+Example:
+
+```js
+const response = await fetch("https://arma-stats.root-storm.com/v1/operations?limit=20");
+const data = await response.json();
+```
+
+Use unauthenticated `GET /v1/leaderboard/units` for public battalion leaderboard cards or tables. Anonymous responses keep aggregate stats and battalion display names, but redact internal `unit_id` and `unit_key` values.
+
+Example:
+
+```js
+const response = await fetch("https://arma-stats.root-storm.com/v1/leaderboard/units?limit=20");
+const data = await response.json();
+```
+
+Do not build public drilldown links from anonymous operation rows because operation IDs are intentionally hidden. Ask the user to log in before opening operation details, player details, battalion roster details, or any personal view.
+
 ## CSRF For Writes
 
 Before unsafe session-authenticated requests, fetch a CSRF token:
@@ -70,6 +97,8 @@ The browser must also send an allowed `Origin` header. Normal browser `fetch` ca
 Public:
 
 - `GET /health`
+- `GET /v1/operations`
+- `GET /v1/leaderboard/units`
 - `GET /auth/discord/start?return_to=...`
 - `GET /auth/discord/callback`
 - `GET /auth/steam/start?return_to=...`
@@ -88,10 +117,8 @@ Session user:
 Role-gated reads:
 
 - `GET /v1/dashboard/summary`
-- `GET /v1/leaderboard/units`
 - `GET /v1/units`
 - `GET /v1/units/:unit_id/roster`
-- `GET /v1/operations`
 - `GET /v1/operations/:operation_id`
 - `GET /v1/operations/:operation_id/summary`
 - `GET /v1/operations/:operation_id/attendance`
