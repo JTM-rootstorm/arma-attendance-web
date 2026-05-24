@@ -52,7 +52,17 @@ export const operationPlayerStats = pgTable(
     deaths: integer("deaths").notNull().default(0),
     rawStats: jsonb("raw_stats").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    softVehicleKills: integer("soft_vehicle_kills").notNull().default(0),
+    armorKills: integer("armor_kills").notNull().default(0),
+    airKills: integer("air_kills").notNull().default(0),
+    groundVehicleKills: integer("ground_vehicle_kills").notNull().default(0),
+    allVehicleKills: integer("all_vehicle_kills").notNull().default(0),
+    scoreboardScore: integer("scoreboard_score").notNull().default(0),
+    statsSource: text("stats_source"),
+    scoreboardBaseline: jsonb("scoreboard_baseline").$type<unknown[]>().notNull().default([]),
+    scoreboardLatest: jsonb("scoreboard_latest").$type<unknown[]>().notNull().default([]),
+    rawScoreboardStats: jsonb("raw_scoreboard_stats").$type<Record<string, unknown>>().notNull().default({})
   },
   (table) => [primaryKey({ columns: [table.operationId, table.playerUid] })]
 );

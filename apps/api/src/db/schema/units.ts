@@ -1,4 +1,4 @@
-import { boolean, integer, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, primaryKey, text, timestamp, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 import { appUsers } from "./auth.js";
 import { players } from "./players.js";
@@ -12,12 +12,87 @@ export const units = pgTable("units", {
   primaryDiscordGuildId: text("primary_discord_guild_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  slug: text("slug"),
   displayName: text("display_name"),
   callsign: text("callsign"),
   emblemUrl: text("emblem_url"),
   sortOrder: integer("sort_order").notNull().default(0),
   deletedAt: timestamp("deleted_at", { withTimezone: true })
 });
+
+export const unitMemberships = pgTable(
+  "unit_memberships",
+  {
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => appUsers.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    grantedByUserId: uuid("granted_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+    grantSource: text("grant_source").notNull().default("manual"),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.unitId, table.userId, table.role] })]
+);
+
+export const unitUserRoles = pgTable(
+  "unit_user_roles",
+  {
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => appUsers.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+    grantedByUserId: uuid("granted_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+    grantSource: text("grant_source").notNull().default("manual")
+  },
+  (table) => [primaryKey({ columns: [table.unitId, table.userId, table.role] })]
+);
+
+export const unitServerKeys = pgTable(
+  "unit_server_keys",
+  {
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id, { onDelete: "cascade" }),
+    serverKey: text("server_key").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.unitId, table.serverKey] })]
+);
+
+export const operationUnits = pgTable(
+  "operation_units",
+  {
+    operationId: uuid("operation_id").notNull(),
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id, { onDelete: "cascade" }),
+    source: text("source").notNull().default("manual"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.operationId, table.unitId] })]
+);
+
+export const unitDiscordGuilds = pgTable(
+  "unit_discord_guilds",
+  {
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id, { onDelete: "cascade" }),
+    guildId: text("guild_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.unitId, table.guildId] })]
+);
 
 export const unitPlayers = pgTable(
   "unit_players",
@@ -63,7 +138,7 @@ export const unitSquads = pgTable("unit_squads", {
   unitId: uuid("unit_id")
     .notNull()
     .references(() => units.id, { onDelete: "cascade" }),
-  parentSquadId: uuid("parent_squad_id"),
+  parentSquadId: uuid("parent_squad_id").references((): AnyPgColumn => unitSquads.id, { onDelete: "cascade" }),
   squadKey: text("squad_key").notNull(),
   name: text("name").notNull(),
   squadType: text("squad_type").notNull().default("squad"),

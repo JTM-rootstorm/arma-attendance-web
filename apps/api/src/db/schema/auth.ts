@@ -52,6 +52,27 @@ export const userSessions = pgTable("user_sessions", {
   ipAddress: text("ip_address")
 });
 
+export const oauthStates = pgTable("oauth_states", {
+  state: text("state").primaryKey(),
+  provider: text("provider").notNull(),
+  redirectAfter: text("redirect_after"),
+  codeVerifier: text("code_verifier"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true })
+});
+
+export const sessionCsrfTokens = pgTable("session_csrf_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sessionId: uuid("session_id")
+    .notNull()
+    .references(() => userSessions.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true })
+});
+
 export const adminAuditEvents = pgTable("admin_audit_events", {
   id: uuid("id").defaultRandom().primaryKey(),
   actorUserId: uuid("actor_user_id").references(() => appUsers.id, { onDelete: "set null" }),
