@@ -8,10 +8,9 @@ import { getUserUnitRoles, hasUnitRole, requireUnitAdmin, requireUnitMember } fr
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
-import { appUsers } from "../db/schema/auth.js";
+import { adminAuditEvents, appUsers } from "../db/schema/auth.js";
 import { operationPlayers, players } from "../db/schema/players.js";
 import { unitPlayers, unitRanks, unitRosterAssignments, unitSquads, unitUserRoles, units } from "../db/schema/units.js";
-import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 
 const listUnitsQuerySchema = z.object({
   include_inactive: z.coerce.boolean().default(false),
@@ -221,6 +220,9 @@ type AdminRow = {
   granted_at: Date;
 };
 
+type DrizzleDb = ReturnType<typeof getDrizzleDb>;
+type DrizzleTransaction = Parameters<Parameters<DrizzleDb["transaction"]>[0]>[0];
+
 type SanitizedRosterPlayer = {
   player_uid: string | null;
   roster_name: string;
@@ -305,20 +307,20 @@ function actorLabel(user: CurrentUser): string {
   return user.display_name ?? user.id;
 }
 
-async function audit(
-  tx: DbTransaction,
+async function auditDrizzle(
+  tx: DrizzleTransaction,
   user: CurrentUser,
   action: string,
   details: Record<string, unknown>,
   targetUserId: string | null = null
 ) {
-  await tx.query(
-    `
-    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
-    VALUES ($1, $2, $3, $4, $5::jsonb)
-    `,
-    [user.id, actorLabel(user), action, targetUserId, JSON.stringify(details)]
-  );
+  await tx.insert(adminAuditEvents).values({
+    actorUserId: user.id,
+    actorLabel: actorLabel(user),
+    action,
+    targetUserId,
+    details
+  });
 }
 
 function withMyRoles(row: UnitListRow, roleMap: Map<string, UnitRole[]>) {
@@ -456,21 +458,17 @@ function buildSquadNode(squad: SquadRow): SquadNode {
   };
 }
 
-async function validateSquadHierarchy(
-  tx: DbTransaction,
+async function validateSquadHierarchyDrizzle(
+  tx: DrizzleTransaction,
   reply: FastifyReply,
   unitId: string,
   proposed: Array<{ id: string; parent_squad_id: string | null }>
 ): Promise<boolean> {
-  const result = await tx.query<{ id: string; parent_squad_id: string | null }>(
-    `
-    SELECT id, parent_squad_id
-    FROM unit_squads
-    WHERE unit_id = $1 AND is_active = true
-    `,
-    [unitId]
-  );
-  const parents = new Map(result.rows.map((row) => [row.id, row.parent_squad_id]));
+  const rows = await tx
+    .select({ id: unitSquads.id, parent_squad_id: unitSquads.parentSquadId })
+    .from(unitSquads)
+    .where(and(eq(unitSquads.unitId, unitId), eq(unitSquads.isActive, true)));
+  const parents = new Map(rows.map((row) => [row.id, row.parent_squad_id]));
 
   for (const squad of proposed) {
     if (!parents.has(squad.id)) {
@@ -504,7 +502,7 @@ async function validateSquadHierarchy(
   return true;
 }
 
-async function insertDefaultRanks(tx: DbTransaction, unitId: string) {
+async function insertDefaultRanksDrizzle(tx: DrizzleTransaction, unitId: string) {
   const ranks = [
     ["recruit", "Recruit", "RCT", 10],
     ["trooper", "Trooper", "TRP", 20],
@@ -516,14 +514,10 @@ async function insertDefaultRanks(tx: DbTransaction, unitId: string) {
   ] as const;
 
   for (const [rankKey, name, shortName, sortOrder] of ranks) {
-    await tx.query(
-      `
-      INSERT INTO unit_ranks (unit_id, rank_key, name, short_name, sort_order)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (unit_id, rank_key) DO NOTHING
-      `,
-      [unitId, rankKey, name, shortName, sortOrder]
-    );
+    await tx
+      .insert(unitRanks)
+      .values({ unitId, rankKey, name, shortName, sortOrder })
+      .onConflictDoNothing({ target: [unitRanks.unitId, unitRanks.rankKey] });
   }
 }
 
@@ -635,40 +629,51 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<UnitRow>(
-          `
-          INSERT INTO units (unit_key, slug, name, display_name, callsign, description, emblem_url)
-          VALUES ($1, $1, $2, $3, $4, $5, $6)
-          ON CONFLICT (unit_key) DO UPDATE
-          SET slug = EXCLUDED.slug,
-              name = EXCLUDED.name,
-              display_name = EXCLUDED.display_name,
-              callsign = EXCLUDED.callsign,
-              description = EXCLUDED.description,
-              emblem_url = EXCLUDED.emblem_url,
-              is_active = true,
-              deleted_at = NULL,
-              updated_at = now()
-          RETURNING id, unit_key, name, display_name, callsign, description, emblem_url, sort_order, is_active
-          `,
-          [
-            parsed.data.unit_key,
-            parsed.data.name,
-            parsed.data.display_name ?? parsed.data.name,
-            parsed.data.callsign ?? null,
-            parsed.data.description ?? null,
-            parsed.data.emblem_url ?? null
-          ]
-        );
-        const unit = result.rows[0];
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [unit] = await tx
+          .insert(units)
+          .values({
+            unitKey: parsed.data.unit_key,
+            slug: parsed.data.unit_key,
+            name: parsed.data.name,
+            displayName: parsed.data.display_name ?? parsed.data.name,
+            callsign: parsed.data.callsign ?? null,
+            description: parsed.data.description ?? null,
+            emblemUrl: parsed.data.emblem_url ?? null
+          })
+          .onConflictDoUpdate({
+            target: units.unitKey,
+            set: {
+              slug: sql`excluded.slug`,
+              name: sql`excluded.name`,
+              displayName: sql`excluded.display_name`,
+              callsign: sql`excluded.callsign`,
+              description: sql`excluded.description`,
+              emblemUrl: sql`excluded.emblem_url`,
+              isActive: true,
+              deletedAt: null,
+              updatedAt: sql`now()`
+            }
+          })
+          .returning({
+            id: units.id,
+            unit_key: units.unitKey,
+            name: units.name,
+            display_name: units.displayName,
+            callsign: units.callsign,
+            description: units.description,
+            emblem_url: units.emblemUrl,
+            sort_order: units.sortOrder,
+            is_active: units.isActive
+          });
 
         if (!unit) {
           throw new Error("Unit insert returned no row.");
         }
 
-        await insertDefaultRanks(tx, unit.id);
-        await audit(tx, auth.user, "create_unit", { unit_id: unit.id, unit_key: unit.unit_key });
+        await insertDefaultRanksDrizzle(tx, unit.id);
+        await auditDrizzle(tx, auth.user, "create_unit", { unit_id: unit.id, unit_key: unit.unit_key });
 
         return { ok: true, unit };
       });
@@ -706,45 +711,41 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<UnitRow>(
-          `
-          UPDATE units
-          SET
-            unit_key = COALESCE($2, unit_key),
-            slug = COALESCE($2, slug),
-            name = COALESCE($3, name),
-            display_name = COALESCE($4, display_name),
-            callsign = $5,
-            description = $6,
-            emblem_url = $7,
-            sort_order = COALESCE($8, sort_order),
-            is_active = COALESCE($9, is_active),
-            deleted_at = CASE WHEN $9 = true THEN NULL ELSE deleted_at END,
-            updated_at = now()
-          WHERE id = $1
-            AND deleted_at IS NULL
-          RETURNING id, unit_key, name, display_name, callsign, description, emblem_url, sort_order, is_active
-          `,
-          [
-            unitId,
-            parsedBody.data.unit_key ?? null,
-            parsedBody.data.name ?? null,
-            parsedBody.data.display_name ?? null,
-            parsedBody.data.callsign ?? null,
-            parsedBody.data.description ?? null,
-            parsedBody.data.emblem_url ?? null,
-            parsedBody.data.sort_order ?? null,
-            parsedBody.data.is_active ?? null
-          ]
-        );
-        const unit = result.rows[0];
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [unit] = await tx
+          .update(units)
+          .set({
+            unitKey: sql`COALESCE(${parsedBody.data.unit_key ?? null}, ${units.unitKey})`,
+            slug: sql`COALESCE(${parsedBody.data.unit_key ?? null}, ${units.slug})`,
+            name: sql`COALESCE(${parsedBody.data.name ?? null}, ${units.name})`,
+            displayName: sql`COALESCE(${parsedBody.data.display_name ?? null}, ${units.displayName})`,
+            callsign: parsedBody.data.callsign ?? null,
+            description: parsedBody.data.description ?? null,
+            emblemUrl: parsedBody.data.emblem_url ?? null,
+            sortOrder: sql`COALESCE(${parsedBody.data.sort_order ?? null}, ${units.sortOrder})`,
+            isActive: sql`COALESCE(${parsedBody.data.is_active ?? null}, ${units.isActive})`,
+            deletedAt: sql`CASE WHEN ${parsedBody.data.is_active ?? null} = true THEN NULL ELSE ${units.deletedAt} END`,
+            updatedAt: sql`now()`
+          })
+          .where(and(eq(units.id, unitId), isNull(units.deletedAt)))
+          .returning({
+            id: units.id,
+            unit_key: units.unitKey,
+            name: units.name,
+            display_name: units.displayName,
+            callsign: units.callsign,
+            description: units.description,
+            emblem_url: units.emblemUrl,
+            sort_order: units.sortOrder,
+            is_active: units.isActive
+          });
 
         if (!unit) {
           return notFound(reply, "unit_not_found", "Battalion was not found.");
         }
 
-        await audit(tx, auth.user, "update_unit", { unit_id: unitId, fields: Object.keys(parsedBody.data) });
+        await auditDrizzle(tx, auth.user, "update_unit", { unit_id: unitId, fields: Object.keys(parsedBody.data) });
 
         return { ok: true, unit };
       });
@@ -774,37 +775,35 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     const { unit_id: unitId } = parsedParams.data;
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const countsResult = await tx.query<{
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const countsResult = await tx.execute<{
           operation_count: number;
           roster_count: number;
           squad_count: number;
-        }>(
-          `
+        }>(sql`
           SELECT
-            (SELECT COUNT(*)::int FROM operations WHERE unit_id = $1) AS operation_count,
-            (SELECT COUNT(*)::int FROM unit_players WHERE unit_id = $1) AS roster_count,
-            (SELECT COUNT(*)::int FROM unit_squads WHERE unit_id = $1) AS squad_count
-          `,
-          [unitId]
-        );
+            (SELECT COUNT(*)::int FROM operations WHERE unit_id = ${unitId}) AS operation_count,
+            (SELECT COUNT(*)::int FROM unit_players WHERE unit_id = ${unitId}) AS roster_count,
+            (SELECT COUNT(*)::int FROM unit_squads WHERE unit_id = ${unitId}) AS squad_count
+        `);
 
-        const result = await tx.query<{ id: string }>(
-          `
-          UPDATE units
-          SET is_active = false, deleted_at = COALESCE(deleted_at, now()), updated_at = now()
-          WHERE id = $1
-          RETURNING id
-          `,
-          [unitId]
-        );
+        const [deleted] = await tx
+          .update(units)
+          .set({
+            isActive: false,
+            deletedAt: sql`COALESCE(${units.deletedAt}, now())`,
+            updatedAt: sql`now()`
+          })
+          .where(eq(units.id, unitId))
+          .returning({ id: units.id });
 
-        if (!result.rows[0]) {
+        if (!deleted) {
           return notFound(reply, "unit_not_found", "Battalion was not found.");
         }
 
         const counts = countsResult.rows[0] ?? { operation_count: 0, roster_count: 0, squad_count: 0 };
-        await audit(tx, auth.user, "deactivate_unit", { unit_id: unitId, counts });
+        await auditDrizzle(tx, auth.user, "deactivate_unit", { unit_id: unitId, counts });
 
         return { ok: true, unit_id: unitId, deleted: true, counts };
       });
@@ -1022,61 +1021,66 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
         const displayName = parsedBody.data.roster_name ?? parsedBody.data.player_uid;
 
-        await tx.query(
-          `
-          INSERT INTO players (player_uid, last_name, raw_last_player)
-          VALUES ($1, $2, '{"source":"manual-roster"}'::jsonb)
-          ON CONFLICT (player_uid) DO UPDATE
-          SET last_name = COALESCE(players.last_name, EXCLUDED.last_name),
-              updated_at = now()
-          `,
-          [parsedBody.data.player_uid, displayName]
-        );
+        await tx
+          .insert(players)
+          .values({
+            playerUid: parsedBody.data.player_uid,
+            lastName: displayName,
+            rawLastPlayer: { source: "manual-roster" }
+          })
+          .onConflictDoUpdate({
+            target: players.playerUid,
+            set: {
+              lastName: sql`COALESCE(${players.lastName}, excluded.last_name)`,
+              updatedAt: sql`now()`
+            }
+          });
 
-        const result = await tx.query(
-          `
-          INSERT INTO unit_players (
-            unit_id,
-            player_uid,
-            rank,
-            rank_id,
-            roster_name,
-            roster_status,
-            notes,
-            is_active,
-            joined_unit_at,
-            left_unit_at,
-            assignment_source
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, true, now(), NULL, 'manual')
-          ON CONFLICT (unit_id, player_uid) DO UPDATE
-          SET rank = EXCLUDED.rank,
-              rank_id = EXCLUDED.rank_id,
-              roster_name = EXCLUDED.roster_name,
-              roster_status = EXCLUDED.roster_status,
-              notes = EXCLUDED.notes,
-              is_active = true,
-              left_unit_at = NULL,
-              updated_at = now()
-          RETURNING unit_id, player_uid, rank, rank_id, roster_name, roster_status, notes
-          `,
-          [
+        const [player] = await tx
+          .insert(unitPlayers)
+          .values({
             unitId,
-            parsedBody.data.player_uid,
-            parsedBody.data.rank ?? null,
-            parsedBody.data.rank_id ?? null,
-            parsedBody.data.roster_name ?? displayName,
-            parsedBody.data.roster_status,
-            parsedBody.data.notes ?? null
-          ]
-        );
+            playerUid: parsedBody.data.player_uid,
+            rank: parsedBody.data.rank ?? null,
+            rankId: parsedBody.data.rank_id ?? null,
+            rosterName: parsedBody.data.roster_name ?? displayName,
+            rosterStatus: parsedBody.data.roster_status,
+            notes: parsedBody.data.notes ?? null,
+            isActive: true,
+            joinedUnitAt: sql`now()`,
+            leftUnitAt: null,
+            assignmentSource: "manual"
+          })
+          .onConflictDoUpdate({
+            target: [unitPlayers.unitId, unitPlayers.playerUid],
+            set: {
+              rank: sql`excluded.rank`,
+              rankId: sql`excluded.rank_id`,
+              rosterName: sql`excluded.roster_name`,
+              rosterStatus: sql`excluded.roster_status`,
+              notes: sql`excluded.notes`,
+              isActive: true,
+              leftUnitAt: null,
+              updatedAt: sql`now()`
+            }
+          })
+          .returning({
+            unit_id: unitPlayers.unitId,
+            player_uid: unitPlayers.playerUid,
+            rank: unitPlayers.rank,
+            rank_id: unitPlayers.rankId,
+            roster_name: unitPlayers.rosterName,
+            roster_status: unitPlayers.rosterStatus,
+            notes: unitPlayers.notes
+          });
 
-        await audit(tx, auth.user, "add_unit_player", { unit_id: unitId, player_uid: parsedBody.data.player_uid });
+        await auditDrizzle(tx, auth.user, "add_unit_player", { unit_id: unitId, player_uid: parsedBody.data.player_uid });
 
-        return { ok: true, player: result.rows[0] };
+        return { ok: true, player };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to add unit player");
@@ -1105,43 +1109,36 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query(
-          `
-          UPDATE unit_players
-          SET
-            roster_name = CASE WHEN $3 THEN $4 ELSE roster_name END,
-            rank = CASE WHEN $5 THEN $6 ELSE rank END,
-            rank_id = CASE WHEN $7 THEN $8 ELSE rank_id END,
-            roster_status = CASE WHEN $9 THEN $10 ELSE roster_status END,
-            notes = CASE WHEN $11 THEN $12 ELSE notes END,
-            updated_at = now()
-          WHERE unit_id = $1 AND player_uid = $2
-          RETURNING unit_id, player_uid, rank, rank_id, roster_name, roster_status, notes
-          `,
-          [
-            unitId,
-            playerUid,
-            Object.hasOwn(parsedBody.data, "roster_name"),
-            parsedBody.data.roster_name ?? null,
-            Object.hasOwn(parsedBody.data, "rank"),
-            parsedBody.data.rank ?? null,
-            Object.hasOwn(parsedBody.data, "rank_id"),
-            parsedBody.data.rank_id ?? null,
-            Object.hasOwn(parsedBody.data, "roster_status"),
-            parsedBody.data.roster_status ?? null,
-            Object.hasOwn(parsedBody.data, "notes"),
-            parsedBody.data.notes ?? null
-          ]
-        );
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [player] = await tx
+          .update(unitPlayers)
+          .set({
+            rosterName: Object.hasOwn(parsedBody.data, "roster_name") ? parsedBody.data.roster_name ?? null : sql`${unitPlayers.rosterName}`,
+            rank: Object.hasOwn(parsedBody.data, "rank") ? parsedBody.data.rank ?? null : sql`${unitPlayers.rank}`,
+            rankId: Object.hasOwn(parsedBody.data, "rank_id") ? parsedBody.data.rank_id ?? null : sql`${unitPlayers.rankId}`,
+            rosterStatus: parsedBody.data.roster_status ?? sql`${unitPlayers.rosterStatus}`,
+            notes: Object.hasOwn(parsedBody.data, "notes") ? parsedBody.data.notes ?? null : sql`${unitPlayers.notes}`,
+            updatedAt: sql`now()`
+          })
+          .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.playerUid, playerUid)))
+          .returning({
+            unit_id: unitPlayers.unitId,
+            player_uid: unitPlayers.playerUid,
+            rank: unitPlayers.rank,
+            rank_id: unitPlayers.rankId,
+            roster_name: unitPlayers.rosterName,
+            roster_status: unitPlayers.rosterStatus,
+            notes: unitPlayers.notes
+          });
 
-        if (!result.rows[0]) {
+        if (!player) {
           return notFound(reply, "unit_player_not_found", "Battalion roster player was not found.");
         }
 
-        await audit(tx, auth.user, "update_unit_player", { unit_id: unitId, player_uid: playerUid });
+        await auditDrizzle(tx, auth.user, "update_unit_player", { unit_id: unitId, player_uid: playerUid });
 
-        return { ok: true, player: result.rows[0] };
+        return { ok: true, player };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update unit player");
@@ -1169,34 +1166,38 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<{ player_uid: string }>(
-          `
-          UPDATE unit_players
-          SET is_active = false,
-              roster_status = 'inactive',
-              left_unit_at = now(),
-              updated_at = now()
-          WHERE unit_id = $1 AND player_uid = $2
-          RETURNING player_uid
-          `,
-          [unitId, playerUid]
-        );
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [player] = await tx
+          .update(unitPlayers)
+          .set({
+            isActive: false,
+            rosterStatus: "inactive",
+            leftUnitAt: sql`now()`,
+            updatedAt: sql`now()`
+          })
+          .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.playerUid, playerUid)))
+          .returning({ player_uid: unitPlayers.playerUid });
 
-        await tx.query(
-          `
-          UPDATE unit_roster_assignments
-          SET ended_at = COALESCE(ended_at, now()), updated_at = now()
-          WHERE unit_id = $1 AND player_uid = $2 AND ended_at IS NULL
-          `,
-          [unitId, playerUid]
-        );
+        await tx
+          .update(unitRosterAssignments)
+          .set({
+            endedAt: sql`COALESCE(${unitRosterAssignments.endedAt}, now())`,
+            updatedAt: sql`now()`
+          })
+          .where(
+            and(
+              eq(unitRosterAssignments.unitId, unitId),
+              eq(unitRosterAssignments.playerUid, playerUid),
+              isNull(unitRosterAssignments.endedAt)
+            )
+          );
 
-        if (!result.rows[0]) {
+        if (!player) {
           return notFound(reply, "unit_player_not_found", "Battalion roster player was not found.");
         }
 
-        await audit(tx, auth.user, "remove_unit_player", { unit_id: unitId, player_uid: playerUid });
+        await auditDrizzle(tx, auth.user, "remove_unit_player", { unit_id: unitId, player_uid: playerUid });
 
         return { ok: true, player_uid: playerUid, removed: true };
       });
@@ -1262,19 +1263,30 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<RankRow>(
-          `
-          INSERT INTO unit_ranks (unit_id, rank_key, name, short_name, sort_order)
-          VALUES ($1, $2, $3, $4, $5)
-          RETURNING id, unit_id, rank_key, name, short_name, sort_order, is_active
-          `,
-          [unitId, parsedBody.data.rank_key, parsedBody.data.name, parsedBody.data.short_name ?? null, parsedBody.data.sort_order]
-        );
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [rank] = await tx
+          .insert(unitRanks)
+          .values({
+            unitId,
+            rankKey: parsedBody.data.rank_key,
+            name: parsedBody.data.name,
+            shortName: parsedBody.data.short_name ?? null,
+            sortOrder: parsedBody.data.sort_order
+          })
+          .returning({
+            id: unitRanks.id,
+            unit_id: unitRanks.unitId,
+            rank_key: unitRanks.rankKey,
+            name: unitRanks.name,
+            short_name: unitRanks.shortName,
+            sort_order: unitRanks.sortOrder,
+            is_active: unitRanks.isActive
+          });
 
-        await audit(tx, auth.user, "create_unit_rank", { unit_id: unitId, rank_id: result.rows[0]?.id });
+        await auditDrizzle(tx, auth.user, "create_unit_rank", { unit_id: unitId, rank_id: rank?.id });
 
-        return { ok: true, rank: result.rows[0] };
+        return { ok: true, rank };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create unit rank");
@@ -1303,37 +1315,36 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<RankRow>(
-          `
-          UPDATE unit_ranks
-          SET rank_key = COALESCE($3, rank_key),
-              name = COALESCE($4, name),
-              short_name = $5,
-              sort_order = COALESCE($6, sort_order),
-              is_active = COALESCE($7, is_active),
-              updated_at = now()
-          WHERE unit_id = $1 AND id = $2
-          RETURNING id, unit_id, rank_key, name, short_name, sort_order, is_active
-          `,
-          [
-            unitId,
-            rankId,
-            parsedBody.data.rank_key ?? null,
-            parsedBody.data.name ?? null,
-            parsedBody.data.short_name ?? null,
-            parsedBody.data.sort_order ?? null,
-            parsedBody.data.is_active ?? null
-          ]
-        );
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [rank] = await tx
+          .update(unitRanks)
+          .set({
+            rankKey: sql`COALESCE(${parsedBody.data.rank_key ?? null}, ${unitRanks.rankKey})`,
+            name: sql`COALESCE(${parsedBody.data.name ?? null}, ${unitRanks.name})`,
+            shortName: parsedBody.data.short_name ?? null,
+            sortOrder: sql`COALESCE(${parsedBody.data.sort_order ?? null}, ${unitRanks.sortOrder})`,
+            isActive: sql`COALESCE(${parsedBody.data.is_active ?? null}, ${unitRanks.isActive})`,
+            updatedAt: sql`now()`
+          })
+          .where(and(eq(unitRanks.unitId, unitId), eq(unitRanks.id, rankId)))
+          .returning({
+            id: unitRanks.id,
+            unit_id: unitRanks.unitId,
+            rank_key: unitRanks.rankKey,
+            name: unitRanks.name,
+            short_name: unitRanks.shortName,
+            sort_order: unitRanks.sortOrder,
+            is_active: unitRanks.isActive
+          });
 
-        if (!result.rows[0]) {
+        if (!rank) {
           return notFound(reply, "rank_not_found", "Battalion rank was not found.");
         }
 
-        await audit(tx, auth.user, "update_unit_rank", { unit_id: unitId, rank_id: rankId });
+        await auditDrizzle(tx, auth.user, "update_unit_rank", { unit_id: unitId, rank_id: rankId });
 
-        return { ok: true, rank: result.rows[0] };
+        return { ok: true, rank };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update unit rank");
@@ -1361,17 +1372,19 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<{ id: string }>(
-          "UPDATE unit_ranks SET is_active = false, updated_at = now() WHERE unit_id = $1 AND id = $2 RETURNING id",
-          [unitId, rankId]
-        );
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const [rank] = await tx
+          .update(unitRanks)
+          .set({ isActive: false, updatedAt: sql`now()` })
+          .where(and(eq(unitRanks.unitId, unitId), eq(unitRanks.id, rankId)))
+          .returning({ id: unitRanks.id });
 
-        if (!result.rows[0]) {
+        if (!rank) {
           return notFound(reply, "rank_not_found", "Battalion rank was not found.");
         }
 
-        await audit(tx, auth.user, "delete_unit_rank", { unit_id: unitId, rank_id: rankId });
+        await auditDrizzle(tx, auth.user, "delete_unit_rank", { unit_id: unitId, rank_id: rankId });
 
         return { ok: true, rank_id: rankId, deleted: true };
       });
@@ -1439,25 +1452,28 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
         const parentSquadId = parsedBody.data.parent_squad_id ?? null;
 
         if (parentSquadId) {
-          const parentResult = await tx.query<{ id: string }>(
-            "SELECT id FROM unit_squads WHERE unit_id = $1 AND id = $2 AND is_active = true",
-            [unitId, parentSquadId]
-          );
+          const [parent] = await tx
+            .select({ id: unitSquads.id })
+            .from(unitSquads)
+            .where(and(eq(unitSquads.unitId, unitId), eq(unitSquads.id, parentSquadId), eq(unitSquads.isActive, true)));
 
-          if (!parentResult.rows[0]) {
+          if (!parent) {
             return notFound(reply, "parent_squad_not_found", "Parent squad was not found in this battalion.");
           }
         }
 
-        const existingResult = await tx.query<{ id: string; is_active: boolean }>(
-          "SELECT id, is_active FROM unit_squads WHERE unit_id = $1 AND squad_key = $2 FOR UPDATE",
-          [unitId, parsedBody.data.squad_key]
-        );
-        const existingSquad = existingResult.rows[0];
+        const existingSquadRows = await tx.execute<{ id: string; is_active: boolean }>(sql`
+          SELECT id, is_active
+          FROM unit_squads
+          WHERE unit_id = ${unitId} AND squad_key = ${parsedBody.data.squad_key}
+          FOR UPDATE
+        `);
+        const existingSquad = existingSquadRows.rows[0];
 
         if (existingSquad?.is_active) {
           return conflict(reply, "squad_key_conflict", "An active squad already uses that squad key.");
@@ -1467,50 +1483,56 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           return sendSquadCycleDetected(reply);
         }
 
-        const result = existingSquad
-          ? await tx.query<SquadRow>(
-              `
-              UPDATE unit_squads
-              SET parent_squad_id = $3,
-                  name = $4,
-                  squad_type = $5,
-                  hierarchy_mode = $6,
-                  sort_order = $7,
-                  is_active = true,
-                  updated_at = now()
-              WHERE unit_id = $1 AND id = $2
-              RETURNING id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
-              `,
-              [
-                unitId,
-                existingSquad.id,
+        const [squad] = existingSquad
+          ? await tx
+              .update(unitSquads)
+              .set({
                 parentSquadId,
-                parsedBody.data.name,
-                parsedBody.data.squad_type,
-                parsedBody.data.hierarchy_mode,
-                parsedBody.data.sort_order
-              ]
-            )
-          : await tx.query<SquadRow>(
-              `
-              INSERT INTO unit_squads (unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order)
-              VALUES ($1, $2, $3, $4, $5, $6, $7)
-              RETURNING id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
-              `,
-              [
+                name: parsedBody.data.name,
+                squadType: parsedBody.data.squad_type,
+                hierarchyMode: parsedBody.data.hierarchy_mode,
+                sortOrder: parsedBody.data.sort_order,
+                isActive: true,
+                updatedAt: sql`now()`
+              })
+              .where(and(eq(unitSquads.unitId, unitId), eq(unitSquads.id, existingSquad.id)))
+              .returning({
+                id: unitSquads.id,
+                unit_id: unitSquads.unitId,
+                parent_squad_id: unitSquads.parentSquadId,
+                squad_key: unitSquads.squadKey,
+                name: unitSquads.name,
+                squad_type: unitSquads.squadType,
+                hierarchy_mode: unitSquads.hierarchyMode,
+                sort_order: unitSquads.sortOrder,
+                is_active: unitSquads.isActive
+              })
+          : await tx
+              .insert(unitSquads)
+              .values({
                 unitId,
                 parentSquadId,
-                parsedBody.data.squad_key,
-                parsedBody.data.name,
-                parsedBody.data.squad_type,
-                parsedBody.data.hierarchy_mode,
-                parsedBody.data.sort_order
-              ]
-            );
+                squadKey: parsedBody.data.squad_key,
+                name: parsedBody.data.name,
+                squadType: parsedBody.data.squad_type,
+                hierarchyMode: parsedBody.data.hierarchy_mode,
+                sortOrder: parsedBody.data.sort_order
+              })
+              .returning({
+                id: unitSquads.id,
+                unit_id: unitSquads.unitId,
+                parent_squad_id: unitSquads.parentSquadId,
+                squad_key: unitSquads.squadKey,
+                name: unitSquads.name,
+                squad_type: unitSquads.squadType,
+                hierarchy_mode: unitSquads.hierarchyMode,
+                sort_order: unitSquads.sortOrder,
+                is_active: unitSquads.isActive
+              });
 
-        await audit(tx, auth.user, "create_unit_squad", { unit_id: unitId, squad_id: result.rows[0]?.id });
+        await auditDrizzle(tx, auth.user, "create_unit_squad", { unit_id: unitId, squad_id: squad?.id });
 
-        return { ok: true, squad: result.rows[0] };
+        return { ok: true, squad };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create unit squad");
@@ -1539,16 +1561,14 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const existingResult = await tx.query<SquadRow>(
-          `
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const existingResult = await tx.execute<SquadRow>(sql`
           SELECT id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
           FROM unit_squads
-          WHERE unit_id = $1 AND id = $2 AND is_active = true
+          WHERE unit_id = ${unitId} AND id = ${squadId} AND is_active = true
           FOR UPDATE
-          `,
-          [unitId, squadId]
-        );
+        `);
         const existingSquad = existingResult.rows[0];
 
         if (!existingSquad) {
@@ -1557,40 +1577,38 @@ export async function registerUnitRoutes(app: FastifyInstance) {
 
         const parentSquadId = Object.hasOwn(parsedBody.data, "parent_squad_id") ? parsedBody.data.parent_squad_id ?? null : existingSquad.parent_squad_id;
 
-        if (!(await validateSquadHierarchy(tx, reply, unitId, [{ id: squadId, parent_squad_id: parentSquadId }]))) {
+        if (!(await validateSquadHierarchyDrizzle(tx, reply, unitId, [{ id: squadId, parent_squad_id: parentSquadId }]))) {
           return;
         }
 
-        const result = await tx.query<SquadRow>(
-          `
-          UPDATE unit_squads
-          SET parent_squad_id = $3,
-              squad_key = COALESCE($4, squad_key),
-              name = COALESCE($5, name),
-              squad_type = COALESCE($6, squad_type),
-              hierarchy_mode = COALESCE($7, hierarchy_mode),
-              sort_order = COALESCE($8, sort_order),
-              is_active = COALESCE($9, is_active),
-              updated_at = now()
-          WHERE unit_id = $1 AND id = $2
-          RETURNING id, unit_id, parent_squad_id, squad_key, name, squad_type, hierarchy_mode, sort_order, is_active
-          `,
-          [
-            unitId,
-            squadId,
+        const [squad] = await tx
+          .update(unitSquads)
+          .set({
             parentSquadId,
-            parsedBody.data.squad_key ?? null,
-            parsedBody.data.name ?? null,
-            parsedBody.data.squad_type ?? null,
-            parsedBody.data.hierarchy_mode ?? null,
-            parsedBody.data.sort_order ?? null,
-            parsedBody.data.is_active ?? null
-          ]
-        );
+            squadKey: sql`COALESCE(${parsedBody.data.squad_key ?? null}, ${unitSquads.squadKey})`,
+            name: sql`COALESCE(${parsedBody.data.name ?? null}, ${unitSquads.name})`,
+            squadType: sql`COALESCE(${parsedBody.data.squad_type ?? null}, ${unitSquads.squadType})`,
+            hierarchyMode: sql`COALESCE(${parsedBody.data.hierarchy_mode ?? null}, ${unitSquads.hierarchyMode})`,
+            sortOrder: sql`COALESCE(${parsedBody.data.sort_order ?? null}, ${unitSquads.sortOrder})`,
+            isActive: sql`COALESCE(${parsedBody.data.is_active ?? null}, ${unitSquads.isActive})`,
+            updatedAt: sql`now()`
+          })
+          .where(and(eq(unitSquads.unitId, unitId), eq(unitSquads.id, squadId)))
+          .returning({
+            id: unitSquads.id,
+            unit_id: unitSquads.unitId,
+            parent_squad_id: unitSquads.parentSquadId,
+            squad_key: unitSquads.squadKey,
+            name: unitSquads.name,
+            squad_type: unitSquads.squadType,
+            hierarchy_mode: unitSquads.hierarchyMode,
+            sort_order: unitSquads.sortOrder,
+            is_active: unitSquads.isActive
+          });
 
-        await audit(tx, auth.user, "update_unit_squad", { unit_id: unitId, squad_id: squadId });
+        await auditDrizzle(tx, auth.user, "update_unit_squad", { unit_id: unitId, squad_id: squadId });
 
-        return { ok: true, squad: result.rows[0] };
+        return { ok: true, squad };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update unit squad");
@@ -1618,46 +1636,44 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        const result = await tx.query<{ squad_ids: string[]; unassigned_count: number }>(
-          `
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        const result = await tx.execute<{ squad_ids: string[]; unassigned_count: number }>(sql`
           WITH RECURSIVE squad_tree AS (
             SELECT id
-            FROM unit_squads
-            WHERE unit_id = $1 AND id = $2 AND is_active = true
+            FROM ${unitSquads}
+            WHERE unit_id = ${unitId} AND id = ${squadId} AND is_active = true
 
             UNION ALL
 
             SELECT child.id
             FROM unit_squads child
             JOIN squad_tree parent ON parent.id = child.parent_squad_id
-            WHERE child.unit_id = $1 AND child.is_active = true
+            WHERE child.unit_id = ${unitId} AND child.is_active = true
           ),
           unassigned AS (
-            UPDATE unit_roster_assignments
+            UPDATE ${unitRosterAssignments}
             SET squad_id = NULL,
                 billet = 'unassigned',
                 updated_at = now()
-            WHERE unit_id = $1
+            WHERE unit_id = ${unitId}
               AND squad_id IN (SELECT id FROM squad_tree)
               AND ended_at IS NULL
             RETURNING player_uid
           ),
           deleted AS (
-            UPDATE unit_squads
+            UPDATE ${unitSquads}
             SET is_active = false,
                 parent_squad_id = NULL,
                 updated_at = now()
-            WHERE unit_id = $1
+            WHERE unit_id = ${unitId}
               AND id IN (SELECT id FROM squad_tree)
             RETURNING id
           )
           SELECT
             ARRAY(SELECT id::text FROM deleted) AS squad_ids,
             (SELECT COUNT(*)::int FROM unassigned) AS unassigned_count
-          `,
-          [unitId, squadId]
-        );
+        `);
 
         const deletedSquadIds = result.rows[0]?.squad_ids ?? [];
 
@@ -1665,7 +1681,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           return notFound(reply, "squad_not_found", "Battalion squad was not found.");
         }
 
-        await audit(tx, auth.user, "delete_unit_squad", {
+        await auditDrizzle(tx, auth.user, "delete_unit_squad", {
           unit_id: unitId,
           squad_id: squadId,
           deleted_squad_ids: deletedSquadIds,
@@ -1707,80 +1723,75 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
         const squadIds = parsedBody.data.squads.map((squad) => squad.id);
         const parentSquadIds = parsedBody.data.squads.flatMap((squad) => squad.parent_squad_id ? [squad.parent_squad_id] : []);
         const assignmentSquadIds = parsedBody.data.assignments.flatMap((assignment) => assignment.squad_id ? [assignment.squad_id] : []);
         const allSquadIds = Array.from(new Set([...squadIds, ...parentSquadIds, ...assignmentSquadIds]));
 
         if (allSquadIds.length > 0) {
-          const validSquads = await tx.query<{ id: string }>(
-            "SELECT id FROM unit_squads WHERE unit_id = $1 AND id = ANY($2::uuid[]) AND is_active = true",
-            [unitId, allSquadIds]
-          );
+          const validSquads = await tx
+            .select({ id: unitSquads.id })
+            .from(unitSquads)
+            .where(and(eq(unitSquads.unitId, unitId), inArray(unitSquads.id, allSquadIds), eq(unitSquads.isActive, true)));
 
-          if (validSquads.rows.length !== allSquadIds.length) {
+          if (validSquads.length !== allSquadIds.length) {
             return sendValidationFailed(reply);
           }
         }
 
-        if (!(await validateSquadHierarchy(tx, reply, unitId, parsedBody.data.squads))) {
+        if (!(await validateSquadHierarchyDrizzle(tx, reply, unitId, parsedBody.data.squads))) {
           return;
         }
 
         if (parsedBody.data.assignments.length > 0) {
           const playerUids = parsedBody.data.assignments.map((assignment) => assignment.player_uid);
-          const validPlayers = await tx.query<{ player_uid: string }>(
-            "SELECT player_uid FROM unit_players WHERE unit_id = $1 AND player_uid = ANY($2::text[]) AND is_active = true",
-            [unitId, playerUids]
-          );
+          const validPlayers = await tx
+            .select({ player_uid: unitPlayers.playerUid })
+            .from(unitPlayers)
+            .where(and(eq(unitPlayers.unitId, unitId), inArray(unitPlayers.playerUid, playerUids), eq(unitPlayers.isActive, true)));
 
-          if (validPlayers.rows.length !== new Set(playerUids).size) {
+          if (validPlayers.length !== new Set(playerUids).size) {
             return sendValidationFailed(reply);
           }
         }
 
         for (const squad of parsedBody.data.squads) {
-          await tx.query(
-            `
-            UPDATE unit_squads
-            SET parent_squad_id = $3, sort_order = $4, updated_at = now()
-            WHERE unit_id = $1 AND id = $2
-            `,
-            [unitId, squad.id, squad.parent_squad_id, squad.sort_order]
-          );
+          await tx
+            .update(unitSquads)
+            .set({ parentSquadId: squad.parent_squad_id, sortOrder: squad.sort_order, updatedAt: sql`now()` })
+            .where(and(eq(unitSquads.unitId, unitId), eq(unitSquads.id, squad.id)));
         }
 
         for (const assignment of parsedBody.data.assignments) {
-          await tx.query(
-            `
-            UPDATE unit_roster_assignments
-            SET ended_at = COALESCE(ended_at, now()), updated_at = now()
-            WHERE unit_id = $1
-              AND player_uid = $2
-              AND ended_at IS NULL
-              AND is_primary = true
-            `,
-            [unitId, assignment.player_uid]
-          );
-          await tx.query(
-            `
-            INSERT INTO unit_roster_assignments (
-              unit_id,
-              player_uid,
-              squad_id,
-              billet,
-              sort_order,
-              assigned_by_user_id,
-              assignment_source
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, 'manual')
-            `,
-            [unitId, assignment.player_uid, assignment.squad_id, assignment.billet, assignment.sort_order, auth.user.id]
-          );
+          await tx
+            .update(unitRosterAssignments)
+            .set({
+              endedAt: sql`COALESCE(${unitRosterAssignments.endedAt}, now())`,
+              updatedAt: sql`now()`
+            })
+            .where(
+              and(
+                eq(unitRosterAssignments.unitId, unitId),
+                eq(unitRosterAssignments.playerUid, assignment.player_uid),
+                isNull(unitRosterAssignments.endedAt),
+                eq(unitRosterAssignments.isPrimary, true)
+              )
+            );
+
+          await tx.insert(unitRosterAssignments).values({
+            unitId,
+            playerUid: assignment.player_uid,
+            squadId: assignment.squad_id,
+            billet: assignment.billet,
+            sortOrder: assignment.sort_order,
+            assignedByUserId: auth.user.id,
+            assignmentSource: "manual"
+          });
         }
 
-        await audit(tx, auth.user, "update_squad_layout", {
+        await auditDrizzle(tx, auth.user, "update_squad_layout", {
           unit_id: unitId,
           squad_count: parsedBody.data.squads.length,
           assignment_count: parsedBody.data.assignments.length
@@ -1847,18 +1858,26 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        await tx.query(
-          `
-          INSERT INTO unit_user_roles (unit_id, user_id, role, granted_by_user_id, grant_source)
-          VALUES ($1, $2, $3, $4, 'manual')
-          ON CONFLICT (unit_id, user_id, role) DO UPDATE
-          SET granted_at = now(), granted_by_user_id = EXCLUDED.granted_by_user_id
-          `,
-          [parsedParams.data.unit_id, parsedParams.data.user_id, parsedBody.data.role, auth.user.id]
-        );
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        await tx
+          .insert(unitUserRoles)
+          .values({
+            unitId: parsedParams.data.unit_id,
+            userId: parsedParams.data.user_id,
+            role: parsedBody.data.role,
+            grantedByUserId: auth.user.id,
+            grantSource: "manual"
+          })
+          .onConflictDoUpdate({
+            target: [unitUserRoles.unitId, unitUserRoles.userId, unitUserRoles.role],
+            set: {
+              grantedAt: sql`now()`,
+              grantedByUserId: sql`excluded.granted_by_user_id`
+            }
+          });
 
-        await audit(
+        await auditDrizzle(
           tx,
           auth.user,
           "grant_unit_admin",
@@ -1893,13 +1912,19 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await withDbTransaction(async (tx) => {
-        await tx.query("DELETE FROM unit_user_roles WHERE unit_id = $1 AND user_id = $2 AND role IN ('officer', 'admin', 'tcw_admin')", [
-          parsedParams.data.unit_id,
-          parsedParams.data.user_id
-        ]);
+      const db = getDrizzleDb();
+      return await db.transaction(async (tx) => {
+        await tx
+          .delete(unitUserRoles)
+          .where(
+            and(
+              eq(unitUserRoles.unitId, parsedParams.data.unit_id),
+              eq(unitUserRoles.userId, parsedParams.data.user_id),
+              inArray(unitUserRoles.role, ["officer", "admin", "tcw_admin"])
+            )
+          );
 
-        await audit(tx, auth.user, "revoke_unit_admin", { unit_id: parsedParams.data.unit_id }, parsedParams.data.user_id);
+        await auditDrizzle(tx, auth.user, "revoke_unit_admin", { unit_id: parsedParams.data.unit_id }, parsedParams.data.user_id);
 
         return { ok: true, unit_id: parsedParams.data.unit_id, user_id: parsedParams.data.user_id, revoked: true };
       });
