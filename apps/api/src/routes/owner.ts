@@ -1,13 +1,15 @@
 import { randomBytes } from "node:crypto";
 
+import { desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { hashMachineToken, requireRole, requireUser, type MachineTokenKind } from "../auth.js";
 import { config } from "../config.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
-import { queryDb } from "../db/pool.js";
-import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
+import { adminAuditEvents } from "../db/schema/auth.js";
+import { machineTokens } from "../db/schema/machineTokens.js";
 import { tokenPreview } from "../privacy/redaction.js";
 
 const tokenKinds = ["api", "bot", "arma_server", "base44_integration"] as const satisfies readonly MachineTokenKind[];
@@ -24,7 +26,7 @@ const tokenParamsSchema = z.object({
 type MachineTokenRow = {
   id: string;
   name: string;
-  token_kind: (typeof tokenKinds)[number];
+  token_kind: string;
   token_prefix: string;
   is_active: boolean;
   created_at: Date;
@@ -73,21 +75,6 @@ function serializeMachineToken(row: MachineTokenRow) {
   };
 }
 
-async function auditMachineToken(
-  tx: DbTransaction,
-  actor: { id: string; display_name: string | null },
-  action: string,
-  details: Record<string, unknown>
-) {
-  await tx.query(
-    `
-    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, details)
-    VALUES ($1, $2, $3, $4::jsonb)
-    `,
-    [actor.id, actor.display_name ?? actor.id, action, JSON.stringify(details)]
-  );
-}
-
 export async function registerOwnerRoutes(app: FastifyInstance) {
   app.get("/v1/owner/api-key", { preHandler: requireRole(["owner"]) }, async () => ({
     ok: true,
@@ -123,25 +110,35 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
     }
 
     try {
-      const result = await queryDb<MachineTokenRow>(
-        `
-        SELECT id, name, token_kind, token_prefix, is_active, created_at, last_used_at, revoked_at
-        FROM machine_tokens
-        ORDER BY created_at DESC
-        `
-      );
+      const db = getDrizzleDb();
+      const rows = await db.transaction(async (tx) => {
+        const tokens = await tx
+          .select({
+            id: machineTokens.id,
+            name: machineTokens.name,
+            token_kind: machineTokens.tokenKind,
+            token_prefix: machineTokens.tokenPrefix,
+            is_active: machineTokens.isActive,
+            created_at: machineTokens.createdAt,
+            last_used_at: machineTokens.lastUsedAt,
+            revoked_at: machineTokens.revokedAt
+          })
+          .from(machineTokens)
+          .orderBy(desc(machineTokens.createdAt));
 
-      await queryDb(
-        `
-        INSERT INTO admin_audit_events (actor_user_id, actor_label, action, details)
-        VALUES ($1, $2, 'machine_token_list_viewed', '{}'::jsonb)
-        `,
-        [actor.id, actor.display_name ?? actor.id]
-      );
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor.id,
+          actorLabel: actor.display_name ?? actor.id,
+          action: "machine_token_list_viewed",
+          details: {}
+        });
+
+        return tokens;
+      });
 
       return {
         ok: true,
-        tokens: result.rows.map(serializeMachineToken),
+        tokens: rows.map(serializeMachineToken),
         env_tokens: {
           api_token_present: Boolean(config.apiToken),
           bot_api_token_present: Boolean(config.botApiToken),
@@ -170,31 +167,41 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
     const token = generateMachineToken(parsedBody.data.token_kind);
 
     try {
-      const record = await withDbTransaction(async (tx) => {
-        const result = await tx.query<MachineTokenRow>(
-          `
-          INSERT INTO machine_tokens (
-            name,
-            token_hash,
-            token_prefix,
-            token_kind,
-            created_by_user_id
-          )
-          VALUES ($1, $2, $3, $4, $5)
-          RETURNING id, name, token_kind, token_prefix, is_active, created_at, last_used_at, revoked_at
-          `,
-          [parsedBody.data.name, hashMachineToken(token), tokenPrefix(token), parsedBody.data.token_kind, actor.id]
-        );
-        const row = result.rows[0];
+      const db = getDrizzleDb();
+      const record = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(machineTokens)
+          .values({
+            name: parsedBody.data.name,
+            tokenHash: hashMachineToken(token),
+            tokenPrefix: tokenPrefix(token),
+            tokenKind: parsedBody.data.token_kind,
+            createdByUserId: actor.id
+          })
+          .returning({
+            id: machineTokens.id,
+            name: machineTokens.name,
+            token_kind: machineTokens.tokenKind,
+            token_prefix: machineTokens.tokenPrefix,
+            is_active: machineTokens.isActive,
+            created_at: machineTokens.createdAt,
+            last_used_at: machineTokens.lastUsedAt,
+            revoked_at: machineTokens.revokedAt
+          });
 
         if (!row) {
           throw new Error("Machine token insert returned no rows.");
         }
 
-        await auditMachineToken(tx, actor, "machine_token_created", {
-          token_id: row.id,
-          token_kind: row.token_kind,
-          token_prefix: row.token_prefix
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor.id,
+          actorLabel: actor.display_name ?? actor.id,
+          action: "machine_token_created",
+          details: {
+            token_id: row.id,
+            token_kind: row.token_kind,
+            token_prefix: row.token_prefix
+          }
         });
 
         return row;
@@ -225,29 +232,40 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
     }
 
     try {
-      const revoked = await withDbTransaction(async (tx) => {
-        const result = await tx.query<MachineTokenRow>(
-          `
-          UPDATE machine_tokens
-          SET
-            is_active = false,
-            revoked_at = COALESCE(revoked_at, now()),
-            revoked_by_user_id = $2
-          WHERE id = $1
-          RETURNING id, name, token_kind, token_prefix, is_active, created_at, last_used_at, revoked_at
-          `,
-          [parsedParams.data.token_id, actor.id]
-        );
-        const row = result.rows[0];
+      const db = getDrizzleDb();
+      const revoked = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(machineTokens)
+          .set({
+            isActive: false,
+            revokedAt: sql`COALESCE(${machineTokens.revokedAt}, now())`,
+            revokedByUserId: actor.id
+          })
+          .where(eq(machineTokens.id, parsedParams.data.token_id))
+          .returning({
+            id: machineTokens.id,
+            name: machineTokens.name,
+            token_kind: machineTokens.tokenKind,
+            token_prefix: machineTokens.tokenPrefix,
+            is_active: machineTokens.isActive,
+            created_at: machineTokens.createdAt,
+            last_used_at: machineTokens.lastUsedAt,
+            revoked_at: machineTokens.revokedAt
+          });
 
         if (!row) {
           return null;
         }
 
-        await auditMachineToken(tx, actor, "machine_token_revoked", {
-          token_id: row.id,
-          token_kind: row.token_kind,
-          token_prefix: row.token_prefix
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor.id,
+          actorLabel: actor.display_name ?? actor.id,
+          action: "machine_token_revoked",
+          details: {
+            token_id: row.id,
+            token_kind: row.token_kind,
+            token_prefix: row.token_prefix
+          }
         });
 
         return row;

@@ -626,6 +626,28 @@ Applied migration state is tracked in PostgreSQL with `schema_migrations`, inclu
 
 Migration files should be forward-only and idempotent enough to reconcile older manual table shapes when practical. If a migration uses `CREATE TABLE IF NOT EXISTS`, add explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, default, constraint, and validation steps before creating dependent indexes. The migration runner has a preflight hook for pending migrations that need compatibility checks before applying their SQL. Future migrations can also add optional compatibility SQL at `sql/migration-preflight/<migration-filename>.sql`; it will run only while that migration is pending.
 
+## Drizzle ORM
+
+The API uses Drizzle as an optional typed query layer for selected routes. SQL migrations in `sql/migrations/` remain authoritative, and `pnpm db:migrate` is the only supported migration command for deployed databases.
+
+Current policy:
+
+- Drizzle schema files mirror existing PostgreSQL tables.
+- Drizzle Kit is allowed for local checks and introspection, but must not push schema changes to shared or deployed databases.
+- Raw SQL remains acceptable and preferred for complex CTE, reporting, ingest, export, and backfill paths.
+- Do not commit generated Drizzle migration output under `sql/drizzle/`.
+
+Recommended development flow:
+
+```bash
+pnpm db:status
+pnpm db:migrate
+pnpm typecheck
+pnpm build
+```
+
+When adding a SQL migration, add the forward-only SQL first, update the matching Drizzle schema mirror, update route or service code, and run the focused smoke scripts for the touched surface.
+
 Run these only where `DATABASE_URL` points at the intended PostgreSQL database:
 
 ```bash

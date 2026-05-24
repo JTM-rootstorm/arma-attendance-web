@@ -123,10 +123,10 @@ curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$
   -H "X-CSRF-Token: $(csrf_token)" |
   assert_json 'data.ok === true && data.token_record.is_active === false'
 
-echo "[smoke:base44] Checking revoked token no longer works..."
+echo "[smoke:base44] Checking revoked token no longer works on protected Base44 read surface..."
 revoked_status="$(
-  curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $base44_token" "$BASE_URL/v1/leaderboard/units"
+  curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $base44_token" "$BASE_URL/v1/dashboard/summary"
 )"
-assert_status_one_of "$revoked_status" "revoked Base44 token leaderboard" 401 403
+assert_status_one_of "$revoked_status" "revoked Base44 token dashboard summary" 401 403
 
 echo "[smoke:base44] OK token_id=$base44_token_id"
