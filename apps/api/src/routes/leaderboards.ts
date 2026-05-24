@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { canSeeSensitiveIds, getAuthContext } from "../auth/authorization.js";
+import { canSeeSensitiveIds, getOptionalAuthContext } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 
@@ -51,11 +51,9 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 
 export async function registerLeaderboardRoutes(app: FastifyInstance) {
   app.get("/v1/leaderboard/units", async (request, reply) => {
-    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
-
-    if (!auth) {
-      return;
-    }
+    const auth = await getOptionalAuthContext(request, {
+      machineTokenKinds: ["api", "arma_server", "base44_integration"]
+    });
 
     const parsed = unitLeaderboardQuerySchema.safeParse(request.query);
 

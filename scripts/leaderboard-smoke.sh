@@ -158,4 +158,11 @@ printf "%s" "$leaderboard_response" | assert_json "
   && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').deaths === 3
 "
 
+echo "[smoke:leaderboard] Checking unauthenticated leaderboard is available and redacted..."
+public_leaderboard_response="$(curl -fsS "$BASE_URL/v1/leaderboard/units?limit=200")"
+printf "%s" "$public_leaderboard_response" | assert_json '
+  data.ok === true
+  && data.leaderboard.some((entry) => entry.name === "Leaderboard Smoke Alpha" && entry.unit_id === null && entry.unit_key === null)
+'
+
 echo "[smoke:leaderboard] OK owner_id=$owner_id"

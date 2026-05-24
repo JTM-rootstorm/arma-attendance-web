@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { hasRole, requireBearerToken, type CurrentUser } from "../auth.js";
-import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { canSeeSensitiveIds, deny, getAuthContext, getOptionalAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { canReadOperation, getLinkedPlayerUid } from "../auth/operationAccess.js";
 import { getDefaultUnitId, hasUnitRole } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
@@ -263,11 +263,9 @@ function getMissionField(
 
 export async function registerOperationRoutes(app: FastifyInstance) {
   app.get("/v1/operations", async (request, reply) => {
-    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
-
-    if (!auth) {
-      return;
-    }
+    const auth = await getOptionalAuthContext(request, {
+      machineTokenKinds: ["api", "arma_server", "base44_integration"]
+    });
 
     const parsedQuery = operationListQuerySchema.safeParse(request.query);
 
@@ -275,7 +273,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
       return sendValidationFailed(reply);
     }
 
-    const query = parsedQuery.data;
+    const query = {
+      ...parsedQuery.data,
+      limit: auth.kind === "anonymous" ? Math.min(parsedQuery.data.limit, 20) : parsedQuery.data.limit,
+      offset: auth.kind === "anonymous" ? 0 : parsedQuery.data.offset,
+      server_key: auth.kind === "anonymous" ? undefined : parsedQuery.data.server_key,
+      mission_uid: auth.kind === "anonymous" ? undefined : parsedQuery.data.mission_uid
+    };
     const where: string[] = [];
     const values: unknown[] = [];
     const unitFilter = await getReadableUnitFilter(auth.user);
@@ -362,7 +366,20 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        operations: operationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind))),
+        operations: operationsResult.rows.map((row) => {
+          const redacted = redactOperationListItem(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind));
+
+          if (auth.kind !== "anonymous") {
+            return redacted;
+          }
+
+          return {
+            ...redacted,
+            id: null,
+            unit_id: null,
+            payload_count: undefined
+          };
+        }),
         pagination: {
           limit: query.limit,
           offset: query.offset,

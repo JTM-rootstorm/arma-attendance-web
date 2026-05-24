@@ -21,6 +21,12 @@ export type AuthContext =
       machineTokenKind: null;
     };
 
+export type AnonymousAuthContext = {
+  kind: "anonymous";
+  user: null;
+  machineTokenKind: null;
+};
+
 function unauthorized(reply: FastifyReply) {
   return reply.code(401).send({
     ok: false,
@@ -76,8 +82,41 @@ export async function getAuthContext(
   return { kind: "user", user, machineTokenKind: null };
 }
 
+export async function getOptionalAuthContext(
+  request: FastifyRequest,
+  options: { allowMachineToken?: boolean; allowBotToken?: boolean; machineTokenKinds?: MachineTokenKind[] } = {}
+): Promise<AuthContext | AnonymousAuthContext> {
+  if (options.machineTokenKinds) {
+    const tokenKind = await getAcceptedMachineTokenKind(request, options.machineTokenKinds);
+
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    }
+  } else if (options.allowBotToken) {
+    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]);
+
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    }
+  } else if (options.allowMachineToken) {
+    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "arma_server"]);
+
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    }
+  }
+
+  const user = await getCurrentUser(request);
+
+  if (user) {
+    return { kind: "user", user, machineTokenKind: null };
+  }
+
+  return { kind: "anonymous", user: null, machineTokenKind: null };
+}
+
 export function canSeeSensitiveIds(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
-  return user === null ? machineTokenKind !== "base44_integration" : hasRole(user, ["tcw_admin"]);
+  return user === null ? Boolean(machineTokenKind && machineTokenKind !== "base44_integration") : hasRole(user, ["tcw_admin"]);
 }
 
 export async function canExportData(user: CurrentUser | null, unitId?: string | null): Promise<boolean> {

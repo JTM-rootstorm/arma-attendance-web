@@ -275,6 +275,8 @@ curl -fsS "http://127.0.0.1:3000/v1/operations?server_key=server-01&status=finis
   -H "Authorization: Bearer dev-token"
 ```
 
+Unauthenticated callers may also read `GET /v1/operations`. Anonymous responses are limited to the most recent 20 rows, force `offset=0`, ignore sensitive filters such as `server_key` and `mission_uid`, and redact internal IDs and payload counts.
+
 Supported query parameters:
 
 - `server_key`
@@ -392,6 +394,8 @@ total_kills = infantry_kills + soft_vehicle_kills + armor_kills + air_kills
 ```
 
 Deaths are displayed separately and are not subtracted.
+
+The battalion leaderboard API (`GET /v1/leaderboard/units`) is public for unauthenticated callers. Anonymous responses keep aggregate scores and names but redact internal unit IDs and unit keys.
 
 Synthetic battalion validation:
 
