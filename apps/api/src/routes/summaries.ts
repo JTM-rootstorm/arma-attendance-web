@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { hasRole, type CurrentUser } from "../auth.js";
+import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { canReadOperation } from "../auth/operationAccess.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
@@ -143,8 +143,8 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
   });
 }
 
-function canSeePlayerOperationalDetails(user: CurrentUser | null): boolean {
-  return user === null || hasRole(user, ["admin"]);
+function canSeePlayerOperationalDetails(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return user === null ? machineTokenKind !== "base44_integration" : hasRole(user, ["admin"]);
 }
 
 function buildDashboardWhere(
@@ -180,7 +180,7 @@ function buildDashboardWhere(
 
 export async function registerSummaryRoutes(app: FastifyInstance) {
   app.get("/v1/dashboard/summary", async (request, reply) => {
-    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
 
     if (!auth) {
       return;
@@ -307,9 +307,9 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           stats_rows_total: 0,
           last_operation_at: null
         },
-        recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user))),
-        top_players_by_attendance: topAttendanceResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user))),
-        top_players_by_ai_kills: topKillsResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user)))
+        recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind))),
+        top_players_by_attendance: topAttendanceResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind))),
+        top_players_by_ai_kills: topKillsResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind)))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch dashboard summary");
@@ -417,7 +417,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
       return {
         ok: true,
         operation_id: operationId,
-        operation: redactOperationListItem(operation, canSeeSensitiveIds(auth.user)),
+        operation: redactOperationListItem(operation, canSeeSensitiveIds(auth.user, auth.machineTokenKind)),
         attendance: attendanceResult.rows[0] ?? {
           present_at_start: 0,
           present_at_end: 0,
@@ -576,8 +576,8 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         all_vehicle_kills: 0,
         scoreboard_score: 0
       };
-      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user);
-      const revealSensitive = canSeeSensitiveIds(auth.user) || revealOperationalDetails;
+      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user, auth.machineTokenKind);
+      const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind) || revealOperationalDetails;
       const responseSummary = revealOperationalDetails ? summary : {
         ...summary,
         operation_count: null,

@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 
-import type { ApiResult, CreateMachineTokenResponse, MachineTokensResponse } from "../types";
+import type { ApiResult, CreateMachineTokenResponse, MachineTokenKind, MachineTokensResponse } from "../types";
 
 export function SystemPage({
   machineTokens,
@@ -11,12 +11,12 @@ export function SystemPage({
 }: {
   machineTokens: ApiResult<MachineTokensResponse>;
   createdToken: CreateMachineTokenResponse | null;
-  onCreateToken: (input: { name: string; token_kind: "api" | "bot" | "arma_server" }) => Promise<void>;
+  onCreateToken: (input: { name: string; token_kind: MachineTokenKind }) => Promise<void>;
   onRevokeToken: (tokenId: string) => Promise<void>;
   onRefresh: () => void;
 }) {
   const [name, setName] = useState("");
-  const [tokenKind, setTokenKind] = useState<"api" | "bot" | "arma_server">("arma_server");
+  const [tokenKind, setTokenKind] = useState<MachineTokenKind>("arma_server");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -48,15 +48,19 @@ export function SystemPage({
 
         <form className="inline-form" onSubmit={(event) => void submit(event)}>
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Token name" />
-          <select value={tokenKind} onChange={(event) => setTokenKind(event.target.value as "api" | "bot" | "arma_server")}>
+          <select value={tokenKind} onChange={(event) => setTokenKind(event.target.value as MachineTokenKind)}>
             <option value="arma_server">Arma server</option>
             <option value="bot">Discord bot</option>
             <option value="api">API automation</option>
+            <option value="base44_integration">Base44 integration</option>
           </select>
           <button type="submit" disabled={name.trim().length === 0}>
             Create
           </button>
         </form>
+        <p className="muted-copy">
+          Base44 integration tokens are for server-side Base44 automations only. Do not paste this token into browser/client-side code.
+        </p>
 
         <div className="tactical-table">
           <table>

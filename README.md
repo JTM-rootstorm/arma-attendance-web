@@ -409,7 +409,47 @@ Steam OpenID is a linked identity only. Steam login does not grant app permissio
 
 Machine-token bearer auth remains available for Arma ingest, smoke scripts, and bot-facing automation endpoints. Browser/admin workflows should use the session cookie created by Discord login.
 
-Session cookies are `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when `SESSION_SECURE=true`.
+Session cookies are `HttpOnly`, `Path=/`, use `SESSION_SAME_SITE` (`Lax` by default), and are `Secure` when `SESSION_SECURE=true`.
+
+## Base44 Integration
+
+Base44 uses two auth paths:
+
+```text
+Automated/server-side Base44 actions:
+  dedicated DB-backed base44_integration machine token
+
+Human users:
+  Discord OAuth login + session cookie + RBAC
+```
+
+Production Base44 env:
+
+```env
+CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app
+CORS_ALLOW_CREDENTIALS=true
+SESSION_SAME_SITE=None
+SESSION_SECURE=true
+```
+
+Create a Base44 token from the browser:
+
+1. Login as an owner.
+2. Open SYSTEM.
+3. Create a machine token.
+4. Select `Base44 integration`.
+5. Copy the one-time token and store it only in Base44 secret/server-side integration settings.
+
+Do not place Base44 tokens in `.env`, frontend code, or browser/client-side Base44 code. The `base44_integration` token kind is limited to safe read surfaces such as dashboard summary, leaderboard, unit list, operation list, and player list. Owner/system token management remains session-owner only.
+
+After deploy, run:
+
+```bash
+BASE_URL=https://YOUR_PUBLIC_HOST pnpm smoke:cors
+BASE_URL=https://YOUR_PUBLIC_HOST pnpm smoke:base44
+```
+
+Reverse proxies in front of the API must allow and forward `OPTIONS`, `Origin`, `Authorization`, `Content-Type`, `Access-Control-Request-Method`, `Access-Control-Request-Headers`, `Cookie`, and `Set-Cookie`.
 
 Role summary:
 
@@ -524,6 +564,9 @@ SESSION_COOKIE_NAME=arma_attendance_session
 SESSION_SECRET=change-this-session-secret
 SESSION_TTL_HOURS=168
 SESSION_SECURE=true
+SESSION_SAME_SITE=Lax
+CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app
+CORS_ALLOW_CREDENTIALS=true
 INITIAL_ADMIN_DISCORD_IDS=
 ENABLE_TEST_AUTH=false
 ```
@@ -547,6 +590,7 @@ SQL migrations live in `sql/migrations/` and use numeric prefixes. Current migra
 - `0009_discord_default_player_names.sql`
 - `0010_scoreboard_stats.sql`
 - `0011_battalion_roster_and_leaderboard.sql`
+- `0012_base44_machine_token_kind_and_cors_sessions.sql`
 
 Applied migration state is tracked in PostgreSQL with `schema_migrations`, including a SHA-256 checksum so edited applied migrations are rejected.
 
@@ -564,6 +608,8 @@ pnpm smoke:attendance
 pnpm smoke:scoreboard
 pnpm smoke:battalions
 pnpm smoke:leaderboard
+pnpm smoke:cors
+pnpm smoke:base44
 pnpm smoke:dashboard
 pnpm smoke:exports
 pnpm smoke:data-quality
@@ -572,7 +618,7 @@ pnpm smoke:auth
 pnpm smoke:rbac
 ```
 
-`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:scoreboard` covers split scoreboard stats. `pnpm smoke:battalions` covers battalion creation, roster, ranks, squads, assignments, unit-admin management, and member read-only access. `pnpm smoke:leaderboard` covers battalion ranking and the total-kills formula. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. `pnpm smoke:rbac` covers session-cookie RBAC, unit scoping, redaction boundaries, and owner machine-token management. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
+`pnpm smoke:db` performs HTTP-level checks against `/health/db` and `/v1/debug/poke`; it does not inspect PostgreSQL directly. `pnpm smoke:operations` exercises operation start, idempotent start replay, finish, and fetch. `pnpm smoke:operations:observability` also lists operations, fetches raw payload rows, and fetches saved ingest requests. `pnpm smoke:attendance` creates synthetic player payloads, verifies normalized operation attendance, and verifies player list/detail APIs. `pnpm smoke:scoreboard` covers split scoreboard stats. `pnpm smoke:battalions` covers battalion creation, roster, ranks, squads, assignments, unit-admin management, and member read-only access. `pnpm smoke:leaderboard` covers battalion ranking and the total-kills formula. `pnpm smoke:cors` checks the Base44 CORS allowlist. `pnpm smoke:base44` creates and revokes a `base44_integration` token and verifies it can read the leaderboard but cannot manage owner system tokens. `pnpm smoke:dashboard`, `pnpm smoke:exports`, and `pnpm smoke:data-quality` cover the Phase 2 readiness read surfaces. `pnpm smoke:discord` covers the Discord readiness sync/link/rule/evaluation/audit flow. `pnpm smoke:auth` covers synthetic Discord login, CLI owner grant, admin role management, Steam identity link/unlink, and logout revocation. `pnpm smoke:rbac` covers session-cookie RBAC, unit scoping, redaction boundaries, and owner machine-token management. These DB-backed smoke scripts require the service to be running with a reachable database, migrations applied, and `API_TOKEN` supplied when the script calls machine-token endpoints.
 
 Normalized attendance tables:
 

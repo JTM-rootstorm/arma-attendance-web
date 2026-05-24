@@ -8,7 +8,7 @@ import { queryDb } from "./db/pool.js";
 export const appRoles = ["viewer", "officer", "admin", "tcw_admin", "owner"] as const;
 export type AppRole = (typeof appRoles)[number];
 export type IdentityProvider = "discord" | "steam";
-export type MachineTokenKind = "api" | "bot" | "arma_server";
+export type MachineTokenKind = "api" | "bot" | "arma_server" | "base44_integration";
 
 export type CurrentUser = {
   id: string;
@@ -132,7 +132,7 @@ export function setSessionCookie(reply: FastifyReply, token: string, expiresAt: 
     `${config.sessionCookieName}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${config.sessionSameSite}`,
     `Expires=${expiresAt.toUTCString()}`
   ];
 
@@ -148,7 +148,7 @@ export function clearSessionCookie(reply: FastifyReply) {
     `${config.sessionCookieName}=`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${config.sessionSameSite}`,
     "Expires=Thu, 01 Jan 1970 00:00:00 GMT"
   ];
 
@@ -262,20 +262,20 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
   };
 }
 
-async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<boolean> {
+async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {
   const token = getBearerToken(request);
 
   if (!token || !config.databaseUrl) {
-    return false;
+    return null;
   }
 
   const tokenHash = hashMachineToken(token);
-  let row: { id: string } | undefined;
+  let row: { id: string; token_kind: MachineTokenKind } | undefined;
 
   try {
-    const result = await queryDb<{ id: string }>(
+    const result = await queryDb<{ id: string; token_kind: MachineTokenKind }>(
       `
-      SELECT id
+      SELECT id, token_kind
       FROM machine_tokens
       WHERE token_hash = $1
         AND token_kind = ANY($2::text[])
@@ -288,50 +288,54 @@ async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineT
     row = result.rows[0];
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "42P01") {
-      return false;
+      return null;
     }
 
     throw error;
   }
 
   if (!row) {
-    return false;
+    return null;
   }
 
   await queryDb("UPDATE machine_tokens SET last_used_at = now() WHERE id = $1", [row.id]);
-  return true;
+  return row.token_kind;
 }
 
-async function acceptsMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<boolean> {
+export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {
   const token = getBearerToken(request);
 
   if (!token) {
-    return false;
+    return null;
   }
 
   if (kinds.includes("api") && token === config.apiToken) {
-    return true;
+    return "api";
   }
 
   if (kinds.includes("bot") && config.botApiToken && token === config.botApiToken) {
-    return true;
+    return "bot";
   }
 
   return findActiveDbMachineToken(request, kinds);
 }
 
 export async function requireBearerToken(request: FastifyRequest, reply: FastifyReply) {
-  if (!(await acceptsMachineToken(request, ["api", "arma_server"]))) {
+  if (!(await getAcceptedMachineTokenKind(request, ["api", "arma_server"]))) {
     return unauthorized(reply);
   }
 }
 
 export async function isMachineTokenRequest(request: FastifyRequest): Promise<boolean> {
-  return acceptsMachineToken(request, ["api", "arma_server"]);
+  return Boolean(await getAcceptedMachineTokenKind(request, ["api", "arma_server"]));
 }
 
 export async function isAdminOrBotTokenRequest(request: FastifyRequest): Promise<boolean> {
-  return acceptsMachineToken(request, ["api", "bot", "arma_server"]);
+  return Boolean(await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]));
+}
+
+export async function isBase44TokenRequest(request: FastifyRequest): Promise<boolean> {
+  return Boolean(await getAcceptedMachineTokenKind(request, ["base44_integration"]));
 }
 
 export async function requireAdminOrBotToken(request: FastifyRequest, reply: FastifyReply) {

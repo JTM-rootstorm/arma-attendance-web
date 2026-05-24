@@ -3,14 +3,14 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { hashMachineToken, requireRole, requireUser } from "../auth.js";
+import { hashMachineToken, requireRole, requireUser, type MachineTokenKind } from "../auth.js";
 import { config } from "../config.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 import { tokenPreview } from "../privacy/redaction.js";
 
-const tokenKinds = ["api", "bot", "arma_server"] as const;
+const tokenKinds = ["api", "bot", "arma_server", "base44_integration"] as const satisfies readonly MachineTokenKind[];
 
 const createMachineTokenSchema = z.object({
   name: z.string().trim().min(1).max(120),

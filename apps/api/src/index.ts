@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 
 import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
@@ -34,6 +35,9 @@ app.log.info(
     discordOAuthConfigured: Boolean(config.discordClientId && config.discordClientSecret && config.discordRedirectUri),
     steamOpenIdConfigured: Boolean(config.steamReturnUrl && config.steamRealm),
     sessionSecure: config.sessionSecure,
+    sessionSameSite: config.sessionSameSite,
+    corsAllowedOrigins: config.corsAllowedOrigins,
+    corsAllowCredentials: config.corsAllowCredentials,
     initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
     testAuthEnabled: config.enableTestAuth,
     databaseUrlPresent: Boolean(config.databaseUrl)
@@ -78,6 +82,24 @@ app.setNotFoundHandler((_request, reply) =>
 
 app.addHook("onClose", async () => {
   await closeDbPool();
+});
+
+const allowedCorsOrigins = new Set(config.corsAllowedOrigins);
+
+await app.register(cors, {
+  origin(origin, callback) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    callback(null, allowedCorsOrigins.has(origin));
+  },
+  credentials: config.corsAllowCredentials,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Authorization", "Content-Type"],
+  exposedHeaders: ["Content-Disposition"],
+  maxAge: 600
 });
 
 await registerHealthRoutes(app);

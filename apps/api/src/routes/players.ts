@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { hasRole, type CurrentUser } from "../auth.js";
+import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -68,12 +68,12 @@ type PlayerOperationRow = {
   scoreboard_score: number | null;
 };
 
-function canSeeRosterOperationalDetails(user: CurrentUser | null): boolean {
-  return user === null || hasRole(user, ["admin"]);
+function canSeeRosterOperationalDetails(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return user === null ? machineTokenKind !== "base44_integration" : hasRole(user, ["admin"]);
 }
 
-function canSeePlayerOperationalDetails(user: CurrentUser | null): boolean {
-  return canSeeRosterOperationalDetails(user);
+function canSeePlayerOperationalDetails(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return canSeeRosterOperationalDetails(user, machineTokenKind);
 }
 
 function redactPlayerForRoster<T extends PlayerRow>(row: T, revealSensitive: boolean, revealOperationalDetails: boolean) {
@@ -107,7 +107,7 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 
 export async function registerPlayerRoutes(app: FastifyInstance) {
   app.get("/v1/players", async (request, reply) => {
-    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
 
     if (!auth) {
       return;
@@ -123,8 +123,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     const where: string[] = [];
     const values: unknown[] = [];
     const unitFilter = await getReadableUnitFilter(auth.user);
-    const revealOperationalDetails = canSeeRosterOperationalDetails(auth.user);
-    const revealSensitive = canSeeSensitiveIds(auth.user) || revealOperationalDetails;
+    const revealOperationalDetails = canSeeRosterOperationalDetails(auth.user, auth.machineTokenKind);
+    const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind) || revealOperationalDetails;
 
     if (!unitFilter.all) {
       if (unitFilter.unitIds.length === 0) {
@@ -249,8 +249,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         }
       }
 
-      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user);
-      const revealSensitive = canSeeSensitiveIds(auth.user) || revealOperationalDetails;
+      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user, auth.machineTokenKind);
+      const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind) || revealOperationalDetails;
       const operationsResult = await queryDb<PlayerOperationRow>(
         `
         SELECT

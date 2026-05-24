@@ -1,16 +1,24 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import { getCurrentUser, hasRole, isAdminOrBotTokenRequest, isMachineTokenRequest, type CurrentUser } from "../auth.js";
+import {
+  getAcceptedMachineTokenKind,
+  getCurrentUser,
+  hasRole,
+  type CurrentUser,
+  type MachineTokenKind
+} from "../auth.js";
 import { getVisibleUnitIds, hasUnitRole } from "./units.js";
 
 export type AuthContext =
   | {
       kind: "machine";
       user: null;
+      machineTokenKind: MachineTokenKind;
     }
   | {
       kind: "user";
       user: CurrentUser;
+      machineTokenKind: null;
     };
 
 function unauthorized(reply: FastifyReply) {
@@ -36,14 +44,26 @@ function forbidden(reply: FastifyReply) {
 export async function getAuthContext(
   request: FastifyRequest,
   reply: FastifyReply,
-  options: { allowMachineToken?: boolean; allowBotToken?: boolean } = {}
+  options: { allowMachineToken?: boolean; allowBotToken?: boolean; machineTokenKinds?: MachineTokenKind[] } = {}
 ): Promise<AuthContext | null> {
-  if (
-    options.allowBotToken
-      ? await isAdminOrBotTokenRequest(request)
-      : options.allowMachineToken && (await isMachineTokenRequest(request))
-  ) {
-    return { kind: "machine", user: null };
+  if (options.machineTokenKinds) {
+    const tokenKind = await getAcceptedMachineTokenKind(request, options.machineTokenKinds);
+
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    }
+  } else if (options.allowBotToken) {
+    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]);
+
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    }
+  } else if (options.allowMachineToken) {
+    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "arma_server"]);
+
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    }
   }
 
   const user = await getCurrentUser(request);
@@ -53,11 +73,11 @@ export async function getAuthContext(
     return null;
   }
 
-  return { kind: "user", user };
+  return { kind: "user", user, machineTokenKind: null };
 }
 
-export function canSeeSensitiveIds(user: CurrentUser | null): boolean {
-  return user === null || hasRole(user, ["tcw_admin"]);
+export function canSeeSensitiveIds(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return user === null ? machineTokenKind !== "base44_integration" : hasRole(user, ["tcw_admin"]);
 }
 
 export async function canExportData(user: CurrentUser | null, unitId?: string | null): Promise<boolean> {

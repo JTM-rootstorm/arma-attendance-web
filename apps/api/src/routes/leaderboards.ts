@@ -51,9 +51,9 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 
 export async function registerLeaderboardRoutes(app: FastifyInstance) {
   app.get("/v1/leaderboard/units", async (request, reply) => {
-    const auth = await getAuthContext(request, reply);
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
 
-    if (!auth || !auth.user) {
+    if (!auth) {
       return;
     }
 
@@ -130,7 +130,7 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
         values
       );
 
-      const revealSensitive = canSeeSensitiveIds(auth.user);
+      const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind);
 
       return {
         ok: true,

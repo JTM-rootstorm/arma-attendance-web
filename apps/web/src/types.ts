@@ -471,10 +471,12 @@ export type MyOperationMatesResponse = {
   message?: string;
 };
 
+export type MachineTokenKind = "api" | "bot" | "arma_server" | "base44_integration";
+
 export type MachineTokenRecord = {
   id: string;
   name: string;
-  token_kind: "api" | "bot" | "arma_server";
+  token_kind: MachineTokenKind;
   token_prefix: string;
   is_active: boolean;
   created_at: string;

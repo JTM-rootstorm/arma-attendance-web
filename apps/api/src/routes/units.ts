@@ -334,7 +334,11 @@ function withMyRoles(row: UnitListRow, roleMap: Map<string, UnitRole[]>) {
   };
 }
 
-async function getListableUnitIds(user: CurrentUser): Promise<{ all: boolean; unitIds: string[]; roles: Map<string, UnitRole[]> }> {
+async function getListableUnitIds(user: CurrentUser | null): Promise<{ all: boolean; unitIds: string[]; roles: Map<string, UnitRole[]> }> {
+  if (user === null) {
+    return { all: true, unitIds: [], roles: new Map() };
+  }
+
   const roleRows = await getUserUnitRoles(user.id);
   const roles = new Map<string, UnitRole[]>();
 
@@ -520,9 +524,9 @@ async function insertDefaultRanks(tx: DbTransaction, unitId: string) {
 
 export async function registerUnitRoutes(app: FastifyInstance) {
   app.get("/v1/units", async (request, reply) => {
-    const auth = await getAuthContext(request, reply);
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
 
-    if (!auth || !auth.user) {
+    if (!auth) {
       return;
     }
 
@@ -533,7 +537,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     const query = parsed.data;
-    const includeInactive = hasRole(auth.user, ["owner"]) && query.include_inactive;
+    const includeInactive = auth.user !== null && hasRole(auth.user, ["owner"]) && query.include_inactive;
     const visible = await getListableUnitIds(auth.user);
 
     if (!visible.all && visible.unitIds.length === 0) {

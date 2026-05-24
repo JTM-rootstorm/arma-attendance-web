@@ -38,6 +38,7 @@ import type {
   DbHealthResponse,
   HealthResponse,
   MachineTokensResponse,
+  MachineTokenKind,
   MeResponse,
   MyOperationsResponse,
   MyPlayerResponse,
@@ -481,7 +482,7 @@ export function App() {
     }
   }
 
-  async function createMachineToken(input: { name: string; token_kind: "api" | "bot" | "arma_server" }) {
+  async function createMachineToken(input: { name: string; token_kind: MachineTokenKind }) {
     const created = await apiFetch<CreateMachineTokenResponse>("/v1/system/machine-tokens", {
       method: "POST",
       body: input

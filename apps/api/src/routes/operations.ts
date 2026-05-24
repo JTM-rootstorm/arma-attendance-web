@@ -263,7 +263,7 @@ function getMissionField(
 
 export async function registerOperationRoutes(app: FastifyInstance) {
   app.get("/v1/operations", async (request, reply) => {
-    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
 
     if (!auth) {
       return;
@@ -362,7 +362,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        operations: operationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user))),
+        operations: operationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind))),
         pagination: {
           limit: query.limit,
           offset: query.offset,
@@ -562,7 +562,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
       return;
     }
 
-    if (auth.user && !canSeeSensitiveIds(auth.user)) {
+    if (auth.user && !canSeeSensitiveIds(auth.user, auth.machineTokenKind)) {
       return deny(reply);
     }
 
@@ -891,7 +891,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        operation: redactOperation(operation, canSeeSensitiveIds(auth.user)),
+        operation: redactOperation(operation, canSeeSensitiveIds(auth.user, auth.machineTokenKind)),
         payloads: payloadResult.rows
       };
     } catch (error) {

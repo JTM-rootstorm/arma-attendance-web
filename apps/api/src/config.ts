@@ -28,6 +28,13 @@ const envSchema = z.object({
     .transform((value) => value === "true")
     .or(z.boolean())
     .default(true),
+  SESSION_SAME_SITE: z.enum(["Lax", "Strict", "None"]).default("Lax"),
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
+  CORS_ALLOW_CREDENTIALS: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(true),
   INITIAL_ADMIN_DISCORD_IDS: z.string().optional(),
   ENABLE_TEST_AUTH: z
     .enum(["true", "false"])
@@ -57,6 +64,10 @@ if (env.NODE_ENV === "production") {
   }
 }
 
+if (env.SESSION_SAME_SITE === "None" && env.SESSION_SECURE !== true) {
+  throw new Error("Invalid application configuration: SESSION_SAME_SITE=None requires SESSION_SECURE=true.");
+}
+
 export const config = {
   nodeEnv: env.NODE_ENV,
   appName: env.APP_NAME,
@@ -76,6 +87,12 @@ export const config = {
   sessionSecret: env.SESSION_SECRET && env.SESSION_SECRET.length > 0 ? env.SESSION_SECRET : undefined,
   sessionTtlHours: env.SESSION_TTL_HOURS,
   sessionSecure: env.SESSION_SECURE,
+  sessionSameSite: env.SESSION_SAME_SITE,
+  corsAllowedOrigins: (env.CORS_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+  corsAllowCredentials: env.CORS_ALLOW_CREDENTIALS,
   initialAdminDiscordIds: (env.INITIAL_ADMIN_DISCORD_IDS ?? "")
     .split(",")
     .map((value) => value.trim())
