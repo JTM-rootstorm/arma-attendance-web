@@ -13,3 +13,5 @@ apps/*/.env.*
 coverage/
 .pnpm-store/
 .vite/
+sql/drizzle/
+apps/api/sql/drizzle/

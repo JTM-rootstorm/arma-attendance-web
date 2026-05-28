@@ -1,12 +1,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { and, eq, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { hasRole, requireAdminOrBotToken } from "../auth.js";
 import { deny, getAuthContext, type AuthContext } from "../auth/authorization.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { evaluateDiscordRoleActions } from "../discord/scoring.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { discordAttendanceRules, discordGuilds, discordRoles, playerDiscordLinks } from "../db/schema/discord.js";
+import { players } from "../db/schema/players.js";
 
 const guildSyncSchema = z.object({
   guild: z
@@ -111,6 +115,39 @@ const auditsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0)
 });
 
+const playerDiscordLinkReturning = {
+  player_uid: playerDiscordLinks.playerUid,
+  discord_user_id: playerDiscordLinks.discordUserId,
+  discord_username: playerDiscordLinks.discordUsername,
+  discord_display_name: playerDiscordLinks.discordDisplayName,
+  source: playerDiscordLinks.source,
+  verified_at: playerDiscordLinks.verifiedAt,
+  raw_link: playerDiscordLinks.rawLink,
+  created_at: playerDiscordLinks.createdAt,
+  updated_at: playerDiscordLinks.updatedAt
+};
+
+const discordAttendanceRuleReturning = {
+  id: discordAttendanceRules.id,
+  guild_id: discordAttendanceRules.guildId,
+  role_id: discordAttendanceRules.roleId,
+  name: discordAttendanceRules.name,
+  description: discordAttendanceRules.description,
+  is_enabled: discordAttendanceRules.isEnabled,
+  min_attendance_points: discordAttendanceRules.minAttendancePoints,
+  min_operation_count: discordAttendanceRules.minOperationCount,
+  min_attendance_percent: discordAttendanceRules.minAttendancePercent,
+  lookback_days: discordAttendanceRules.lookbackDays,
+  server_key: discordAttendanceRules.serverKey,
+  mission_uid_pattern: discordAttendanceRules.missionUidPattern,
+  require_present_at_end: discordAttendanceRules.requirePresentAtEnd,
+  include_started_operations: discordAttendanceRules.includeStartedOperations,
+  grant_mode: discordAttendanceRules.grantMode,
+  created_at: discordAttendanceRules.createdAt,
+  updated_at: discordAttendanceRules.updatedAt,
+  unit_id: discordAttendanceRules.unitId
+};
+
 function sendValidationFailed(reply: FastifyReply) {
   return reply.code(400).send({
     ok: false,
@@ -132,25 +169,22 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 }
 
 async function guildExists(guildId: string): Promise<boolean> {
-  const result = await queryDb<{ exists: boolean }>("SELECT EXISTS (SELECT 1 FROM discord_guilds WHERE guild_id = $1) AS exists", [
-    guildId
-  ]);
-  return result.rows[0]?.exists ?? false;
+  const rows = await getDrizzleDb().select({ guild_id: discordGuilds.guildId }).from(discordGuilds).where(eq(discordGuilds.guildId, guildId)).limit(1);
+  return Boolean(rows[0]);
 }
 
 async function roleExists(guildId: string, roleId: string): Promise<boolean> {
-  const result = await queryDb<{ exists: boolean }>(
-    "SELECT EXISTS (SELECT 1 FROM discord_roles WHERE guild_id = $1 AND role_id = $2 AND is_deleted = false) AS exists",
-    [guildId, roleId]
-  );
-  return result.rows[0]?.exists ?? false;
+  const rows = await getDrizzleDb()
+    .select({ role_id: discordRoles.roleId })
+    .from(discordRoles)
+    .where(and(eq(discordRoles.guildId, guildId), eq(discordRoles.roleId, roleId), eq(discordRoles.isDeleted, false)))
+    .limit(1);
+  return Boolean(rows[0]);
 }
 
 async function playerExists(playerUid: string): Promise<boolean> {
-  const result = await queryDb<{ exists: boolean }>("SELECT EXISTS (SELECT 1 FROM players WHERE player_uid = $1) AS exists", [
-    playerUid
-  ]);
-  return result.rows[0]?.exists ?? false;
+  const rows = await getDrizzleDb().select({ player_uid: players.playerUid }).from(players).where(eq(players.playerUid, playerUid)).limit(1);
+  return Boolean(rows[0]);
 }
 
 async function requireAnyDiscordAdmin(
@@ -193,83 +227,86 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     const { guild, roles } = parsed.data;
 
     try {
-      await queryDb(
-        `
-        INSERT INTO discord_guilds (
-          guild_id, name, icon_url, bot_user_id, bot_present, last_role_sync_at, raw_guild
-        )
-        VALUES ($1, $2, $3, $4, $5, now(), $6::jsonb)
-        ON CONFLICT (guild_id) DO UPDATE
-        SET
-          name = EXCLUDED.name,
-          icon_url = EXCLUDED.icon_url,
-          bot_user_id = EXCLUDED.bot_user_id,
-          bot_present = EXCLUDED.bot_present,
-          last_role_sync_at = now(),
-          raw_guild = EXCLUDED.raw_guild,
-          updated_at = now()
-        `,
-        [
-          guild.guild_id,
-          guild.name,
-          guild.icon_url ?? null,
-          guild.bot_user_id ?? null,
-          guild.bot_present ?? true,
-          JSON.stringify(guild)
-        ]
-      );
+      const db = getDrizzleDb();
+      const deletedCount = await db.transaction(async (tx) => {
+        await tx
+          .insert(discordGuilds)
+          .values({
+            guildId: guild.guild_id,
+            name: guild.name,
+            iconUrl: guild.icon_url ?? null,
+            botUserId: guild.bot_user_id ?? null,
+            botPresent: guild.bot_present ?? true,
+            lastRoleSyncAt: sql`now()`,
+            rawGuild: guild
+          })
+          .onConflictDoUpdate({
+            target: discordGuilds.guildId,
+            set: {
+              name: sql`excluded.name`,
+              iconUrl: sql`excluded.icon_url`,
+              botUserId: sql`excluded.bot_user_id`,
+              botPresent: sql`excluded.bot_present`,
+              lastRoleSyncAt: sql`now()`,
+              rawGuild: sql`excluded.raw_guild`,
+              updatedAt: sql`now()`
+            }
+          });
 
-      for (const role of roles) {
-        await queryDb(
-          `
-          INSERT INTO discord_roles (
-            guild_id, role_id, name, color, position, managed, assignable, is_deleted, last_seen_at, raw_role
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, false, now(), $8::jsonb)
-          ON CONFLICT (guild_id, role_id) DO UPDATE
-          SET
-            name = EXCLUDED.name,
-            color = EXCLUDED.color,
-            position = EXCLUDED.position,
-            managed = EXCLUDED.managed,
-            assignable = EXCLUDED.assignable,
-            is_deleted = false,
-            last_seen_at = now(),
-            raw_role = EXCLUDED.raw_role,
-            updated_at = now()
-          `,
-          [
-            guild.guild_id,
-            role.role_id,
-            role.name,
-            role.color ?? null,
-            role.position ?? null,
-            role.managed ?? false,
-            role.assignable ?? true,
-            JSON.stringify(role)
-          ]
-        );
-      }
+        for (const role of roles) {
+          await tx
+            .insert(discordRoles)
+            .values({
+              guildId: guild.guild_id,
+              roleId: role.role_id,
+              name: role.name,
+              color: role.color ?? null,
+              position: role.position ?? null,
+              managed: role.managed ?? false,
+              assignable: role.assignable ?? true,
+              isDeleted: false,
+              lastSeenAt: sql`now()`,
+              rawRole: role
+            })
+            .onConflictDoUpdate({
+              target: [discordRoles.guildId, discordRoles.roleId],
+              set: {
+                name: sql`excluded.name`,
+                color: sql`excluded.color`,
+                position: sql`excluded.position`,
+                managed: sql`excluded.managed`,
+                assignable: sql`excluded.assignable`,
+                isDeleted: false,
+                lastSeenAt: sql`now()`,
+                rawRole: sql`excluded.raw_role`,
+                updatedAt: sql`now()`
+              }
+            });
+        }
 
-      const roleIds = roles.map((role) => role.role_id);
-      const deletedResult = await queryDb<{ count: number }>(
-        `
-        UPDATE discord_roles
-        SET is_deleted = true, updated_at = now()
-        WHERE guild_id = $1
-          AND NOT (role_id = ANY($2::text[]))
-          AND is_deleted = false
-        RETURNING role_id
-        `,
-        [guild.guild_id, roleIds]
-      );
+        const roleIds = roles.map((role) => role.role_id);
+        const deletedRoles =
+          roleIds.length === 0
+            ? await tx
+                .update(discordRoles)
+                .set({ isDeleted: true, updatedAt: sql`now()` })
+                .where(and(eq(discordRoles.guildId, guild.guild_id), eq(discordRoles.isDeleted, false)))
+                .returning({ role_id: discordRoles.roleId })
+            : await tx
+                .update(discordRoles)
+                .set({ isDeleted: true, updatedAt: sql`now()` })
+                .where(and(eq(discordRoles.guildId, guild.guild_id), eq(discordRoles.isDeleted, false), notInArray(discordRoles.roleId, roleIds)))
+                .returning({ role_id: discordRoles.roleId });
+
+        return deletedRoles.length;
+      });
 
       return {
         ok: true,
         guild_id: guild.guild_id,
         roles_seen: roles.length,
         roles_upserted: roles.length,
-        roles_marked_deleted: deletedResult.rowCount ?? 0
+        roles_marked_deleted: deletedCount
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to sync Discord guild");
@@ -364,15 +401,12 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
 
     try {
-      const result = await queryDb(
-        `
+      const result = await getDrizzleDb().execute(sql`
         SELECT *
         FROM discord_roles
-        WHERE guild_id = $1
+        WHERE guild_id = ${parsedParams.data.guild_id}
         ORDER BY position DESC NULLS LAST, name ASC
-        `,
-        [parsedParams.data.guild_id]
-      );
+      `);
 
       return { ok: true, roles: result.rows };
     } catch (error) {
@@ -393,31 +427,20 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
       return sendValidationFailed(reply);
     }
 
-    const values: unknown[] = [];
-    const where: string[] = [];
-
-    if (parsedQuery.data.q) {
-      values.push(`%${parsedQuery.data.q}%`);
-      where.push(`(p.player_uid ILIKE $${values.length} OR p.last_name ILIKE $${values.length} OR pdl.discord_user_id ILIKE $${values.length} OR pdl.discord_display_name ILIKE $${values.length})`);
-    }
-
-    values.push(parsedQuery.data.limit);
-    const limitParam = values.length;
-    values.push(parsedQuery.data.offset);
-    const offsetParam = values.length;
-
     try {
-      const result = await queryDb(
-        `
+      const search = parsedQuery.data.q?.trim();
+      const result = await getDrizzleDb().execute(sql`
         SELECT pdl.*, p.last_name AS player_name
         FROM player_discord_links pdl
         JOIN players p ON p.player_uid = pdl.player_uid
-        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+        ${
+          search
+            ? sql`WHERE (p.player_uid ILIKE ${`%${search}%`} OR p.last_name ILIKE ${`%${search}%`} OR pdl.discord_user_id ILIKE ${`%${search}%`} OR pdl.discord_display_name ILIKE ${`%${search}%`})`
+            : sql``
+        }
         ORDER BY pdl.updated_at DESC
-        LIMIT $${limitParam} OFFSET $${offsetParam}
-        `,
-        values
-      );
+        LIMIT ${parsedQuery.data.limit} OFFSET ${parsedQuery.data.offset}
+      `);
 
       return { ok: true, links: result.rows };
     } catch (error) {
@@ -445,35 +468,32 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
         return reply.code(404).send({ ok: false, error: { code: "player_not_found", message: "Player was not found." } });
       }
 
-      const result = await queryDb(
-        `
-        INSERT INTO player_discord_links (
-          player_uid, discord_user_id, discord_username, discord_display_name, source, verified_at, raw_link
-        )
-        VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() ELSE NULL END, $7::jsonb)
-        ON CONFLICT (discord_user_id) DO UPDATE
-        SET
-          player_uid = EXCLUDED.player_uid,
-          discord_username = EXCLUDED.discord_username,
-          discord_display_name = EXCLUDED.discord_display_name,
-          source = EXCLUDED.source,
-          verified_at = COALESCE(EXCLUDED.verified_at, player_discord_links.verified_at),
-          raw_link = EXCLUDED.raw_link,
-          updated_at = now()
-        RETURNING *
-        `,
-        [
-          body.player_uid,
-          body.discord_user_id,
-          body.discord_username ?? null,
-          body.discord_display_name ?? null,
-          body.source,
-          body.verified ?? false,
-          JSON.stringify(body.raw_link ?? body)
-        ]
-      );
+      const result = await getDrizzleDb()
+        .insert(playerDiscordLinks)
+        .values({
+          playerUid: body.player_uid,
+          discordUserId: body.discord_user_id,
+          discordUsername: body.discord_username ?? null,
+          discordDisplayName: body.discord_display_name ?? null,
+          source: body.source,
+          verifiedAt: body.verified ? sql`now()` : null,
+          rawLink: body.raw_link ?? body
+        })
+        .onConflictDoUpdate({
+          target: playerDiscordLinks.discordUserId,
+          set: {
+            playerUid: sql`excluded.player_uid`,
+            discordUsername: sql`excluded.discord_username`,
+            discordDisplayName: sql`excluded.discord_display_name`,
+            source: sql`excluded.source`,
+            verifiedAt: sql`COALESCE(excluded.verified_at, ${playerDiscordLinks.verifiedAt})`,
+            rawLink: sql`excluded.raw_link`,
+            updatedAt: sql`now()`
+          }
+        })
+        .returning(playerDiscordLinkReturning);
 
-      return { ok: true, link: result.rows[0] };
+      return { ok: true, link: result[0] };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to upsert Discord player link");
       return sendDatabaseUnavailable(reply);
@@ -494,10 +514,11 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
 
     try {
-      const result = await queryDb("DELETE FROM player_discord_links WHERE discord_user_id = $1", [
-        parsedParams.data.discord_user_id
-      ]);
-      return { ok: true, deleted: result.rowCount ?? 0 };
+      const result = await getDrizzleDb()
+        .delete(playerDiscordLinks)
+        .where(eq(playerDiscordLinks.discordUserId, parsedParams.data.discord_user_id))
+        .returning({ discord_user_id: playerDiscordLinks.discordUserId });
+      return { ok: true, deleted: result.length };
     } catch (error) {
       return sendDatabaseUnavailable(reply);
     }
@@ -517,16 +538,13 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
 
     try {
-      const result = await queryDb(
-        `
+      const result = await getDrizzleDb().execute(sql`
         SELECT dar.*, dr.name AS role_name
         FROM discord_attendance_rules dar
         JOIN discord_roles dr ON dr.guild_id = dar.guild_id AND dr.role_id = dar.role_id
-        WHERE dar.guild_id = $1
+        WHERE dar.guild_id = ${parsedParams.data.guild_id}
         ORDER BY dar.created_at DESC
-        `,
-        [parsedParams.data.guild_id]
-      );
+      `);
       return { ok: true, rules: result.rows };
     } catch (error) {
       return sendDatabaseUnavailable(reply);
@@ -559,35 +577,27 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
         return reply.code(404).send({ ok: false, error: { code: "role_not_found", message: "Discord role was not found." } });
       }
 
-      const result = await queryDb(
-        `
-        INSERT INTO discord_attendance_rules (
-          guild_id, role_id, name, description, is_enabled, min_attendance_points,
-          min_operation_count, min_attendance_percent, lookback_days, server_key,
-          mission_uid_pattern, require_present_at_end, include_started_operations, grant_mode
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-        RETURNING *
-        `,
-        [
+      const result = await getDrizzleDb()
+        .insert(discordAttendanceRules)
+        .values({
           guildId,
-          body.role_id,
-          body.name,
-          body.description ?? null,
-          body.is_enabled,
-          body.min_attendance_points,
-          body.min_operation_count,
-          body.min_attendance_percent ?? null,
-          body.lookback_days ?? null,
-          body.server_key ?? null,
-          body.mission_uid_pattern ?? null,
-          body.require_present_at_end,
-          body.include_started_operations,
-          body.grant_mode
-        ]
-      );
+          roleId: body.role_id,
+          name: body.name,
+          description: body.description ?? null,
+          isEnabled: body.is_enabled,
+          minAttendancePoints: body.min_attendance_points,
+          minOperationCount: body.min_operation_count,
+          minAttendancePercent: body.min_attendance_percent === undefined ? null : String(body.min_attendance_percent),
+          lookbackDays: body.lookback_days ?? null,
+          serverKey: body.server_key ?? null,
+          missionUidPattern: body.mission_uid_pattern ?? null,
+          requirePresentAtEnd: body.require_present_at_end,
+          includeStartedOperations: body.include_started_operations,
+          grantMode: body.grant_mode
+        })
+        .returning(discordAttendanceRuleReturning);
 
-      return { ok: true, rule: result.rows[0] };
+      return { ok: true, rule: result[0] };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create Discord attendance rule");
       return sendDatabaseUnavailable(reply);
@@ -612,8 +622,28 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     const ruleId = parsedParams.data.rule_id;
 
     try {
-      const currentResult = await queryDb("SELECT * FROM discord_attendance_rules WHERE guild_id = $1 AND id = $2", [guildId, ruleId]);
-      const current = currentResult.rows[0] as Record<string, unknown> | undefined;
+      const currentResult = await getDrizzleDb()
+        .select({
+          id: discordAttendanceRules.id,
+          guild_id: discordAttendanceRules.guildId,
+          role_id: discordAttendanceRules.roleId,
+          name: discordAttendanceRules.name,
+          description: discordAttendanceRules.description,
+          is_enabled: discordAttendanceRules.isEnabled,
+          min_attendance_points: discordAttendanceRules.minAttendancePoints,
+          min_operation_count: discordAttendanceRules.minOperationCount,
+          min_attendance_percent: discordAttendanceRules.minAttendancePercent,
+          lookback_days: discordAttendanceRules.lookbackDays,
+          server_key: discordAttendanceRules.serverKey,
+          mission_uid_pattern: discordAttendanceRules.missionUidPattern,
+          require_present_at_end: discordAttendanceRules.requirePresentAtEnd,
+          include_started_operations: discordAttendanceRules.includeStartedOperations,
+          grant_mode: discordAttendanceRules.grantMode
+        })
+        .from(discordAttendanceRules)
+        .where(and(eq(discordAttendanceRules.guildId, guildId), eq(discordAttendanceRules.id, ruleId)))
+        .limit(1);
+      const current = currentResult[0] as Record<string, unknown> | undefined;
 
       if (!current) {
         return reply.code(404).send({ ok: false, error: { code: "rule_not_found", message: "Discord attendance rule was not found." } });
@@ -626,47 +656,28 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
         return reply.code(404).send({ ok: false, error: { code: "role_not_found", message: "Discord role was not found." } });
       }
 
-      const result = await queryDb(
-        `
-        UPDATE discord_attendance_rules
-        SET
-          role_id = $3,
-          name = $4,
-          description = $5,
-          is_enabled = $6,
-          min_attendance_points = $7,
-          min_operation_count = $8,
-          min_attendance_percent = $9,
-          lookback_days = $10,
-          server_key = $11,
-          mission_uid_pattern = $12,
-          require_present_at_end = $13,
-          include_started_operations = $14,
-          grant_mode = $15,
-          updated_at = now()
-        WHERE guild_id = $1 AND id = $2
-        RETURNING *
-        `,
-        [
-          guildId,
-          ruleId,
-          nextRoleId,
-          merged.name,
-          merged.description ?? null,
-          merged.is_enabled,
-          merged.min_attendance_points,
-          merged.min_operation_count,
-          merged.min_attendance_percent ?? null,
-          merged.lookback_days ?? null,
-          merged.server_key ?? null,
-          merged.mission_uid_pattern ?? null,
-          merged.require_present_at_end,
-          merged.include_started_operations,
-          merged.grant_mode
-        ]
-      );
+      const result = await getDrizzleDb()
+        .update(discordAttendanceRules)
+        .set({
+          roleId: nextRoleId,
+          name: String(merged.name),
+          description: merged.description === undefined ? null : String(merged.description),
+          isEnabled: Boolean(merged.is_enabled),
+          minAttendancePoints: Number(merged.min_attendance_points),
+          minOperationCount: Number(merged.min_operation_count),
+          minAttendancePercent: merged.min_attendance_percent === undefined || merged.min_attendance_percent === null ? null : String(merged.min_attendance_percent),
+          lookbackDays: merged.lookback_days === undefined || merged.lookback_days === null ? null : Number(merged.lookback_days),
+          serverKey: merged.server_key === undefined || merged.server_key === null ? null : String(merged.server_key),
+          missionUidPattern: merged.mission_uid_pattern === undefined || merged.mission_uid_pattern === null ? null : String(merged.mission_uid_pattern),
+          requirePresentAtEnd: Boolean(merged.require_present_at_end),
+          includeStartedOperations: Boolean(merged.include_started_operations),
+          grantMode: String(merged.grant_mode),
+          updatedAt: sql`now()`
+        })
+        .where(and(eq(discordAttendanceRules.guildId, guildId), eq(discordAttendanceRules.id, ruleId)))
+        .returning(discordAttendanceRuleReturning);
 
-      return { ok: true, rule: result.rows[0] };
+      return { ok: true, rule: result[0] };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update Discord attendance rule");
       return sendDatabaseUnavailable(reply);
@@ -687,11 +698,11 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
     }
 
     try {
-      const result = await queryDb("DELETE FROM discord_attendance_rules WHERE guild_id = $1 AND id = $2", [
-        parsedParams.data.guild_id,
-        parsedParams.data.rule_id
-      ]);
-      return { ok: true, deleted: result.rowCount ?? 0 };
+      const result = await getDrizzleDb()
+        .delete(discordAttendanceRules)
+        .where(and(eq(discordAttendanceRules.guildId, parsedParams.data.guild_id), eq(discordAttendanceRules.id, parsedParams.data.rule_id)))
+        .returning({ id: discordAttendanceRules.id });
+      return { ok: true, deleted: result.length };
     } catch (error) {
       return sendDatabaseUnavailable(reply);
     }

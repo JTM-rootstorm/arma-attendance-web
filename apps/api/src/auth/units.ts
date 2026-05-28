@@ -1,7 +1,9 @@
 import type { FastifyReply } from "fastify";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { hasRole, type CurrentUser } from "../auth.js";
-import { queryDb } from "../db/pool.js";
+import { getDrizzleDb } from "../db/drizzle.js";
+import { unitMemberships, units, unitUserRoles } from "../db/schema/units.js";
 
 export const unitRoles = ["member", "officer", "admin", "tcw_admin"] as const;
 export type UnitRole = (typeof unitRoles)[number];
@@ -35,44 +37,64 @@ function forbidden(reply: FastifyReply) {
 }
 
 export async function getDefaultUnitId(): Promise<string | null> {
-  const result = await queryDb<UnitRow>("SELECT id FROM units WHERE unit_key = 'tcw' AND is_active = true LIMIT 1");
-  return result.rows[0]?.id ?? null;
+  const db = getDrizzleDb();
+  const rows = await db
+    .select({ id: units.id })
+    .from(units)
+    .where(and(eq(units.unitKey, "tcw"), eq(units.isActive, true)))
+    .limit(1);
+  return rows[0]?.id ?? null;
 }
 
 export async function getAllUnitIds(): Promise<string[]> {
-  const result = await queryDb<UnitRow>("SELECT id FROM units WHERE is_active = true ORDER BY unit_key");
-  return result.rows.map((row) => row.id);
+  const db = getDrizzleDb();
+  const rows = await db.select({ id: units.id }).from(units).where(eq(units.isActive, true)).orderBy(units.unitKey);
+  return rows.map((row: UnitRow) => row.id);
 }
 
 export async function getUserUnitRoles(userId: string): Promise<UserUnitRole[]> {
-  const result = await queryDb<UserUnitRole>(
-    `
-    WITH roles AS (
-      SELECT unit_id, user_id, role
-      FROM unit_memberships
-      WHERE role IN ('member', 'officer', 'admin')
+  const db = getDrizzleDb();
+  const membershipRows = await db
+    .select({
+      unit_id: unitMemberships.unitId,
+      unit_key: units.unitKey,
+      name: units.name,
+      role: unitMemberships.role
+    })
+    .from(unitMemberships)
+    .innerJoin(units, eq(units.id, unitMemberships.unitId))
+    .where(and(eq(unitMemberships.userId, userId), inArray(unitMemberships.role, ["member", "officer", "admin"]), eq(units.isActive, true)));
 
-      UNION
+  const roleRows = await db
+    .select({
+      unit_id: unitUserRoles.unitId,
+      unit_key: units.unitKey,
+      name: units.name,
+      role: unitUserRoles.role
+    })
+    .from(unitUserRoles)
+    .innerJoin(units, eq(units.id, unitUserRoles.unitId))
+    .where(and(eq(unitUserRoles.userId, userId), inArray(unitUserRoles.role, ["officer", "admin", "tcw_admin"]), eq(units.isActive, true)));
 
-      SELECT unit_id, user_id, role
-      FROM unit_user_roles
-      WHERE role IN ('officer', 'admin', 'tcw_admin')
-    )
-    SELECT
-      roles.unit_id,
-      u.unit_key,
-      u.name,
-      roles.role
-    FROM roles
-    JOIN units u ON u.id = roles.unit_id
-    WHERE roles.user_id = $1
-      AND u.is_active = true
-    ORDER BY u.unit_key, roles.role
-    `,
-    [userId]
-  );
+  const byUnitAndRole = new Map<string, UserUnitRole>();
 
-  return result.rows;
+  for (const row of [...membershipRows, ...roleRows]) {
+    if (!unitRoles.includes(row.role as UnitRole)) {
+      continue;
+    }
+
+    byUnitAndRole.set(`${row.unit_id}:${row.role}`, {
+      unit_id: row.unit_id,
+      unit_key: row.unit_key,
+      name: row.name,
+      role: row.role as UnitRole
+    });
+  }
+
+  return Array.from(byUnitAndRole.values()).sort((left, right) => {
+    const unitKeyOrder = left.unit_key.localeCompare(right.unit_key);
+    return unitKeyOrder === 0 ? left.role.localeCompare(right.role) : unitKeyOrder;
+  });
 }
 
 export async function getVisibleUnitIds(user: CurrentUser): Promise<string[]> {

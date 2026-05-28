@@ -1,9 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 
 import { config } from "./config.js";
-import { queryDb } from "./db/pool.js";
+import { getDrizzleDb } from "./db/drizzle.js";
+import { appUsers, userIdentities, userRoles, userSessions } from "./db/schema/auth.js";
+import { machineTokens } from "./db/schema/machineTokens.js";
 
 export const appRoles = ["viewer", "officer", "admin", "tcw_admin", "owner"] as const;
 export type AppRole = (typeof appRoles)[number];
@@ -31,20 +34,6 @@ type SessionUserRow = {
   display_name: string | null;
   avatar_url: string | null;
   disabled_at: Date | null;
-  roles: AppRole[] | null;
-  identities:
-    | Array<{
-        provider: IdentityProvider;
-        provider_user_id: string;
-        display_name: string | null;
-        avatar_url: string | null;
-      }>
-    | null;
-};
-
-type SessionInsertRow = {
-  id: string;
-  expires_at: Date;
 };
 
 function unauthorized(reply: FastifyReply) {
@@ -165,21 +154,21 @@ export async function createUserSession(
 ): Promise<{ token: string; session_id: string; expires_at: Date }> {
   const token = generateSessionToken();
   const tokenHash = hashSessionToken(token);
-  const result = await queryDb<SessionInsertRow>(
-    `
-    INSERT INTO user_sessions (
-      user_id,
-      session_token_hash,
-      expires_at,
-      user_agent,
-      ip_address
-    )
-    VALUES ($1, $2, now() + ($3::int * interval '1 hour'), $4, $5)
-    RETURNING id, expires_at
-    `,
-    [userId, tokenHash, config.sessionTtlHours, request.headers["user-agent"] ?? null, request.ip]
-  );
-  const row = result.rows[0];
+  const expiresAt = new Date(Date.now() + config.sessionTtlHours * 60 * 60 * 1000);
+  const db = getDrizzleDb();
+  const [row] = await db
+    .insert(userSessions)
+    .values({
+      userId,
+      sessionTokenHash: tokenHash,
+      expiresAt,
+      userAgent: request.headers["user-agent"] ?? null,
+      ipAddress: request.ip
+    })
+    .returning({
+      id: userSessions.id,
+      expires_at: userSessions.expiresAt
+    });
 
   if (!row) {
     throw new Error("Session insert returned no row.");
@@ -199,9 +188,11 @@ export async function revokeCurrentSession(request: FastifyRequest): Promise<voi
     return;
   }
 
-  await queryDb("UPDATE user_sessions SET revoked_at = now() WHERE session_token_hash = $1 AND revoked_at IS NULL", [
-    hashSessionToken(token)
-  ]);
+  const db = getDrizzleDb();
+  await db
+    .update(userSessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(userSessions.sessionTokenHash, hashSessionToken(token)), isNull(userSessions.revokedAt)));
 }
 
 export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {
@@ -211,53 +202,61 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
     return null;
   }
 
-  const result = await queryDb<SessionUserRow>(
-    `
-    SELECT
-      us.id AS session_id,
-      au.id AS user_id,
-      au.display_name,
-      au.avatar_url,
-      au.disabled_at,
-      COALESCE(
-        array_agg(DISTINCT ur.role) FILTER (WHERE ur.role IS NOT NULL),
-        ARRAY[]::text[]
-      ) AS roles,
-      COALESCE(
-        jsonb_agg(DISTINCT jsonb_build_object(
-          'provider', ui.provider,
-          'provider_user_id', ui.provider_user_id,
-          'display_name', ui.display_name,
-          'avatar_url', ui.avatar_url
-        )) FILTER (WHERE ui.id IS NOT NULL),
-        '[]'::jsonb
-      ) AS identities
-    FROM user_sessions us
-    JOIN app_users au ON au.id = us.user_id
-    LEFT JOIN user_roles ur ON ur.user_id = au.id
-    LEFT JOIN user_identities ui ON ui.user_id = au.id
-    WHERE us.session_token_hash = $1
-      AND us.revoked_at IS NULL
-      AND us.expires_at > now()
-    GROUP BY us.id, au.id
-    `,
-    [hashSessionToken(token)]
-  );
-  const row = result.rows[0];
+  const db = getDrizzleDb();
+  const [row] = await db
+    .select({
+      session_id: userSessions.id,
+      user_id: appUsers.id,
+      display_name: appUsers.displayName,
+      avatar_url: appUsers.avatarUrl,
+      disabled_at: appUsers.disabledAt
+    })
+    .from(userSessions)
+    .innerJoin(appUsers, eq(appUsers.id, userSessions.userId))
+    .where(
+      and(
+        eq(userSessions.sessionTokenHash, hashSessionToken(token)),
+        isNull(userSessions.revokedAt),
+        gt(userSessions.expiresAt, sql<Date>`now()`)
+      )
+    )
+    .limit(1);
 
   if (!row || row.disabled_at) {
     return null;
   }
 
-  await queryDb("UPDATE user_sessions SET last_seen_at = now() WHERE id = $1", [row.session_id]);
+  const [roleRows, identityRows] = await Promise.all([
+    db.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.userId, row.user_id)),
+    db
+      .select({
+        provider: userIdentities.provider,
+        provider_user_id: userIdentities.providerUserId,
+        display_name: userIdentities.displayName,
+        avatar_url: userIdentities.avatarUrl
+      })
+      .from(userIdentities)
+      .where(eq(userIdentities.userId, row.user_id))
+  ]);
+
+  await db.update(userSessions).set({ lastSeenAt: sql`now()` }).where(eq(userSessions.id, row.session_id));
 
   return {
     id: row.user_id,
     display_name: row.display_name,
     avatar_url: row.avatar_url,
     disabled_at: row.disabled_at,
-    roles: (row.roles ?? []) as AppRole[],
-    identities: row.identities ?? [],
+    roles: Array.from(new Set(roleRows.map((roleRow) => roleRow.role).filter((role): role is AppRole => appRoles.includes(role as AppRole)))),
+    identities: identityRows
+      .filter((identity): identity is typeof identity & { provider: IdentityProvider } =>
+        identity.provider === "discord" || identity.provider === "steam"
+      )
+      .map((identity) => ({
+        provider: identity.provider,
+        provider_user_id: identity.provider_user_id,
+        display_name: identity.display_name,
+        avatar_url: identity.avatar_url
+      })),
     session_id: row.session_id
   };
 }
@@ -273,19 +272,20 @@ async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineT
   let row: { id: string; token_kind: MachineTokenKind } | undefined;
 
   try {
-    const result = await queryDb<{ id: string; token_kind: MachineTokenKind }>(
-      `
-      SELECT id, token_kind
-      FROM machine_tokens
-      WHERE token_hash = $1
-        AND token_kind = ANY($2::text[])
-        AND is_active = true
-        AND revoked_at IS NULL
-      LIMIT 1
-      `,
-      [tokenHash, kinds]
-    );
-    row = result.rows[0];
+    const db = getDrizzleDb();
+    const rows = await db
+      .select({ id: machineTokens.id, token_kind: machineTokens.tokenKind })
+      .from(machineTokens)
+      .where(
+        and(
+          eq(machineTokens.tokenHash, tokenHash),
+          inArray(machineTokens.tokenKind, kinds),
+          eq(machineTokens.isActive, true),
+          isNull(machineTokens.revokedAt)
+        )
+      )
+      .limit(1);
+    row = rows[0] as { id: string; token_kind: MachineTokenKind } | undefined;
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "42P01") {
       return null;
@@ -298,7 +298,7 @@ async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineT
     return null;
   }
 
-  await queryDb("UPDATE machine_tokens SET last_used_at = now() WHERE id = $1", [row.id]);
+  await getDrizzleDb().update(machineTokens).set({ lastUsedAt: sql`now()` }).where(eq(machineTokens.id, row.id));
   return row.token_kind;
 }
 
