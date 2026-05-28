@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - web-frontend
+      - main
+  push:
+    branches:
+      - drizzle-migration
+      - web-frontend
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      APP_NAME: arma-attendance
+      APP_VERSION: 0.1.0
+      HOST: 127.0.0.1
+      PORT: 3000
+      PUBLIC_BASE_URL: http://127.0.0.1:3000
+      API_TOKEN: dev-token
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://arma_attendance:arma_attendance@127.0.0.1:5432/arma_attendance
+      SESSION_SECRET: ci-session-secret-at-least-32-characters
+      COOKIE_SECRET: ci-cookie-secret-at-least-32-characters
+      SESSION_SECURE: "false"
+      CSRF_ENABLED: "true"
+      ENABLE_TEST_AUTH: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.0.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Drizzle schema check
+        run: pnpm drizzle:check
+
+      - name: Drizzle boundary check
+        run: pnpm drizzle:boundary
+
+      - name: Build
+        run: pnpm build
+
+  db-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: arma_attendance
+          POSTGRES_PASSWORD: arma_attendance
+          POSTGRES_DB: arma_attendance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      APP_NAME: arma-attendance
+      APP_VERSION: 0.1.0
+      HOST: 127.0.0.1
+      PORT: 3000
+      PUBLIC_BASE_URL: http://127.0.0.1:3000
+      BASE_URL: http://127.0.0.1:3000
+      DATABASE_URL: postgres://arma_attendance:arma_attendance@127.0.0.1:5432/arma_attendance
+      API_TOKEN: dev-token
+      BOT_API_TOKEN: bot-dev-token
+      LOG_LEVEL: info
+      SESSION_SECRET: ci-session-secret-at-least-32-characters
+      COOKIE_SECRET: ci-cookie-secret-at-least-32-characters
+      SESSION_SECURE: "false"
+      CSRF_ENABLED: "true"
+      ENABLE_TEST_AUTH: "true"
+      DISCORD_CLIENT_ID: local-discord-client
+      DISCORD_CLIENT_SECRET: local-discord-secret
+      DISCORD_REDIRECT_URI: http://127.0.0.1:3000/auth/discord/callback
+      STEAM_RETURN_URL: http://127.0.0.1:3000/auth/steam/callback
+      STEAM_REALM: http://127.0.0.1:3000/
+      CORS_ALLOWED_ORIGINS: https://tcwa3-galaxy-map.base44.app
+      OAUTH_ALLOWED_RETURN_ORIGINS: https://tcwa3-galaxy-map.base44.app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.0.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations
+        run: pnpm db:migrate
+
+      - name: Build
+        run: pnpm build
+
+      - name: Start built API
+        run: |
+          node apps/api/dist/index.js > /tmp/arma-attendance-api.log 2>&1 &
+          echo $! > /tmp/arma-attendance-api.pid
+
+      - name: Wait for API
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat /tmp/arma-attendance-api.log
+          exit 1
+
+      - name: Release check with DB smoke
+        run: RUN_DB_SMOKE=1 pnpm release:check
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [[ -f /tmp/arma-attendance-api.pid ]]; then
+            kill "$(cat /tmp/arma-attendance-api.pid)" || true
+          fi
+          if [[ -f /tmp/arma-attendance-api.log ]]; then
+            cat /tmp/arma-attendance-api.log
+          fi

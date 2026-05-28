@@ -1,6 +1,7 @@
 import { boolean, integer, pgTable, primaryKey, text, timestamp, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 import { appUsers } from "./auth.js";
+import { operations } from "./operations.js";
 import { players } from "./players.js";
 
 export const units = pgTable("units", {
@@ -72,7 +73,9 @@ export const unitServerKeys = pgTable(
 export const operationUnits = pgTable(
   "operation_units",
   {
-    operationId: uuid("operation_id").notNull(),
+    operationId: uuid("operation_id")
+      .notNull()
+      .references(() => operations.id, { onDelete: "cascade" }),
     unitId: uuid("unit_id")
       .notNull()
       .references(() => units.id, { onDelete: "cascade" }),

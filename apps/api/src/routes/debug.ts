@@ -1,9 +1,11 @@
 import type { FastifyInstance } from "fastify";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { requireBearerToken } from "../auth.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
-import { queryDb } from "../db/pool.js";
+import { debugPokes } from "../db/schema/operations.js";
 
 const pokeBodySchema = z
   .object({
@@ -30,41 +32,32 @@ export async function registerDebugRoutes(app: FastifyInstance) {
     const payload = parsed.data;
 
     try {
-      const result = await queryDb<{
-        id: string;
-        created_at: Date;
-      }>(
-        `
-        INSERT INTO debug_pokes (
-          request_id,
-          server_key,
-          message,
-          source_ip,
-          user_agent,
+      const db = getDrizzleDb();
+      const [saved] = await db
+        .insert(debugPokes)
+        .values({
+          requestId: payload.request_id ?? null,
+          serverKey: payload.server_key ?? null,
+          message: payload.message ?? null,
+          sourceIp: request.ip,
+          userAgent: request.headers["user-agent"] ?? null,
           payload
-        )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-        ON CONFLICT (request_id)
-        DO UPDATE SET
-          server_key = EXCLUDED.server_key,
-          message = EXCLUDED.message,
-          source_ip = EXCLUDED.source_ip,
-          user_agent = EXCLUDED.user_agent,
-          payload = EXCLUDED.payload,
-          updated_at = now()
-        RETURNING id, created_at
-        `,
-        [
-          payload.request_id ?? null,
-          payload.server_key ?? null,
-          payload.message ?? null,
-          request.ip,
-          request.headers["user-agent"] ?? null,
-          JSON.stringify(payload)
-        ]
-      );
-
-      const saved = result.rows[0];
+        })
+        .onConflictDoUpdate({
+          target: debugPokes.requestId,
+          set: {
+            serverKey: sql`excluded.server_key`,
+            message: sql`excluded.message`,
+            sourceIp: sql`excluded.source_ip`,
+            userAgent: sql`excluded.user_agent`,
+            payload: sql`excluded.payload`,
+            updatedAt: sql`now()`
+          }
+        })
+        .returning({
+          id: debugPokes.id,
+          created_at: debugPokes.createdAt
+        });
 
       if (!saved) {
         throw new Error("Debug poke insert returned no rows.");

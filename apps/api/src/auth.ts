@@ -5,7 +5,6 @@ import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 
 import { config } from "./config.js";
 import { getDrizzleDb } from "./db/drizzle.js";
-import { queryDb } from "./db/pool.js";
 import { appUsers, userIdentities, userRoles, userSessions } from "./db/schema/auth.js";
 import { machineTokens } from "./db/schema/machineTokens.js";
 
@@ -35,11 +34,6 @@ type SessionUserRow = {
   display_name: string | null;
   avatar_url: string | null;
   disabled_at: Date | null;
-};
-
-type SessionInsertRow = {
-  id: string;
-  expires_at: Date;
 };
 
 function unauthorized(reply: FastifyReply) {
@@ -160,21 +154,21 @@ export async function createUserSession(
 ): Promise<{ token: string; session_id: string; expires_at: Date }> {
   const token = generateSessionToken();
   const tokenHash = hashSessionToken(token);
-  const result = await queryDb<SessionInsertRow>(
-    `
-    INSERT INTO user_sessions (
-      user_id,
-      session_token_hash,
-      expires_at,
-      user_agent,
-      ip_address
-    )
-    VALUES ($1, $2, now() + ($3::int * interval '1 hour'), $4, $5)
-    RETURNING id, expires_at
-    `,
-    [userId, tokenHash, config.sessionTtlHours, request.headers["user-agent"] ?? null, request.ip]
-  );
-  const row = result.rows[0];
+  const expiresAt = new Date(Date.now() + config.sessionTtlHours * 60 * 60 * 1000);
+  const db = getDrizzleDb();
+  const [row] = await db
+    .insert(userSessions)
+    .values({
+      userId,
+      sessionTokenHash: tokenHash,
+      expiresAt,
+      userAgent: request.headers["user-agent"] ?? null,
+      ipAddress: request.ip
+    })
+    .returning({
+      id: userSessions.id,
+      expires_at: userSessions.expiresAt
+    });
 
   if (!row) {
     throw new Error("Session insert returned no row.");
@@ -194,9 +188,11 @@ export async function revokeCurrentSession(request: FastifyRequest): Promise<voi
     return;
   }
 
-  await queryDb("UPDATE user_sessions SET revoked_at = now() WHERE session_token_hash = $1 AND revoked_at IS NULL", [
-    hashSessionToken(token)
-  ]);
+  const db = getDrizzleDb();
+  await db
+    .update(userSessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(userSessions.sessionTokenHash, hashSessionToken(token)), isNull(userSessions.revokedAt)));
 }
 
 export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {

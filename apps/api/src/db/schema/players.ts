@@ -1,5 +1,7 @@
 import { boolean, integer, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
+import { operations } from "./operations.js";
+
 export const players = pgTable("players", {
   playerUid: text("player_uid").primaryKey(),
   lastName: text("last_name"),
@@ -13,7 +15,9 @@ export const players = pgTable("players", {
 export const operationPlayers = pgTable(
   "operation_players",
   {
-    operationId: uuid("operation_id").notNull(),
+    operationId: uuid("operation_id")
+      .notNull()
+      .references(() => operations.id, { onDelete: "cascade" }),
     playerUid: text("player_uid")
       .notNull()
       .references(() => players.playerUid, { onDelete: "cascade" }),
@@ -42,8 +46,12 @@ export const operationPlayers = pgTable(
 export const operationPlayerStats = pgTable(
   "operation_player_stats",
   {
-    operationId: uuid("operation_id").notNull(),
-    playerUid: text("player_uid").notNull(),
+    operationId: uuid("operation_id")
+      .notNull()
+      .references(() => operations.id, { onDelete: "cascade" }),
+    playerUid: text("player_uid")
+      .notNull()
+      .references(() => players.playerUid, { onDelete: "cascade" }),
     infantryKills: integer("infantry_kills").notNull().default(0),
     vehicleKills: integer("vehicle_kills").notNull().default(0),
     playerKills: integer("player_kills").notNull().default(0),

@@ -630,6 +630,8 @@ Migration files should be forward-only and idempotent enough to reconcile older 
 
 The API uses Drizzle as an optional typed query layer for selected routes. SQL migrations in `sql/migrations/` remain authoritative, and `pnpm db:migrate` is the only supported migration command for deployed databases.
 
+For Drizzle usage boundaries and completion checks, see `docs/database/DRIZZLE.md`.
+
 Current policy:
 
 - Drizzle schema files mirror existing PostgreSQL tables.

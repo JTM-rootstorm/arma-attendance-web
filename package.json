@@ -18,6 +18,7 @@
     "db:migrate": "bash scripts/db-migrate.sh",
     "db:status": "bash scripts/db-status.sh",
     "drizzle:check": "pnpm --filter @arma-attendance/api exec drizzle-kit check --config ../../drizzle.config.ts",
+    "drizzle:boundary": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/drizzle-boundary-check.ts",
     "db:backfill:attendance": "pnpm --filter @arma-attendance/api exec tsx src/scripts/backfillAttendance.ts",
     "db:backfill:scoreboard": "pnpm --filter @arma-attendance/api exec tsx src/scripts/backfillScoreboardStats.ts",
     "db:backfill:units": "pnpm --filter @arma-attendance/api exec tsx src/scripts/backfillUnits.ts",
