@@ -18,6 +18,29 @@ const envSchema = z.object({
   DISCORD_CLIENT_ID: z.string().optional(),
   DISCORD_CLIENT_SECRET: z.string().optional(),
   DISCORD_REDIRECT_URI: z.string().url().optional(),
+  DISCORD_AUTH_ENABLED: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(true),
+  DISCORD_AUTH_REQUIRE_GUILD: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(false),
+  DISCORD_AUTH_CONFIG_PATH: z.string().optional(),
+  DISCORD_AUTH_DEFAULT_FALLBACK_GUILD_IDS: z.string().default("1478100812818550845"),
+  DISCORD_AUTH_RECONCILE_ON_LOGIN: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(true),
+  DISCORD_AUTH_RECONCILE_STALE_AFTER_MINUTES: z.coerce.number().int().min(1).max(60 * 24 * 30).default(240),
+  DISCORD_AUTH_ALLOW_OAUTH_REFRESH_STORAGE: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(false),
   STEAM_RETURN_URL: z.string().url().optional(),
   STEAM_REALM: z.string().url().optional(),
   SESSION_COOKIE_NAME: z.string().min(1).default("arma_attendance_session"),
@@ -93,6 +116,16 @@ export const config = {
   discordClientSecret:
     env.DISCORD_CLIENT_SECRET && env.DISCORD_CLIENT_SECRET.length > 0 ? env.DISCORD_CLIENT_SECRET : undefined,
   discordRedirectUri: env.DISCORD_REDIRECT_URI,
+  discordAuthEnabled: env.DISCORD_AUTH_ENABLED,
+  discordAuthRequireGuild: env.DISCORD_AUTH_REQUIRE_GUILD,
+  discordAuthConfigPath:
+    env.DISCORD_AUTH_CONFIG_PATH && env.DISCORD_AUTH_CONFIG_PATH.length > 0 ? env.DISCORD_AUTH_CONFIG_PATH : undefined,
+  discordAuthDefaultFallbackGuildIds: env.DISCORD_AUTH_DEFAULT_FALLBACK_GUILD_IDS.split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+  discordAuthReconcileOnLogin: env.DISCORD_AUTH_RECONCILE_ON_LOGIN,
+  discordAuthReconcileStaleAfterMinutes: env.DISCORD_AUTH_RECONCILE_STALE_AFTER_MINUTES,
+  discordAuthAllowOAuthRefreshStorage: env.DISCORD_AUTH_ALLOW_OAUTH_REFRESH_STORAGE,
   steamReturnUrl: env.STEAM_RETURN_URL,
   steamRealm: env.STEAM_REALM,
   sessionCookieName: env.SESSION_COOKIE_NAME,

@@ -120,7 +120,11 @@ export const unitPlayers = pgTable(
     joinedUnitAt: timestamp("joined_unit_at", { withTimezone: true }),
     leftUnitAt: timestamp("left_unit_at", { withTimezone: true }),
     assignmentSource: text("assignment_source").notNull().default("manual"),
-    rankId: uuid("rank_id").references(() => unitRanks.id, { onDelete: "set null" })
+    rankId: uuid("rank_id").references(() => unitRanks.id, { onDelete: "set null" }),
+    assignmentLocked: boolean("assignment_locked").notNull().default(false),
+    assignmentPriority: integer("assignment_priority").notNull().default(0),
+    sourceGuildId: text("source_guild_id"),
+    sourceRoleId: text("source_role_id")
   },
   (table) => [primaryKey({ columns: [table.unitId, table.playerUid] })]
 );

@@ -150,9 +150,17 @@ GET  /v1/system/machine-tokens
 POST /v1/system/machine-tokens
 DELETE /v1/system/machine-tokens/:token_id
 POST /v1/discord/guilds/sync
+GET  /v1/discord/auth-policy
 GET  /v1/discord/guilds
 GET  /v1/discord/guilds/:guild_id
+PUT  /v1/discord/guilds/:guild_id/auth-policy
 GET  /v1/discord/guilds/:guild_id/roles
+GET  /v1/discord/guilds/:guild_id/member-snapshots
+POST /v1/discord/guilds/:guild_id/member-snapshots
+GET  /v1/discord/guilds/:guild_id/role-mappings
+POST /v1/discord/guilds/:guild_id/role-mappings
+PATCH /v1/discord/guilds/:guild_id/role-mappings/:mapping_id
+DELETE /v1/discord/guilds/:guild_id/role-mappings/:mapping_id
 GET  /v1/discord/player-links
 POST /v1/discord/player-links
 DELETE /v1/discord/player-links/:discord_user_id
@@ -163,6 +171,8 @@ DELETE /v1/discord/guilds/:guild_id/rules/:rule_id
 GET  /v1/discord/guilds/:guild_id/role-actions
 POST /v1/discord/guilds/:guild_id/role-action-results
 GET  /v1/discord/guilds/:guild_id/role-action-audits
+POST /v1/discord/reconcile
+GET  /v1/discord/assignment-audits
 ```
 
 `GET /health` is unauthenticated and returns the service name, version, and current time.
@@ -527,9 +537,13 @@ pnpm smoke:rbac
 
 Discord readiness provides the database schema, authenticated API contracts, deterministic role evaluation, and the COMMS admin tab needed before a separate bot is built. The app does not store a Discord bot token and does not run a Discord client process.
 
+Discord auth can be restricted to one or more configured guilds with `DISCORD_AUTH_ENABLED=true` and `DISCORD_AUTH_REQUIRE_GUILD=true`. The OAuth flow requests `identify guilds.members.read`, stores per-guild member-role snapshots at login, and can reconcile unit/rank assignments from role mappings. Partner guild mappings should use higher unit/rank priorities than fallback guilds; explicit app-role mappings are required for global permissions. A sample policy lives at `config/discord-guild-auth.example.json`.
+
 Bot-facing endpoints accept the normal `API_TOKEN`. If `BOT_API_TOKEN` is set, those same endpoints also accept that token:
 
 - `POST /v1/discord/guilds/sync`
+- `POST /v1/discord/guilds/:guild_id/member-snapshots`
+- `POST /v1/discord/reconcile`
 - `GET /v1/discord/guilds/:guild_id/role-actions`
 - `POST /v1/discord/guilds/:guild_id/role-action-results`
 
@@ -541,6 +555,7 @@ Synthetic Discord validation:
 
 ```bash
 pnpm smoke:discord
+pnpm smoke:discord-auth-policy
 ```
 
 `pnpm smoke:discord` requires the API to be running against a migrated PostgreSQL database. It creates synthetic attendance, syncs a fake guild and role, links a player, creates a rule, dry-runs role actions, persists an audit, reports a bot result, and fetches the audit trail.

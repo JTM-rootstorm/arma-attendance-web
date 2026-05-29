@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "defaultFallbackGuildIds": ["1478100812818550845"],
+  "guilds": [
+    {
+      "guildId": "1478100812818550845",
+      "label": "TCWA3 Main",
+      "type": "fallback",
+      "grantsLogin": true,
+      "syncMembers": true,
+      "fallback": true,
+      "unitPriority": 10,
+      "rankPriority": 10,
+      "permissionPriority": 50,
+      "configOrder": 1000
+    },
+    {
+      "guildId": "REPLACE_WITH_PARTNER_GUILD_ID",
+      "label": "Partner Unit Example",
+      "type": "partner",
+      "grantsLogin": true,
+      "syncMembers": true,
+      "fallback": false,
+      "unitPriority": 100,
+      "rankPriority": 100,
+      "permissionPriority": 20,
+      "configOrder": 100
+    }
+  ],
+  "tieBreakers": ["guildPriority", "mappingPriority", "rolePosition", "configOrder"],
+  "denyRoleBehavior": "deny_login_overrides_all",
+  "permissions": {
+    "partnerGuildsMayGrantGlobalAdmin": false
+  }
+}

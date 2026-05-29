@@ -5,11 +5,23 @@ import { z } from "zod";
 import { hasRole, requireAdminOrBotToken } from "../auth.js";
 import { deny, getAuthContext, type AuthContext } from "../auth/authorization.js";
 import { getUserUnitRoles } from "../auth/units.js";
+import { getDiscordAuthPolicy } from "../config/discordAuth.js";
+import {
+  reconcileDiscordMembership,
+  syncDiscordAuthPolicyToDb,
+  upsertDiscordMemberSnapshot
+} from "../discord/membershipResolver.js";
 import { evaluateDiscordRoleActions } from "../discord/scoring.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
-import { discordAttendanceRules, discordGuilds, discordRoles, playerDiscordLinks } from "../db/schema/discord.js";
+import {
+  discordAttendanceRules,
+  discordGuilds,
+  discordRoleMappings,
+  discordRoles,
+  playerDiscordLinks
+} from "../db/schema/discord.js";
 import { players } from "../db/schema/players.js";
 
 const guildSyncSchema = z.object({
@@ -42,6 +54,10 @@ const guildParamsSchema = z.object({
 
 const ruleParamsSchema = guildParamsSchema.extend({
   rule_id: z.string().uuid()
+});
+
+const roleMappingParamsSchema = guildParamsSchema.extend({
+  mapping_id: z.string().uuid()
 });
 
 const linkParamsSchema = z.object({
@@ -81,6 +97,70 @@ const ruleBodySchema = z.object({
 });
 
 const rulePatchSchema = ruleBodySchema.partial();
+
+const guildAuthPolicyBodySchema = z.object({
+  guild_type: z.enum(["fallback", "partner", "internal", "unknown"]).default("unknown"),
+  grants_login: z.boolean().default(false),
+  sync_members: z.boolean().default(false),
+  is_fallback: z.boolean().default(false),
+  unit_priority: z.number().int().default(0),
+  rank_priority: z.number().int().default(0),
+  permission_priority: z.number().int().default(0),
+  config_order: z.number().int().default(1000)
+});
+
+const roleMappingBodySchema = z.object({
+  role_id: z.string().min(1).max(64),
+  mapping_type: z.enum(["unit_primary", "unit_secondary", "rank", "unit_role", "app_role", "roster_status", "deny_login"]),
+  unit_id: z.string().uuid().nullable().optional(),
+  rank_id: z.string().uuid().nullable().optional(),
+  unit_role: z.enum(["member", "officer", "admin", "tcw_admin"]).nullable().optional(),
+  app_role: z.enum(["viewer", "officer", "admin", "tcw_admin", "owner"]).nullable().optional(),
+  roster_status: z.enum(["active", "reserve", "loa", "inactive"]).nullable().optional(),
+  priority: z.number().int().default(0),
+  is_enabled: z.boolean().default(true),
+  notes: z.string().max(1000).nullable().optional()
+});
+
+const roleMappingPatchSchema = roleMappingBodySchema.partial();
+
+const memberSnapshotBodySchema = z.object({
+  members: z.array(
+    z.object({
+      discord_user_id: z.string().min(1).max(64),
+      roles: z.array(z.string().min(1).max(64)).default([]),
+      nick: z.string().max(200).nullable().optional(),
+      joined_at: z.string().datetime().nullable().optional(),
+      raw_member: z.record(z.string(), z.unknown()).optional()
+    })
+  ),
+  reconcile: z.boolean().default(false)
+});
+
+const memberSnapshotQuerySchema = z.object({
+  discord_user_id: z.string().min(1).max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  offset: z.coerce.number().int().min(0).default(0)
+});
+
+const reconcileBodySchema = z
+  .object({
+    discord_user_id: z.string().min(1).max(64).optional(),
+    user_id: z.string().uuid().optional(),
+    guild_id: z.string().min(1).max(64).optional(),
+    dry_run: z.boolean().default(true)
+  })
+  .refine((body) => body.discord_user_id || body.user_id, {
+    message: "discord_user_id or user_id is required."
+  });
+
+const assignmentAuditsQuerySchema = z.object({
+  user_id: z.string().uuid().optional(),
+  player_uid: z.string().max(200).optional(),
+  discord_user_id: z.string().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0)
+});
 
 const queryBooleanSchema = z
   .enum(["true", "false"])
@@ -146,6 +226,23 @@ const discordAttendanceRuleReturning = {
   created_at: discordAttendanceRules.createdAt,
   updated_at: discordAttendanceRules.updatedAt,
   unit_id: discordAttendanceRules.unitId
+};
+
+const discordRoleMappingReturning = {
+  id: discordRoleMappings.id,
+  guild_id: discordRoleMappings.guildId,
+  role_id: discordRoleMappings.roleId,
+  mapping_type: discordRoleMappings.mappingType,
+  unit_id: discordRoleMappings.unitId,
+  rank_id: discordRoleMappings.rankId,
+  unit_role: discordRoleMappings.unitRole,
+  app_role: discordRoleMappings.appRole,
+  roster_status: discordRoleMappings.rosterStatus,
+  priority: discordRoleMappings.priority,
+  is_enabled: discordRoleMappings.isEnabled,
+  notes: discordRoleMappings.notes,
+  created_at: discordRoleMappings.createdAt,
+  updated_at: discordRoleMappings.updatedAt
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -217,6 +314,90 @@ async function requireAnyDiscordAdmin(
 }
 
 export async function registerDiscordRoutes(app: FastifyInstance) {
+  app.get("/v1/discord/auth-policy", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply, true);
+
+    if (!auth) {
+      return;
+    }
+
+    try {
+      await syncDiscordAuthPolicyToDb();
+      const policy = getDiscordAuthPolicy();
+      const result = await queryDb(
+        `
+        SELECT *
+        FROM discord_guilds
+        ORDER BY grants_login DESC, unit_priority DESC, rank_priority DESC, config_order ASC, name ASC
+        `
+      );
+
+      return { ok: true, policy, guilds: result.rows };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to load Discord auth policy");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.put("/v1/discord/guilds/:guild_id/auth-policy", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = guildParamsSchema.safeParse(request.params);
+    const parsedBody = guildAuthPolicyBodySchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const body = parsedBody.data;
+
+    try {
+      const result = await queryDb(
+        `
+        UPDATE discord_guilds
+        SET guild_type = $2,
+            grants_login = $3,
+            sync_members = $4,
+            is_fallback = $5,
+            unit_priority = $6,
+            rank_priority = $7,
+            permission_priority = $8,
+            config_order = $9,
+            config_source = 'db',
+            last_config_loaded_at = now(),
+            updated_at = now()
+        WHERE guild_id = $1
+        RETURNING *
+        `,
+        [
+          parsedParams.data.guild_id,
+          body.guild_type,
+          body.grants_login,
+          body.sync_members,
+          body.is_fallback,
+          body.unit_priority,
+          body.rank_priority,
+          body.permission_priority,
+          body.config_order
+        ]
+      );
+
+      const guild = result.rows[0];
+      if (!guild) {
+        return reply.code(404).send({ ok: false, error: { code: "guild_not_found", message: "Discord guild was not found." } });
+      }
+
+      return { ok: true, guild };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update Discord auth policy");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
   app.post("/v1/discord/guilds/sync", { preHandler: requireAdminOrBotToken }, async (request, reply) => {
     const parsed = guildSyncSchema.safeParse(request.body);
 
@@ -409,6 +590,265 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
       `);
 
       return { ok: true, roles: result.rows };
+    } catch (error) {
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/v1/discord/guilds/:guild_id/member-snapshots", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply, true);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = guildParamsSchema.safeParse(request.params);
+    const parsedQuery = memberSnapshotQuerySchema.safeParse(request.query);
+
+    if (!parsedParams.success || !parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const values: unknown[] = [parsedParams.data.guild_id];
+    const where = ["dms.guild_id = $1"];
+    if (parsedQuery.data.discord_user_id) {
+      values.push(parsedQuery.data.discord_user_id);
+      where.push(`dms.discord_user_id = $${values.length}`);
+    }
+    values.push(parsedQuery.data.limit);
+    const limitParam = values.length;
+    values.push(parsedQuery.data.offset);
+    const offsetParam = values.length;
+
+    try {
+      const result = await queryDb(
+        `
+        SELECT dms.*, au.display_name AS user_display_name
+        FROM discord_member_snapshots dms
+        LEFT JOIN app_users au ON au.id = dms.user_id
+        WHERE ${where.join(" AND ")}
+        ORDER BY dms.last_seen_at DESC
+        LIMIT $${limitParam} OFFSET $${offsetParam}
+        `,
+        values
+      );
+
+      return { ok: true, snapshots: result.rows };
+    } catch (error) {
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/discord/guilds/:guild_id/member-snapshots", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply, true);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = guildParamsSchema.safeParse(request.params);
+    const parsedBody = memberSnapshotBodySchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const guildId = parsedParams.data.guild_id;
+
+    try {
+      if (!(await guildExists(guildId))) {
+        return reply.code(404).send({ ok: false, error: { code: "guild_not_found", message: "Discord guild was not found." } });
+      }
+
+      const reconciled = [];
+      for (const member of parsedBody.data.members) {
+        await upsertDiscordMemberSnapshot({
+          guildId,
+          discordUserId: member.discord_user_id,
+          roles: member.roles,
+          nick: member.nick ?? null,
+          joinedAt: member.joined_at ?? null,
+          rawMember: member.raw_member ?? member,
+          source: "bot_snapshot"
+        });
+
+        if (parsedBody.data.reconcile) {
+          reconciled.push(
+            await reconcileDiscordMembership({
+              discordUserId: member.discord_user_id,
+              dryRun: false,
+              source: "bot_snapshot"
+            })
+          );
+        }
+      }
+
+      await getDrizzleDb()
+        .update(discordGuilds)
+        .set({ lastMemberSyncAt: sql`now()`, updatedAt: sql`now()` })
+        .where(eq(discordGuilds.guildId, guildId));
+
+      return { ok: true, guild_id: guildId, snapshots_upserted: parsedBody.data.members.length, reconciled };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to ingest Discord member snapshots");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/v1/discord/guilds/:guild_id/role-mappings", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = guildParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const result = await queryDb(
+        `
+        SELECT drm.*, dr.name AS role_name, u.name AS unit_name, ur.name AS rank_name
+        FROM discord_role_mappings drm
+        LEFT JOIN discord_roles dr ON dr.guild_id = drm.guild_id AND dr.role_id = drm.role_id
+        LEFT JOIN units u ON u.id = drm.unit_id
+        LEFT JOIN unit_ranks ur ON ur.id = drm.rank_id
+        WHERE drm.guild_id = $1
+        ORDER BY drm.is_enabled DESC, drm.mapping_type ASC, drm.priority DESC, dr.position DESC NULLS LAST
+        `,
+        [parsedParams.data.guild_id]
+      );
+
+      return { ok: true, mappings: result.rows };
+    } catch (error) {
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/discord/guilds/:guild_id/role-mappings", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = guildParamsSchema.safeParse(request.params);
+    const parsedBody = roleMappingBodySchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const guildId = parsedParams.data.guild_id;
+    const body = parsedBody.data;
+
+    try {
+      if (!(await roleExists(guildId, body.role_id))) {
+        return reply.code(404).send({ ok: false, error: { code: "role_not_found", message: "Discord role was not found." } });
+      }
+
+      const result = await getDrizzleDb()
+        .insert(discordRoleMappings)
+        .values({
+          guildId,
+          roleId: body.role_id,
+          mappingType: body.mapping_type,
+          unitId: body.unit_id ?? null,
+          rankId: body.rank_id ?? null,
+          unitRole: body.unit_role ?? null,
+          appRole: body.app_role ?? null,
+          rosterStatus: body.roster_status ?? null,
+          priority: body.priority,
+          isEnabled: body.is_enabled,
+          notes: body.notes ?? null
+        })
+        .returning(discordRoleMappingReturning);
+
+      return { ok: true, mapping: result[0] };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create Discord role mapping");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.patch("/v1/discord/guilds/:guild_id/role-mappings/:mapping_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = roleMappingParamsSchema.safeParse(request.params);
+    const parsedBody = roleMappingPatchSchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const currentResult = await getDrizzleDb()
+        .select({ id: discordRoleMappings.id })
+        .from(discordRoleMappings)
+        .where(and(eq(discordRoleMappings.guildId, parsedParams.data.guild_id), eq(discordRoleMappings.id, parsedParams.data.mapping_id)))
+        .limit(1);
+
+      if (!currentResult[0]) {
+        return reply.code(404).send({ ok: false, error: { code: "mapping_not_found", message: "Discord role mapping was not found." } });
+      }
+
+      const body = parsedBody.data;
+      if (body.role_id && !(await roleExists(parsedParams.data.guild_id, body.role_id))) {
+        return reply.code(404).send({ ok: false, error: { code: "role_not_found", message: "Discord role was not found." } });
+      }
+
+      const result = await getDrizzleDb()
+        .update(discordRoleMappings)
+        .set({
+          ...(body.role_id !== undefined ? { roleId: body.role_id } : {}),
+          ...(body.mapping_type !== undefined ? { mappingType: body.mapping_type } : {}),
+          ...(Object.hasOwn(body, "unit_id") ? { unitId: body.unit_id ?? null } : {}),
+          ...(Object.hasOwn(body, "rank_id") ? { rankId: body.rank_id ?? null } : {}),
+          ...(Object.hasOwn(body, "unit_role") ? { unitRole: body.unit_role ?? null } : {}),
+          ...(Object.hasOwn(body, "app_role") ? { appRole: body.app_role ?? null } : {}),
+          ...(Object.hasOwn(body, "roster_status") ? { rosterStatus: body.roster_status ?? null } : {}),
+          ...(body.priority !== undefined ? { priority: body.priority } : {}),
+          ...(body.is_enabled !== undefined ? { isEnabled: body.is_enabled } : {}),
+          ...(Object.hasOwn(body, "notes") ? { notes: body.notes ?? null } : {}),
+          updatedAt: sql`now()`
+        })
+        .where(and(eq(discordRoleMappings.guildId, parsedParams.data.guild_id), eq(discordRoleMappings.id, parsedParams.data.mapping_id)))
+        .returning(discordRoleMappingReturning);
+
+      return { ok: true, mapping: result[0] };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update Discord role mapping");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.delete("/v1/discord/guilds/:guild_id/role-mappings/:mapping_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = roleMappingParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const result = await getDrizzleDb()
+        .delete(discordRoleMappings)
+        .where(and(eq(discordRoleMappings.guildId, parsedParams.data.guild_id), eq(discordRoleMappings.id, parsedParams.data.mapping_id)))
+        .returning({ id: discordRoleMappings.id });
+
+      return { ok: true, deleted: result.length };
     } catch (error) {
       return sendDatabaseUnavailable(reply);
     }
@@ -847,6 +1287,91 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
         FROM discord_role_action_audits
         WHERE ${where.join(" AND ")}
         ORDER BY created_at DESC
+        LIMIT $${limitParam} OFFSET $${offsetParam}
+        `,
+        values
+      );
+
+      return { ok: true, audits: result.rows };
+    } catch (error) {
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/discord/reconcile", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply, true);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedBody = reconcileBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const result = await reconcileDiscordMembership({
+        ...(parsedBody.data.user_id ? { userId: parsedBody.data.user_id } : {}),
+        ...(parsedBody.data.discord_user_id ? { discordUserId: parsedBody.data.discord_user_id } : {}),
+        ...(parsedBody.data.guild_id ? { guildId: parsedBody.data.guild_id } : {}),
+        dryRun: parsedBody.data.dry_run,
+        source: parsedBody.data.dry_run ? "discord_reconcile_dry_run" : "discord_reconcile"
+      });
+
+      return result;
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to reconcile Discord membership");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/v1/discord/assignment-audits", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedQuery = assignmentAuditsQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const values: unknown[] = [];
+    const where: string[] = [];
+
+    if (parsedQuery.data.user_id) {
+      values.push(parsedQuery.data.user_id);
+      where.push(`daa.user_id = $${values.length}::uuid`);
+    }
+
+    if (parsedQuery.data.player_uid) {
+      values.push(parsedQuery.data.player_uid);
+      where.push(`daa.player_uid = $${values.length}`);
+    }
+
+    if (parsedQuery.data.discord_user_id) {
+      values.push(parsedQuery.data.discord_user_id);
+      where.push(`daa.discord_user_id = $${values.length}`);
+    }
+
+    values.push(parsedQuery.data.limit);
+    const limitParam = values.length;
+    values.push(parsedQuery.data.offset);
+    const offsetParam = values.length;
+
+    try {
+      const result = await queryDb(
+        `
+        SELECT daa.*, au.display_name AS user_display_name, p.last_name AS player_name
+        FROM discord_assignment_audits daa
+        LEFT JOIN app_users au ON au.id = daa.user_id
+        LEFT JOIN players p ON p.player_uid = daa.player_uid
+        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+        ORDER BY daa.created_at DESC
         LIMIT $${limitParam} OFFSET $${offsetParam}
         `,
         values

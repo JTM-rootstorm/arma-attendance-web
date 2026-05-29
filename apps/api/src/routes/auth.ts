@@ -18,6 +18,13 @@ import { createCsrfToken } from "../auth/csrf.js";
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
+import { getLoginGrantGuildIds } from "../config/discordAuth.js";
+import { fetchCurrentUserGuildMember, type DiscordCurrentGuildMember, type DiscordOAuthToken } from "../discord/client.js";
+import {
+  reconcileDiscordMembership,
+  syncDiscordAuthPolicyToDb,
+  upsertDiscordMemberSnapshot
+} from "../discord/membershipResolver.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -68,10 +75,7 @@ type OAuthStateRow = {
   consumed_at: Date | null;
 };
 
-type DiscordTokenResponse = {
-  access_token: string;
-  token_type: string;
-};
+type DiscordTokenResponse = DiscordOAuthToken;
 
 type DiscordProfile = {
   id: string;
@@ -435,6 +439,35 @@ async function fetchDiscordProfile(token: DiscordTokenResponse): Promise<Discord
   return (await response.json()) as DiscordProfile;
 }
 
+async function fetchDiscordLoginGuildMemberships(token: DiscordTokenResponse): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
+  if (!config.discordAuthEnabled) {
+    return [];
+  }
+
+  await syncDiscordAuthPolicyToDb();
+  const guildIds = getLoginGrantGuildIds();
+  const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
+
+  for (const guildId of guildIds) {
+    const member = await fetchCurrentUserGuildMember(token, guildId);
+    if (member) {
+      memberships.push({ guildId, member });
+    }
+  }
+
+  return memberships;
+}
+
+function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
+  return reply.code(403).send({
+    ok: false,
+    error: {
+      code: "discord_guild_membership_required",
+      message: "Discord login requires membership in an approved guild."
+    }
+  });
+}
+
 async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Promise<string> {
   const displayName = profile.global_name ?? profile.username ?? `Discord ${profile.id}`;
   const avatarUrl = discordAvatarUrl(profile);
@@ -746,7 +779,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       authorizeUrl.searchParams.set("client_id", config.discordClientId);
       authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
       authorizeUrl.searchParams.set("response_type", "code");
-      authorizeUrl.searchParams.set("scope", "identify");
+      authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
       authorizeUrl.searchParams.set("state", state);
 
       return reply.redirect(authorizeUrl.toString());
@@ -772,11 +805,44 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const token = await exchangeDiscordCode(parsedQuery.data.code);
       const profile = await fetchDiscordProfile(token);
+      const memberships = await fetchDiscordLoginGuildMemberships(token);
+
+      if (config.discordAuthEnabled && config.discordAuthRequireGuild && memberships.length === 0) {
+        return sendDiscordGuildMembershipRequired(reply);
+      }
+
       const userId = await withDbTransaction(async (tx) => {
         const nextUserId = await upsertDiscordUser(tx, profile);
         await applyInitialAdminFallback(tx, nextUserId, profile.id, request);
         return nextUserId;
       });
+
+      for (const membership of memberships) {
+        await upsertDiscordMemberSnapshot({
+          guildId: membership.guildId,
+          discordUserId: profile.id,
+          userId,
+          roles: membership.member.roles,
+          nick: membership.member.nick ?? null,
+          joinedAt: membership.member.joined_at ?? null,
+          rawMember: membership.member as unknown as Record<string, unknown>,
+          source: "oauth_login"
+        });
+      }
+
+      if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
+        const reconciliation = await reconcileDiscordMembership({
+          userId,
+          discordUserId: profile.id,
+          dryRun: false,
+          source: "oauth_login"
+        });
+
+        if (reconciliation.denied) {
+          return sendDiscordGuildMembershipRequired(reply);
+        }
+      }
+
       const session = await createUserSession(userId, request);
       setSessionCookie(reply, session.token, session.expires_at);
 
