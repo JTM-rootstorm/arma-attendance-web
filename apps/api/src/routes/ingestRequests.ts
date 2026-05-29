@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { requireBearerToken } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext } from "../auth/authorization.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 
@@ -39,7 +39,17 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 }
 
 export async function registerIngestRequestRoutes(app: FastifyInstance) {
-  app.get("/v1/ingest-requests/:request_id", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/ingest-requests/:request_id", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
+    if (auth.user && !canSeeSensitiveIds(auth.user)) {
+      return deny(reply);
+    }
+
     const parsedParams = ingestRequestParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {

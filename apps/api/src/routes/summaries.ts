@@ -1,9 +1,12 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { requireBearerToken } from "../auth.js";
+import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { canReadOperation } from "../auth/operationAccess.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { redactOperationListItem, redactPlayer } from "../privacy/redaction.js";
 
 const dashboardSummaryQuerySchema = z.object({
   server_key: z.string().max(128).optional(),
@@ -30,6 +33,7 @@ type DashboardSummaryRow = {
 
 type RecentOperationRow = {
   id: string;
+  unit_id: string | null;
   server_key: string;
   status: "started" | "finished" | "abandoned";
   mission_uid: string | null;
@@ -54,6 +58,7 @@ type TopPlayerKillsRow = {
 
 type OperationIdentityRow = {
   id: string;
+  unit_id: string | null;
   server_key: string;
   status: "started" | "finished" | "abandoned";
   mission_uid: string | null;
@@ -78,6 +83,12 @@ type StatsSummaryRow = {
   ai_kills: number;
   friendly_kills: number;
   deaths: number;
+  soft_vehicle_kills: number;
+  armor_kills: number;
+  air_kills: number;
+  ground_vehicle_kills: number;
+  all_vehicle_kills: number;
+  scoreboard_score: number;
 };
 
 type PayloadSummaryRow = {
@@ -132,12 +143,24 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
   });
 }
 
-function buildDashboardWhere(query: z.infer<typeof dashboardSummaryQuerySchema>): {
+function canSeePlayerOperationalDetails(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return user === null ? machineTokenKind !== "base44_integration" : hasRole(user, ["admin"]);
+}
+
+function buildDashboardWhere(
+  query: z.infer<typeof dashboardSummaryQuerySchema>,
+  unitFilter: { all: boolean; unitIds: string[] }
+): {
   whereClause: string;
   values: unknown[];
 } {
   const where: string[] = [];
   const values: unknown[] = [];
+
+  if (!unitFilter.all) {
+    values.push(unitFilter.unitIds);
+    where.push(`unit_id = ANY($${values.length}::uuid[])`);
+  }
 
   if (query.server_key) {
     values.push(query.server_key);
@@ -156,14 +179,40 @@ function buildDashboardWhere(query: z.infer<typeof dashboardSummaryQuerySchema>)
 }
 
 export async function registerSummaryRoutes(app: FastifyInstance) {
-  app.get("/v1/dashboard/summary", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/dashboard/summary", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedQuery = dashboardSummaryQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
       return sendValidationFailed(reply);
     }
 
-    const { whereClause, values } = buildDashboardWhere(parsedQuery.data);
+    const unitFilter = await getReadableUnitFilter(auth.user);
+
+    if (!unitFilter.all && unitFilter.unitIds.length === 0) {
+      return {
+        ok: true,
+        summary: {
+          operations_total: 0,
+          operations_started: 0,
+          operations_finished: 0,
+          players_total: 0,
+          attendance_rows_total: 0,
+          stats_rows_total: 0,
+          last_operation_at: null
+        },
+        recent_operations: [],
+        top_players_by_attendance: [],
+        top_players_by_ai_kills: []
+      };
+    }
+
+    const { whereClause, values } = buildDashboardWhere(parsedQuery.data, unitFilter);
 
     try {
       const summaryResult = await queryDb<DashboardSummaryRow>(
@@ -194,6 +243,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         `
         SELECT
           o.id,
+          o.unit_id,
           o.server_key,
           o.status,
           o.mission_uid,
@@ -257,9 +307,9 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           stats_rows_total: 0,
           last_operation_at: null
         },
-        recent_operations: recentOperationsResult.rows,
-        top_players_by_attendance: topAttendanceResult.rows,
-        top_players_by_ai_kills: topKillsResult.rows
+        recent_operations: recentOperationsResult.rows.map((row) => redactOperationListItem(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind))),
+        top_players_by_attendance: topAttendanceResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind))),
+        top_players_by_ai_kills: topKillsResult.rows.map((row) => redactPlayer(row, canSeeSensitiveIds(auth.user, auth.machineTokenKind)))
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch dashboard summary");
@@ -267,7 +317,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/operations/:operation_id/summary", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/operations/:operation_id/summary", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -281,6 +337,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         `
         SELECT
           id,
+          unit_id,
           server_key,
           status,
           mission_uid,
@@ -306,6 +363,10 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         });
       }
 
+      if (auth.user && !(await canReadOperation(auth.user, operation.id, operation.unit_id))) {
+        return deny(reply);
+      }
+
       const attendanceResult = await queryDb<OperationAttendanceSummaryRow>(
         `
         SELECT
@@ -328,7 +389,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COALESCE(SUM(player_kills), 0)::int AS player_kills,
           COALESCE(SUM(ai_kills), 0)::int AS ai_kills,
           COALESCE(SUM(friendly_kills), 0)::int AS friendly_kills,
-          COALESCE(SUM(deaths), 0)::int AS deaths
+          COALESCE(SUM(deaths), 0)::int AS deaths,
+          COALESCE(SUM(soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+          COALESCE(SUM(armor_kills), 0)::int AS armor_kills,
+          COALESCE(SUM(air_kills), 0)::int AS air_kills,
+          COALESCE(SUM(ground_vehicle_kills), 0)::int AS ground_vehicle_kills,
+          COALESCE(SUM(all_vehicle_kills), 0)::int AS all_vehicle_kills,
+          COALESCE(SUM(scoreboard_score), 0)::int AS scoreboard_score
         FROM operation_player_stats
         WHERE operation_id = $1
         `,
@@ -350,7 +417,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
       return {
         ok: true,
         operation_id: operationId,
-        operation,
+        operation: redactOperationListItem(operation, canSeeSensitiveIds(auth.user, auth.machineTokenKind)),
         attendance: attendanceResult.rows[0] ?? {
           present_at_start: 0,
           present_at_end: 0,
@@ -364,7 +431,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           player_kills: 0,
           ai_kills: 0,
           friendly_kills: 0,
-          deaths: 0
+          deaths: 0,
+          soft_vehicle_kills: 0,
+          armor_kills: 0,
+          air_kills: 0,
+          ground_vehicle_kills: 0,
+          all_vehicle_kills: 0,
+          scoreboard_score: 0
         },
         payloads: payloadResult.rows[0] ?? {
           total: 0,
@@ -378,7 +451,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/players/:player_uid/summary", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/players/:player_uid/summary", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = playerParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -409,6 +488,28 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         });
       }
 
+      if (auth.user) {
+        const steamId = auth.user.identities.find((identity) => identity.provider === "steam")?.provider_user_id;
+        const ownsPlayer = steamId === playerUid;
+
+        if (!ownsPlayer) {
+          const unitFilter = await getReadableUnitFilter(auth.user);
+          const visibleResult = unitFilter.all
+            ? await queryDb<{ exists: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM unit_players WHERE player_uid = $1) AS exists",
+                [playerUid]
+              )
+            : await queryDb<{ exists: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM unit_players WHERE player_uid = $1 AND unit_id = ANY($2::uuid[])) AS exists",
+                [playerUid, unitFilter.unitIds]
+              );
+
+          if (!visibleResult.rows[0]?.exists) {
+            return deny(reply);
+          }
+        }
+      }
+
       const summaryResult = await queryDb<PlayerSummaryRow>(
         `
         SELECT
@@ -420,7 +521,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COALESCE(SUM(ops.player_kills), 0)::int AS player_kills,
           COALESCE(SUM(ops.ai_kills), 0)::int AS ai_kills,
           COALESCE(SUM(ops.friendly_kills), 0)::int AS friendly_kills,
-          COALESCE(SUM(ops.deaths), 0)::int AS deaths
+          COALESCE(SUM(ops.deaths), 0)::int AS deaths,
+          COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+          COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
+          COALESCE(SUM(ops.air_kills), 0)::int AS air_kills,
+          COALESCE(SUM(ops.ground_vehicle_kills), 0)::int AS ground_vehicle_kills,
+          COALESCE(SUM(ops.all_vehicle_kills), 0)::int AS all_vehicle_kills,
+          COALESCE(SUM(ops.scoreboard_score), 0)::int AS scoreboard_score
         FROM operation_players op
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
@@ -452,22 +559,48 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         [playerUid]
       );
 
+      const summary = summaryResult.rows[0] ?? {
+        operation_count: 0,
+        present_at_start_count: 0,
+        present_at_end_count: 0,
+        infantry_kills: 0,
+        vehicle_kills: 0,
+        player_kills: 0,
+        ai_kills: 0,
+        friendly_kills: 0,
+        deaths: 0,
+        soft_vehicle_kills: 0,
+        armor_kills: 0,
+        air_kills: 0,
+        ground_vehicle_kills: 0,
+        all_vehicle_kills: 0,
+        scoreboard_score: 0
+      };
+      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user, auth.machineTokenKind);
+      const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind) || revealOperationalDetails;
+      const responseSummary = revealOperationalDetails ? summary : {
+        ...summary,
+        operation_count: null,
+        present_at_start_count: null,
+        present_at_end_count: null
+      };
+
       return {
         ok: true,
-        player_uid: playerUid,
-        player,
-        summary: summaryResult.rows[0] ?? {
-          operation_count: 0,
-          present_at_start_count: 0,
-          present_at_end_count: 0,
-          infantry_kills: 0,
-          vehicle_kills: 0,
-          player_kills: 0,
-          ai_kills: 0,
-          friendly_kills: 0,
-          deaths: 0
+        player_uid: revealSensitive ? playerUid : null,
+        player: redactPlayer(player, revealSensitive),
+        summary: responseSummary,
+        scoreboard_totals: {
+          infantry_kills: summary.infantry_kills,
+          soft_vehicle_kills: summary.soft_vehicle_kills,
+          armor_kills: summary.armor_kills,
+          ground_vehicle_kills: summary.ground_vehicle_kills,
+          air_kills: summary.air_kills,
+          all_vehicle_kills: summary.all_vehicle_kills,
+          deaths: summary.deaths,
+          score: summary.scoreboard_score
         },
-        recent_operations: recentOperationsResult.rows
+        recent_operations: revealOperationalDetails ? recentOperationsResult.rows.map((row) => redactOperationListItem(row, revealSensitive)) : []
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch player summary");

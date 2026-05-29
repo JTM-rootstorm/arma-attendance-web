@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
-import { requireBearerToken } from "../auth.js";
+import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
+import { canSeeSensitiveIds, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
+import { players } from "../db/schema/players.js";
+import { unitPlayers } from "../db/schema/units.js";
+import { redactOperationListItem, redactPlayer } from "../privacy/redaction.js";
 
 const playerListQuerySchema = z.object({
   q: z.string().max(200).optional(),
@@ -54,7 +60,30 @@ type PlayerOperationRow = {
   ai_kills: number | null;
   friendly_kills: number | null;
   deaths: number | null;
+  soft_vehicle_kills: number | null;
+  armor_kills: number | null;
+  air_kills: number | null;
+  ground_vehicle_kills: number | null;
+  all_vehicle_kills: number | null;
+  scoreboard_score: number | null;
 };
+
+function canSeeRosterOperationalDetails(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return user === null ? machineTokenKind !== "base44_integration" : hasRole(user, ["admin"]);
+}
+
+function canSeePlayerOperationalDetails(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
+  return canSeeRosterOperationalDetails(user, machineTokenKind);
+}
+
+function redactPlayerForRoster<T extends PlayerRow>(row: T, revealSensitive: boolean, revealOperationalDetails: boolean) {
+  const redacted = redactPlayer(row, revealSensitive);
+
+  return {
+    ...redacted,
+    operation_count: revealOperationalDetails ? row.operation_count : null
+  };
+}
 
 function sendValidationFailed(reply: FastifyReply) {
   return reply.code(400).send({
@@ -77,7 +106,13 @@ function sendDatabaseUnavailable(reply: FastifyReply) {
 }
 
 export async function registerPlayerRoutes(app: FastifyInstance) {
-  app.get("/v1/players", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/players", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { machineTokenKinds: ["api", "arma_server", "base44_integration"] });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedQuery = playerListQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
@@ -87,6 +122,22 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     const query = parsedQuery.data;
     const where: string[] = [];
     const values: unknown[] = [];
+    const unitFilter = await getReadableUnitFilter(auth.user);
+    const revealOperationalDetails = canSeeRosterOperationalDetails(auth.user, auth.machineTokenKind);
+    const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind) || revealOperationalDetails;
+
+    if (!unitFilter.all) {
+      if (unitFilter.unitIds.length === 0) {
+        return deny(reply);
+      }
+
+      values.push(unitFilter.unitIds);
+      where.push(`EXISTS (
+        SELECT 1 FROM unit_players up_filter
+        WHERE up_filter.player_uid = p.player_uid
+          AND up_filter.unit_id = ANY($${values.length}::uuid[])
+      )`);
+    }
 
     if (query.q && query.q.trim().length > 0) {
       values.push(`%${query.q.trim()}%`);
@@ -122,7 +173,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        players: playersResult.rows,
+        players: playersResult.rows.map((row) => redactPlayerForRoster(row, revealSensitive, revealOperationalDetails)),
         pagination: {
           limit: query.limit,
           offset: query.offset,
@@ -135,7 +186,13 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/players/:player_uid", { preHandler: requireBearerToken }, async (request, reply) => {
+  app.get("/v1/players/:player_uid", async (request, reply) => {
+    const auth = await getAuthContext(request, reply, { allowMachineToken: true });
+
+    if (!auth) {
+      return;
+    }
+
     const parsedParams = playerParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -145,23 +202,19 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     const { player_uid: playerUid } = parsedParams.data;
 
     try {
-      const playerResult = await queryDb<PlayerDetailRow>(
-        `
-        SELECT
-          player_uid,
-          last_name,
-          first_seen_at,
-          last_seen_at,
-          raw_last_player,
-          created_at,
-          updated_at
-        FROM players
-        WHERE player_uid = $1
-        `,
-        [playerUid]
-      );
-
-      const player = playerResult.rows[0];
+      const [player] = await getDrizzleDb()
+        .select({
+          player_uid: players.playerUid,
+          last_name: players.lastName,
+          first_seen_at: players.firstSeenAt,
+          last_seen_at: players.lastSeenAt,
+          raw_last_player: players.rawLastPlayer,
+          created_at: players.createdAt,
+          updated_at: players.updatedAt
+        })
+        .from(players)
+        .where(eq(players.playerUid, playerUid))
+        .limit(1);
 
       if (!player) {
         return reply.code(404).send({
@@ -173,6 +226,30 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         });
       }
 
+      if (auth.user) {
+        const steamId = auth.user.identities.find((identity) => identity.provider === "steam")?.provider_user_id;
+        const ownsPlayer = steamId === playerUid;
+
+        if (!ownsPlayer) {
+          const unitFilter = await getReadableUnitFilter(auth.user);
+          const visibleRows = await getDrizzleDb()
+            .select({ unit_id: unitPlayers.unitId })
+            .from(unitPlayers)
+            .where(
+              unitFilter.all
+                ? eq(unitPlayers.playerUid, playerUid)
+                : and(eq(unitPlayers.playerUid, playerUid), inArray(unitPlayers.unitId, unitFilter.unitIds))
+            )
+            .limit(1);
+
+          if (!visibleRows[0]) {
+            return deny(reply);
+          }
+        }
+      }
+
+      const revealOperationalDetails = canSeePlayerOperationalDetails(auth.user, auth.machineTokenKind);
+      const revealSensitive = canSeeSensitiveIds(auth.user, auth.machineTokenKind) || revealOperationalDetails;
       const operationsResult = await queryDb<PlayerOperationRow>(
         `
         SELECT
@@ -194,7 +271,13 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
           ops.player_kills,
           ops.ai_kills,
           ops.friendly_kills,
-          ops.deaths
+          ops.deaths,
+          ops.soft_vehicle_kills,
+          ops.armor_kills,
+          ops.air_kills,
+          ops.ground_vehicle_kills,
+          ops.all_vehicle_kills,
+          ops.scoreboard_score
         FROM operation_players op
         JOIN operations o ON o.id = op.operation_id
         LEFT JOIN operation_player_stats ops
@@ -209,8 +292,8 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
-        player,
-        recent_operations: operationsResult.rows.map((row) => ({
+        player: redactPlayer(player, revealSensitive),
+        recent_operations: revealOperationalDetails ? operationsResult.rows.map((row) => redactOperationListItem({
           operation_id: row.operation_id,
           server_key: row.server_key,
           status: row.status,
@@ -233,8 +316,21 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
                   ai_kills: row.ai_kills ?? 0,
                   friendly_kills: row.friendly_kills ?? 0,
                   deaths: row.deaths ?? 0
+                },
+          scoreboard_stats:
+            row.stats_player_uid === null
+              ? null
+              : {
+                  infantry_kills: row.infantry_kills ?? 0,
+                  soft_vehicle_kills: row.soft_vehicle_kills ?? 0,
+                  armor_kills: row.armor_kills ?? 0,
+                  ground_vehicle_kills: row.ground_vehicle_kills ?? 0,
+                  air_kills: row.air_kills ?? 0,
+                  all_vehicle_kills: row.all_vehicle_kills ?? 0,
+                  deaths: row.deaths ?? 0,
+                  score: row.scoreboard_score ?? 0
                 }
-        }))
+        }, revealSensitive)) : []
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch player");

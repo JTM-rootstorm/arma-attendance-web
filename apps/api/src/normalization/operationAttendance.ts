@@ -137,9 +137,19 @@ async function upsertPlayerStats(tx: DbTransaction, operationId: string, player:
       ai_kills,
       friendly_kills,
       deaths,
-      raw_stats
+      raw_stats,
+      soft_vehicle_kills,
+      armor_kills,
+      air_kills,
+      ground_vehicle_kills,
+      all_vehicle_kills,
+      scoreboard_score,
+      stats_source,
+      scoreboard_baseline,
+      scoreboard_latest,
+      raw_scoreboard_stats
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb)
     ON CONFLICT (operation_id, player_uid) DO UPDATE
     SET
       infantry_kills = EXCLUDED.infantry_kills,
@@ -149,6 +159,16 @@ async function upsertPlayerStats(tx: DbTransaction, operationId: string, player:
       friendly_kills = EXCLUDED.friendly_kills,
       deaths = EXCLUDED.deaths,
       raw_stats = EXCLUDED.raw_stats,
+      soft_vehicle_kills = EXCLUDED.soft_vehicle_kills,
+      armor_kills = EXCLUDED.armor_kills,
+      air_kills = EXCLUDED.air_kills,
+      ground_vehicle_kills = EXCLUDED.ground_vehicle_kills,
+      all_vehicle_kills = EXCLUDED.all_vehicle_kills,
+      scoreboard_score = EXCLUDED.scoreboard_score,
+      stats_source = EXCLUDED.stats_source,
+      scoreboard_baseline = EXCLUDED.scoreboard_baseline,
+      scoreboard_latest = EXCLUDED.scoreboard_latest,
+      raw_scoreboard_stats = EXCLUDED.raw_scoreboard_stats,
       updated_at = now()
     `,
     [
@@ -160,7 +180,17 @@ async function upsertPlayerStats(tx: DbTransaction, operationId: string, player:
       player.stats.ai_kills,
       player.stats.friendly_kills,
       player.stats.deaths,
-      JSON.stringify(player.rawStats)
+      JSON.stringify(player.rawStats),
+      player.scoreboardStats?.soft_vehicle_kills ?? 0,
+      player.scoreboardStats?.armor_kills ?? 0,
+      player.scoreboardStats?.air_kills ?? 0,
+      player.scoreboardStats?.ground_vehicle_kills ?? 0,
+      player.scoreboardStats?.all_vehicle_kills ?? 0,
+      player.scoreboardStats?.score ?? 0,
+      player.scoreboardStats?.stats_source ?? null,
+      JSON.stringify(player.scoreboardStats?.baseline ?? []),
+      JSON.stringify(player.scoreboardStats?.latest ?? []),
+      JSON.stringify(player.rawScoreboardStats ?? {})
     ]
   );
 }
@@ -171,7 +201,7 @@ export async function persistOperationAttendance(
   phase: AttendancePhase,
   payload: unknown
 ): Promise<NormalizationSummary> {
-  const normalized = normalizePlayersFromPayload(payload);
+  const normalized = normalizePlayersFromPayload(payload, phase);
 
   for (const player of normalized.players) {
     await upsertPlayer(tx, player);

@@ -1,334 +1,91 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
-const tokenStorageKey = "arma-attendance-api-token";
+import { ApiClientError, apiFetch, fetchCsv } from "./api";
+import {
+  canDeleteOperations,
+  canExport,
+  canOpenBattalion,
+  canOpenComms,
+  canOpenDashboard,
+  canOpenIdentityAdmin,
+  canOpenLeaderboard,
+  canOpenOperations,
+  canOpenRoster,
+  canManageMachineTokens,
+  canResetPlayerNames,
+  canSeeSensitiveIds,
+  isOwner
+} from "./authz";
+import { CommandShell } from "./components/CommandShell";
+import { PayloadInspector } from "./components/PayloadInspector";
+import { StatusChip } from "./components/StatusChip";
+import { emptyResult, resultError, statusLabel } from "./format";
+import { DashboardPage } from "./pages/DashboardPage";
+import { BattalionPage } from "./pages/BattalionPage";
+import { DiscordPage } from "./pages/DiscordPage";
+import { IdentityPage } from "./pages/IdentityPage";
+import { LeaderboardPage } from "./pages/LeaderboardPage";
+import { MyStatsPage } from "./pages/MyStatsPage";
+import { OperationsPage } from "./pages/OperationsPage";
+import { PlayersPage } from "./pages/PlayersPage";
+import { SystemPage } from "./pages/SystemPage";
+import type {
+  AdminUsersResponse,
+  ApiResult,
+  CreateMachineTokenResponse,
+  DashboardSummaryResponse,
+  DataQualityResponse,
+  DbHealthResponse,
+  HealthResponse,
+  MachineTokensResponse,
+  MachineTokenKind,
+  MeResponse,
+  MyOperationsResponse,
+  MyPlayerResponse,
+  OperationAttendanceResponse,
+  OperationDetailResponse,
+  OperationsResponse,
+  OperationSummaryResponse,
+  PlayerDetailResponse,
+  PlayersResponse,
+  PlayerSummaryResponse,
+  ViewName
+} from "./types";
 
-type ApiError = {
-  code: string;
-  message: string;
-};
+function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
+  const parsed = resultError(error, fallback);
 
-type ApiResult<T> =
-  | {
-      status: "idle" | "loading";
-      data: null;
-      error: null;
-    }
-  | {
-      status: "ready";
-      data: T;
-      error: null;
-    }
-  | {
-      status: "error";
-      data: null;
-      error: string;
-    };
-
-function hasApiError(value: unknown): value is { error: ApiError } {
-  return typeof value === "object" && value !== null && "error" in value;
-}
-
-type HealthResponse = {
-  ok: boolean;
-  service: string;
-  version: string;
-  time: string;
-};
-
-type DbHealthResponse = {
-  ok: boolean;
-  database: {
-    connected: boolean;
-    current_database: string;
-    server_time: string;
+  return {
+    status: "error",
+    data: null,
+    error: parsed.message,
+    ...(parsed.code ? { errorCode: parsed.code } : {})
   };
-};
-
-type OperationStatus = "started" | "finished" | "abandoned";
-
-type OperationListItem = {
-  id: string;
-  server_key: string;
-  status: OperationStatus;
-  mission_uid: string | null;
-  mission_name: string | null;
-  world_name: string | null;
-  started_at: string;
-  ended_at: string | null;
-  payload_count: number;
-};
-
-type DashboardSummaryResponse = {
-  ok: true;
-  summary: {
-    operations_total: number;
-    operations_started: number;
-    operations_finished: number;
-    players_total: number;
-    attendance_rows_total: number;
-    stats_rows_total: number;
-    last_operation_at: string | null;
-  };
-  recent_operations: Array<OperationListItem & { attendance_count: number }>;
-  top_players_by_attendance: Array<{
-    player_uid: string;
-    last_name: string | null;
-    operation_count: number;
-  }>;
-  top_players_by_ai_kills: Array<{
-    player_uid: string;
-    last_name: string | null;
-    ai_kills: number;
-  }>;
-};
-
-type OperationsResponse = {
-  ok: true;
-  operations: OperationListItem[];
-};
-
-type OperationDetailResponse = {
-  ok: true;
-  operation: OperationListItem & {
-    raw_start_payload: unknown;
-    raw_end_payload: unknown;
-  };
-  payloads: Array<{
-    id: string;
-    kind: "start" | "finish";
-    request_id: string;
-    received_at: string;
-  }>;
-};
-
-type OperationSummaryResponse = {
-  ok: true;
-  attendance: {
-    present_at_start: number;
-    present_at_end: number;
-    start_only: number;
-    end_only: number;
-    both_start_and_end: number;
-  };
-  stats: {
-    infantry_kills: number;
-    vehicle_kills: number;
-    player_kills: number;
-    ai_kills: number;
-    friendly_kills: number;
-    deaths: number;
-  };
-  payloads: {
-    total: number;
-    start: number;
-    finish: number;
-  };
-};
-
-type OperationAttendanceResponse = {
-  ok: true;
-  attendance: Array<{
-    player_uid: string;
-    name_at_start: string | null;
-    name_at_end: string | null;
-    side_at_start: string | null;
-    side_at_end: string | null;
-    group_at_start: string | null;
-    group_at_end: string | null;
-    role_at_start: string | null;
-    role_at_end: string | null;
-    present_at_start: boolean;
-    present_at_end: boolean;
-    stats: {
-      infantry_kills: number;
-      vehicle_kills: number;
-      player_kills: number;
-      ai_kills: number;
-      friendly_kills: number;
-      deaths: number;
-    } | null;
-  }>;
-};
-
-type PlayersResponse = {
-  ok: true;
-  players: Array<{
-    player_uid: string;
-    last_name: string | null;
-    first_seen_at: string;
-    last_seen_at: string;
-    operation_count: number;
-  }>;
-};
-
-type PlayerDetailResponse = {
-  ok: true;
-  player: {
-    player_uid: string;
-    last_name: string | null;
-    first_seen_at: string;
-    last_seen_at: string;
-  };
-  recent_operations: Array<{
-    operation_id: string;
-    server_key: string;
-    status: OperationStatus;
-    mission_uid: string | null;
-    mission_name: string | null;
-    world_name: string | null;
-    started_at: string;
-    ended_at: string | null;
-    present_at_start: boolean;
-    present_at_end: boolean;
-    stats: OperationSummaryResponse["stats"] | null;
-  }>;
-};
-
-type PlayerSummaryResponse = {
-  ok: true;
-  summary: {
-    operation_count: number;
-    present_at_start_count: number;
-    present_at_end_count: number;
-    infantry_kills: number;
-    vehicle_kills: number;
-    player_kills: number;
-    ai_kills: number;
-    friendly_kills: number;
-    deaths: number;
-  };
-  recent_operations: Array<{
-    operation_id: string;
-    server_key: string;
-    status: OperationStatus;
-    mission_name: string | null;
-    started_at: string;
-    ended_at: string | null;
-    present_at_start: boolean;
-    present_at_end: boolean;
-  }>;
-};
-
-type ViewName = "summary" | "operations" | "players";
-
-const emptyResult: ApiResult<never> = {
-  status: "idle",
-  data: null,
-  error: null
-};
-
-function buildUrl(path: string, params?: Record<string, string | undefined>): string {
-  const url = new URL(path, apiBaseUrl || window.location.origin);
-
-  for (const [key, value] of Object.entries(params ?? {})) {
-    if (value && value.trim().length > 0) {
-      url.searchParams.set(key, value.trim());
-    }
-  }
-
-  return url.toString();
 }
 
-async function readJson<T>(path: string, token?: string, params?: Record<string, string | undefined>): Promise<T> {
-  const headers = new Headers();
+function saveCsv(text: string, filename: string) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
 
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-
-  const response = await fetch(buildUrl(path, params), { headers });
-  const data = (await response.json()) as T | { ok: false; error: ApiError };
-
-  if (!response.ok) {
-    const error = hasApiError(data) ? data.error.message : `Request failed with HTTP ${response.status}`;
-    throw new Error(error);
-  }
-
-  return data as T;
-}
-
-async function fetchCsv(path: string, token: string): Promise<string> {
-  const response = await fetch(buildUrl(path), {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`CSV export failed with HTTP ${response.status}`);
-  }
-
-  return response.text();
-}
-
-function getStoredToken(): string {
-  return window.sessionStorage.getItem(tokenStorageKey) ?? "";
-}
-
-function formatDate(value: string | null): string {
-  if (!value) {
-    return "—";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "short",
-    timeStyle: "short"
-  }).format(new Date(value));
-}
-
-function display(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-
-  return String(value);
-}
-
-function statusLabel(result: ApiResult<unknown>): string {
-  if (result.status === "loading") {
-    return "checking";
-  }
-
-  if (result.status === "ready") {
-    return "online";
-  }
-
-  if (result.status === "error") {
-    return "error";
-  }
-
-  return "idle";
-}
-
-function StatTile({ label, value }: { label: string; value: string | number | null }) {
-  return (
-    <div className="stat-tile">
-      <span>{label}</span>
-      <strong>{display(value)}</strong>
-    </div>
-  );
-}
-
-function Message({ result }: { result: ApiResult<unknown> }) {
-  if (result.status === "loading") {
-    return <p className="message">Loading…</p>;
-  }
-
-  if (result.status === "error") {
-    return <p className="message error">{result.error}</p>;
-  }
-
-  return null;
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export function App() {
-  const [token, setToken] = useState(getStoredToken);
-  const [tokenDraft, setTokenDraft] = useState(token);
-  const [view, setView] = useState<ViewName>("summary");
+  const [view, setView] = useState<ViewName>("me");
   const [health, setHealth] = useState<ApiResult<HealthResponse>>(emptyResult);
   const [dbHealth, setDbHealth] = useState<ApiResult<DbHealthResponse>>(emptyResult);
+  const [me, setMe] = useState<ApiResult<MeResponse>>(emptyResult);
+  const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
+  const [machineTokens, setMachineTokens] = useState<ApiResult<MachineTokensResponse>>(emptyResult);
+  const [createdMachineToken, setCreatedMachineToken] = useState<CreateMachineTokenResponse | null>(null);
+  const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
+  const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
+  const [dataQuality, setDataQuality] = useState<ApiResult<DataQualityResponse>>(emptyResult);
   const [operations, setOperations] = useState<ApiResult<OperationsResponse>>(emptyResult);
   const [operationDetail, setOperationDetail] = useState<ApiResult<OperationDetailResponse>>(emptyResult);
   const [operationSummary, setOperationSummary] = useState<ApiResult<OperationSummaryResponse>>(emptyResult);
@@ -342,20 +99,38 @@ export function App() {
   const [selectedPlayerUid, setSelectedPlayerUid] = useState("");
   const [exportMessage, setExportMessage] = useState("");
 
-  const hasToken = token.trim().length > 0;
+  const sessionUser = me.status === "ready" ? me.data.user : null;
+  const canAdmin = canOpenIdentityAdmin(sessionUser);
+  const canManageSystem = canManageMachineTokens(sessionUser);
+  const canViewDashboard = canOpenDashboard(sessionUser);
+  const canViewBattalion = canOpenBattalion(sessionUser);
+  const canViewLeaderboard = canOpenLeaderboard(sessionUser);
+  const canViewOperations = canOpenOperations(sessionUser);
+  const canViewRoster = canOpenRoster(sessionUser);
+  const canViewComms = canOpenComms(sessionUser);
+  const canExportViews = canExport(sessionUser);
+  const canResetRosterNames = canResetPlayerNames(sessionUser);
+  const canDeleteOperationRows = canDeleteOperations(sessionUser);
+
+  const selectedOperationDetail = useMemo(
+    () => (operationDetail.status === "ready" ? operationDetail.data : null),
+    [operationDetail]
+  );
+
+  const selectedPlayerDetail = useMemo(() => (playerDetail.status === "ready" ? playerDetail.data : null), [playerDetail]);
 
   const loadHealth = useCallback(async () => {
     setHealth({ status: "loading", data: null, error: null });
 
     try {
-      setHealth({ status: "ready", data: await readJson<HealthResponse>("/health"), error: null });
+      setHealth({ status: "ready", data: await apiFetch<HealthResponse>("/health"), error: null });
     } catch (error) {
-      setHealth({ status: "error", data: null, error: error instanceof Error ? error.message : "Health check failed." });
+      setHealth(errorResult(error, "Health check failed."));
     }
   }, []);
 
   const loadDbHealth = useCallback(async () => {
-    if (!hasToken) {
+    if (!isOwner(sessionUser)) {
       setDbHealth(emptyResult);
       return;
     }
@@ -363,14 +138,96 @@ export function App() {
     setDbHealth({ status: "loading", data: null, error: null });
 
     try {
-      setDbHealth({ status: "ready", data: await readJson<DbHealthResponse>("/health/db", token), error: null });
+      setDbHealth({
+        status: "ready",
+        data: await apiFetch<DbHealthResponse>("/health/db"),
+        error: null
+      });
     } catch (error) {
-      setDbHealth({ status: "error", data: null, error: error instanceof Error ? error.message : "DB health failed." });
+      setDbHealth(errorResult(error, "DB health failed."));
     }
-  }, [hasToken, token]);
+  }, [sessionUser]);
+
+  const loadMe = useCallback(async () => {
+    setMe({ status: "loading", data: null, error: null });
+
+    try {
+      setMe({ status: "ready", data: await apiFetch<MeResponse>("/v1/me"), error: null });
+    } catch (error) {
+      const parsed = resultError(error, "No active session.");
+      if (parsed.code === "unauthorized") {
+        setMe(emptyResult);
+      } else {
+        setMe(errorResult(error, "Session check failed."));
+      }
+    }
+  }, []);
+
+  const loadAdminUsers = useCallback(async () => {
+    if (!canAdmin) {
+      setAdminUsers(emptyResult);
+      return;
+    }
+
+    setAdminUsers({ status: "loading", data: null, error: null });
+
+    try {
+      setAdminUsers({
+        status: "ready",
+        data: await apiFetch<AdminUsersResponse>("/v1/admin/users"),
+        error: null
+      });
+    } catch (error) {
+      setAdminUsers(errorResult(error, "Admin users failed."));
+    }
+  }, [canAdmin]);
+
+  const loadMachineTokens = useCallback(async () => {
+    if (!canManageSystem) {
+      setMachineTokens(emptyResult);
+      setCreatedMachineToken(null);
+      return;
+    }
+
+    setMachineTokens({ status: "loading", data: null, error: null });
+
+    try {
+      setMachineTokens({
+        status: "ready",
+        data: await apiFetch<MachineTokensResponse>("/v1/system/machine-tokens"),
+        error: null
+      });
+    } catch (error) {
+      setMachineTokens(errorResult(error, "Machine tokens failed."));
+    }
+  }, [canManageSystem]);
+
+  const loadMyStats = useCallback(async () => {
+    if (!sessionUser) {
+      setMyPlayer(emptyResult);
+      setMyOperations(emptyResult);
+      return;
+    }
+
+    setMyPlayer({ status: "loading", data: null, error: null });
+    setMyOperations({ status: "loading", data: null, error: null });
+
+    try {
+      const [player, operationsData] = await Promise.all([
+        apiFetch<MyPlayerResponse>("/v1/me/player"),
+        apiFetch<MyOperationsResponse>("/v1/me/operations")
+      ]);
+      setMyPlayer({ status: "ready", data: player, error: null });
+      setMyOperations({ status: "ready", data: operationsData, error: null });
+    } catch (error) {
+      setMyPlayer(errorResult(error, "My stats failed."));
+      setMyOperations(errorResult(error, "My operations failed."));
+    }
+  }, [sessionUser]);
 
   const loadSummary = useCallback(async () => {
-    if (!hasToken) {
+    if (!canViewDashboard) {
+      setSummary(emptyResult);
       return;
     }
 
@@ -379,16 +236,36 @@ export function App() {
     try {
       setSummary({
         status: "ready",
-        data: await readJson<DashboardSummaryResponse>("/v1/dashboard/summary", token),
+        data: await apiFetch<DashboardSummaryResponse>("/v1/dashboard/summary"),
         error: null
       });
     } catch (error) {
-      setSummary({ status: "error", data: null, error: error instanceof Error ? error.message : "Summary failed." });
+      setSummary(errorResult(error, "Summary failed."));
     }
-  }, [hasToken, token]);
+  }, [canViewDashboard]);
+
+  const loadDataQuality = useCallback(async () => {
+    if (!canSeeSensitiveIds(sessionUser)) {
+      setDataQuality(emptyResult);
+      return;
+    }
+
+    setDataQuality({ status: "loading", data: null, error: null });
+
+    try {
+      setDataQuality({
+        status: "ready",
+        data: await apiFetch<DataQualityResponse>("/v1/data-quality"),
+        error: null
+      });
+    } catch (error) {
+      setDataQuality(errorResult(error, "Data quality checks failed."));
+    }
+  }, [sessionUser]);
 
   const loadOperations = useCallback(async () => {
-    if (!hasToken) {
+    if (!canViewOperations) {
+      setOperations(emptyResult);
       return;
     }
 
@@ -397,19 +274,22 @@ export function App() {
     try {
       setOperations({
         status: "ready",
-        data: await readJson<OperationsResponse>("/v1/operations", token, {
-          ...operationFilters,
-          limit: "50"
+        data: await apiFetch<OperationsResponse>("/v1/operations", {
+          params: {
+            ...operationFilters,
+            limit: "50"
+          }
         }),
         error: null
       });
     } catch (error) {
-      setOperations({ status: "error", data: null, error: error instanceof Error ? error.message : "Operations failed." });
+      setOperations(errorResult(error, "Operations failed."));
     }
-  }, [hasToken, operationFilters, token]);
+  }, [canViewOperations, operationFilters]);
 
   const loadPlayers = useCallback(async () => {
-    if (!hasToken) {
+    if (!canViewRoster) {
+      setPlayers(emptyResult);
       return;
     }
 
@@ -418,17 +298,19 @@ export function App() {
     try {
       setPlayers({
         status: "ready",
-        data: await readJson<PlayersResponse>("/v1/players", token, { q: playerSearch, limit: "50" }),
+        data: await apiFetch<PlayersResponse>("/v1/players", {
+          params: { q: playerSearch, limit: "50" }
+        }),
         error: null
       });
     } catch (error) {
-      setPlayers({ status: "error", data: null, error: error instanceof Error ? error.message : "Players failed." });
+      setPlayers(errorResult(error, "Players failed."));
     }
-  }, [hasToken, playerSearch, token]);
+  }, [canViewRoster, playerSearch]);
 
   const loadOperationDetail = useCallback(
     async (operationId: string) => {
-      if (!hasToken || operationId.length === 0) {
+      if (!canViewOperations || operationId.length === 0) {
         return;
       }
 
@@ -438,27 +320,26 @@ export function App() {
 
       try {
         const [detail, detailSummary, attendance] = await Promise.all([
-          readJson<OperationDetailResponse>(`/v1/operations/${operationId}`, token),
-          readJson<OperationSummaryResponse>(`/v1/operations/${operationId}/summary`, token),
-          readJson<OperationAttendanceResponse>(`/v1/operations/${operationId}/attendance`, token)
+          apiFetch<OperationDetailResponse>(`/v1/operations/${operationId}`),
+          apiFetch<OperationSummaryResponse>(`/v1/operations/${operationId}/summary`),
+          apiFetch<OperationAttendanceResponse>(`/v1/operations/${operationId}/attendance`)
         ]);
 
         setOperationDetail({ status: "ready", data: detail, error: null });
         setOperationSummary({ status: "ready", data: detailSummary, error: null });
         setOperationAttendance({ status: "ready", data: attendance, error: null });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Operation detail failed.";
-        setOperationDetail({ status: "error", data: null, error: message });
-        setOperationSummary({ status: "error", data: null, error: message });
-        setOperationAttendance({ status: "error", data: null, error: message });
+        setOperationDetail(errorResult(error, "Operation detail failed."));
+        setOperationSummary(errorResult(error, "Operation summary failed."));
+        setOperationAttendance(errorResult(error, "Operation attendance failed."));
       }
     },
-    [hasToken, token]
+    [canViewOperations]
   );
 
   const loadPlayerDetail = useCallback(
     async (playerUid: string) => {
-      if (!hasToken || playerUid.length === 0) {
+      if (!canViewRoster || playerUid.length === 0) {
         return;
       }
 
@@ -466,32 +347,78 @@ export function App() {
       setPlayerSummary({ status: "loading", data: null, error: null });
 
       try {
+        const encodedUid = encodeURIComponent(playerUid);
         const [detail, detailSummary] = await Promise.all([
-          readJson<PlayerDetailResponse>(`/v1/players/${encodeURIComponent(playerUid)}`, token),
-          readJson<PlayerSummaryResponse>(`/v1/players/${encodeURIComponent(playerUid)}/summary`, token)
+          apiFetch<PlayerDetailResponse>(`/v1/players/${encodedUid}`),
+          apiFetch<PlayerSummaryResponse>(`/v1/players/${encodedUid}/summary`)
         ]);
 
         setPlayerDetail({ status: "ready", data: detail, error: null });
         setPlayerSummary({ status: "ready", data: detailSummary, error: null });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Player detail failed.";
-        setPlayerDetail({ status: "error", data: null, error: message });
-        setPlayerSummary({ status: "error", data: null, error: message });
+        setPlayerDetail(errorResult(error, "Player detail failed."));
+        setPlayerSummary(errorResult(error, "Player summary failed."));
       }
     },
-    [hasToken, token]
+    [canViewRoster]
   );
 
   useEffect(() => {
     void loadHealth();
-  }, [loadHealth]);
+    void loadMe();
+  }, [loadHealth, loadMe]);
 
   useEffect(() => {
     void loadDbHealth();
     void loadSummary();
+    void loadDataQuality();
     void loadOperations();
     void loadPlayers();
-  }, [loadDbHealth, loadOperations, loadPlayers, loadSummary]);
+  }, [loadDataQuality, loadDbHealth, loadOperations, loadPlayers, loadSummary]);
+
+  useEffect(() => {
+    void loadAdminUsers();
+  }, [loadAdminUsers]);
+
+  useEffect(() => {
+    void loadMachineTokens();
+  }, [loadMachineTokens]);
+
+  useEffect(() => {
+    void loadMyStats();
+  }, [loadMyStats]);
+
+  useEffect(() => {
+    if (!sessionUser) {
+      return;
+    }
+
+    const allowed =
+      view === "me" ||
+      (view === "battalion" && canViewBattalion) ||
+      (view === "leaderboard" && canViewLeaderboard) ||
+      (view === "dashboard" && canViewDashboard) ||
+      (view === "operations" && canViewOperations) ||
+      (view === "players" && canViewRoster) ||
+      (view === "discord" && canViewComms) ||
+      (view === "admin" && canAdmin) ||
+      (view === "system" && canManageSystem);
+
+    if (!allowed) {
+      setView("me");
+    }
+  }, [
+    canAdmin,
+    canManageSystem,
+    canViewBattalion,
+    canViewComms,
+    canViewDashboard,
+    canViewLeaderboard,
+    canViewOperations,
+    canViewRoster,
+    sessionUser,
+    view
+  ]);
 
   useEffect(() => {
     if (selectedOperationId) {
@@ -505,395 +432,245 @@ export function App() {
     }
   }, [loadPlayerDetail, selectedPlayerUid]);
 
-  const selectedOperation = useMemo(
-    () => operations.status === "ready" ? operations.data.operations.find((operation) => operation.id === selectedOperationId) : null,
-    [operations, selectedOperationId]
-  );
+  async function logout() {
+    try {
+      await apiFetch("/auth/logout", { method: "POST" });
+    } catch {
+      // Clearing local session state is still useful if the server session is gone.
+    }
 
-  function saveToken(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const nextToken = tokenDraft.trim();
-    window.sessionStorage.setItem(tokenStorageKey, nextToken);
-    setToken(nextToken);
+    setMe(emptyResult);
+    setAdminUsers(emptyResult);
+    setMachineTokens(emptyResult);
+    setView("me");
   }
 
-  function forgetToken() {
-    window.sessionStorage.removeItem(tokenStorageKey);
-    setToken("");
-    setTokenDraft("");
-    setSummary(emptyResult);
-    setOperations(emptyResult);
-    setPlayers(emptyResult);
-    setOperationDetail(emptyResult);
-    setOperationSummary(emptyResult);
-    setOperationAttendance(emptyResult);
-    setPlayerDetail(emptyResult);
-    setPlayerSummary(emptyResult);
+  function loginDiscord() {
+    window.location.href = `/auth/discord/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
+  }
+
+  async function loginTestOwner() {
+    await apiFetch("/auth/test/login", {
+      method: "POST",
+      body: {
+        provider_user_id: "local-dev-owner",
+        display_name: "Local Dev Owner",
+        roles: ["owner"]
+      }
+    });
+    await loadMe();
+  }
+
+  function selectOperation(operationId: string) {
+    setSelectedOperationId(operationId);
+    setView("operations");
   }
 
   async function exportCsv(path: string, filename: string) {
-    if (!hasToken) {
-      setExportMessage("Token required.");
+    if (!canExportViews) {
+      setExportMessage("Export not available for this role.");
       return;
     }
 
     try {
-      const csv = await fetchCsv(path, token);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      const csv = await fetchCsv(path);
+      saveCsv(csv, filename);
       setExportMessage(`Export ready: ${filename}`);
     } catch (error) {
-      setExportMessage(error instanceof Error ? error.message : "Export failed.");
+      const parsed = resultError(error, "Export failed.");
+      setExportMessage(parsed.message);
     }
   }
 
-  return (
-    <main className="app-shell">
-      <header className="top-bar">
-        <div>
-          <p className="eyebrow">Internal</p>
-          <h1>Arma Attendance Tracker</h1>
-        </div>
-        <div className="status-strip" aria-label="Service status">
-          <span className={`status-pill ${health.status}`}>API {statusLabel(health)}</span>
-          <span className={`status-pill ${dbHealth.status}`}>DB {hasToken ? statusLabel(dbHealth) : "token needed"}</span>
-          <span className={`status-pill ${hasToken ? "ready" : "idle"}`}>{hasToken ? "token set" : "no token"}</span>
-        </div>
-      </header>
+  async function createMachineToken(input: { name: string; token_kind: MachineTokenKind }) {
+    const created = await apiFetch<CreateMachineTokenResponse>("/v1/system/machine-tokens", {
+      method: "POST",
+      body: input
+    });
+    setCreatedMachineToken(created);
+    await loadMachineTokens();
+  }
 
-      <section className="auth-panel" aria-label="Bearer token">
-        <form onSubmit={saveToken}>
-          <label htmlFor="token">Bearer token</label>
-          <input
-            id="token"
-            type="password"
-            value={tokenDraft}
-            onChange={(event) => setTokenDraft(event.target.value)}
-            placeholder="dev-token"
-            autoComplete="off"
-          />
-          <button type="submit">Use token</button>
-          <button type="button" className="secondary" onClick={forgetToken}>
-            Forget token
+  async function revokeMachineToken(tokenId: string) {
+    await apiFetch(`/v1/system/machine-tokens/${tokenId}`, { method: "DELETE" });
+    await loadMachineTokens();
+  }
+
+  async function updatePlayerName(displayName: string) {
+    await apiFetch<MyPlayerResponse>("/v1/me/player", {
+      method: "PATCH",
+      body: { display_name: displayName }
+    });
+    await loadMyStats();
+    await loadPlayers();
+  }
+
+  async function resetPlayerName(playerUid: string) {
+    await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}/reset-name`, { method: "POST" });
+    await loadPlayers();
+    await loadPlayerDetail(playerUid);
+  }
+
+  async function deleteOperation(operationId: string) {
+    try {
+      await apiFetch(`/v1/operations/${encodeURIComponent(operationId)}`, { method: "DELETE" });
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.code !== "operation_not_found") {
+        throw error;
+      }
+    }
+
+    setSelectedOperationId("");
+    setOperationDetail(emptyResult);
+    setOperationSummary(emptyResult);
+    setOperationAttendance(emptyResult);
+    await loadOperations();
+  }
+
+  async function refreshRoster() {
+    await loadPlayers();
+
+    if (selectedPlayerUid.length > 0) {
+      await loadPlayerDetail(selectedPlayerUid);
+    }
+  }
+
+  const content =
+    view === "me" && sessionUser ? (
+      <MyStatsPage
+        user={sessionUser}
+        myPlayer={myPlayer}
+        myOperations={myOperations}
+        onRefresh={() => void loadMyStats()}
+        onUpdatePlayerName={updatePlayerName}
+        onLinkSteam={() => {
+          window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
+        }}
+        onUnlinkSteam={async () => {
+          await apiFetch("/v1/me/identities/steam", { method: "DELETE" });
+          await loadMe();
+          await loadMyStats();
+        }}
+      />
+    ) : view === "battalion" && canViewBattalion && sessionUser ? (
+      <BattalionPage user={sessionUser} />
+    ) : view === "leaderboard" && canViewLeaderboard ? (
+      <LeaderboardPage />
+    ) : view === "dashboard" && canViewDashboard ? (
+      <DashboardPage
+        hasToken={canViewDashboard}
+        summary={summary}
+        dataQuality={dataQuality}
+        onSelectOperation={selectOperation}
+        onOpenOperations={() => setView("operations")}
+        onOpenPlayers={() => setView("players")}
+        canExport={canExportViews}
+        onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
+      />
+    ) : view === "operations" && canViewOperations ? (
+      <OperationsPage
+        operations={operations}
+        operationDetail={operationDetail}
+        operationSummary={operationSummary}
+        operationAttendance={operationAttendance}
+        selectedOperationId={selectedOperationId}
+        operationFilters={operationFilters}
+        onFiltersChange={setOperationFilters}
+        onSelectOperation={setSelectedOperationId}
+        onRefresh={() => void loadOperations()}
+        canExport={canExportViews}
+        canDeleteOperations={canDeleteOperationRows}
+        onDeleteOperation={deleteOperation}
+        onExportAttendance={(operationId) => void exportCsv(`/v1/operations/${operationId}/attendance.csv`, `operation-${operationId}-attendance.csv`)}
+      />
+    ) : view === "players" && canViewRoster ? (
+      <PlayersPage
+        players={players}
+        playerDetail={playerDetail}
+        playerSummary={playerSummary}
+        playerSearch={playerSearch}
+        selectedPlayerUid={selectedPlayerUid}
+        onSearchChange={setPlayerSearch}
+        onSearch={() => void loadPlayers()}
+        onRefresh={() => void refreshRoster()}
+        onSelectPlayer={setSelectedPlayerUid}
+        canExport={canExportViews}
+        canResetPlayerNames={canResetRosterNames}
+        onResetPlayerName={resetPlayerName}
+        onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
+      />
+    ) : view === "discord" && canViewComms ? (
+      <DiscordPage hasToken={Boolean(sessionUser)} token="" />
+    ) : view === "admin" && canAdmin ? (
+      <IdentityPage
+        me={me}
+        adminUsers={adminUsers}
+        onLoginDiscord={loginDiscord}
+        onLogout={() => void logout()}
+        onRefreshMe={() => void loadMe()}
+        onRefreshAdminUsers={() => void loadAdminUsers()}
+      />
+    ) : view === "system" && canManageSystem ? (
+      <SystemPage
+        machineTokens={machineTokens}
+        createdToken={createdMachineToken}
+        onCreateToken={createMachineToken}
+        onRevokeToken={revokeMachineToken}
+        onRefresh={() => void loadMachineTokens()}
+      />
+    ) : sessionUser ? (
+      <MyStatsPage
+        user={sessionUser}
+        myPlayer={myPlayer}
+        myOperations={myOperations}
+        onRefresh={() => void loadMyStats()}
+        onUpdatePlayerName={updatePlayerName}
+        onLinkSteam={() => {
+          window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
+        }}
+        onUnlinkSteam={async () => {
+          await apiFetch("/v1/me/identities/steam", { method: "DELETE" });
+          await loadMe();
+          await loadMyStats();
+        }}
+      />
+    ) : null;
+
+  if (!sessionUser) {
+    return (
+      <main className="login-only">
+        <section className="login-panel">
+          <p className="console-glyphs" aria-hidden="true">
+            authentication required
+          </p>
+          <p className="eyebrow">Arma Attendance Tracker</p>
+          <h1>Login Required</h1>
+          <p>Use Discord to open your attendance console.</p>
+          <button type="button" onClick={loginDiscord}>
+            Login with Discord
           </button>
-        </form>
-      </section>
-
-      <nav className="tabs" aria-label="Dashboard views">
-        {(["summary", "operations", "players"] as ViewName[]).map((name) => (
-          <button key={name} className={view === name ? "active" : ""} type="button" onClick={() => setView(name)}>
-            {name}
-          </button>
-        ))}
-      </nav>
-
-      {!hasToken ? <p className="message">Enter a bearer token to load internal API data.</p> : null}
-
-      {view === "summary" ? (
-        <section className="view-grid">
-          <Message result={summary} />
-          {summary.status === "ready" ? (
-            <>
-              <section className="panel">
-                <h2>Summary</h2>
-                <div className="stat-grid">
-                  <StatTile label="Operations" value={summary.data.summary.operations_total} />
-                  <StatTile label="Finished" value={summary.data.summary.operations_finished} />
-                  <StatTile label="Started" value={summary.data.summary.operations_started} />
-                  <StatTile label="Players" value={summary.data.summary.players_total} />
-                  <StatTile label="Attendance rows" value={summary.data.summary.attendance_rows_total} />
-                  <StatTile label="Stats rows" value={summary.data.summary.stats_rows_total} />
-                </div>
-              </section>
-              <section className="panel wide">
-                <h2>Recent operations</h2>
-                <OperationsTable
-                  operations={summary.data.recent_operations}
-                  onSelect={(operationId) => {
-                    setSelectedOperationId(operationId);
-                    setView("operations");
-                  }}
-                />
-              </section>
-              <section className="panel">
-                <h2>Top attendance</h2>
-                <PlayerRankTable rows={summary.data.top_players_by_attendance} metricKey="operation_count" metricLabel="Ops" />
-              </section>
-              <section className="panel">
-                <h2>Top AI kills</h2>
-                <PlayerRankTable rows={summary.data.top_players_by_ai_kills} metricKey="ai_kills" metricLabel="AI" />
-              </section>
-            </>
+          {import.meta.env.DEV ? (
+            <button type="button" className="secondary" onClick={() => void loginTestOwner()}>
+              Enter Test Console
+            </button>
           ) : null}
+          <StatusChip label={`API ${statusLabel(health)}`} tone={health.status === "error" ? "danger" : health.status === "ready" ? "ready" : "muted"} />
         </section>
-      ) : null}
+      </main>
+    );
+  }
 
-      {view === "operations" ? (
-        <section className="view-grid">
-          <section className="panel wide">
-            <div className="panel-header">
-              <h2>Operations</h2>
-              <button type="button" onClick={() => void loadOperations()}>
-                Refresh
-              </button>
-            </div>
-            <form className="filters" onSubmit={(event) => event.preventDefault()}>
-              <input
-                value={operationFilters.server_key}
-                onChange={(event) => setOperationFilters((current) => ({ ...current, server_key: event.target.value }))}
-                placeholder="server_key"
-              />
-              <select
-                value={operationFilters.status}
-                onChange={(event) => setOperationFilters((current) => ({ ...current, status: event.target.value }))}
-              >
-                <option value="">any status</option>
-                <option value="started">started</option>
-                <option value="finished">finished</option>
-                <option value="abandoned">abandoned</option>
-              </select>
-              <input
-                value={operationFilters.mission_uid}
-                onChange={(event) => setOperationFilters((current) => ({ ...current, mission_uid: event.target.value }))}
-                placeholder="mission_uid"
-              />
-            </form>
-            <Message result={operations} />
-            {operations.status === "ready" ? (
-              <OperationsTable operations={operations.data.operations} selectedId={selectedOperationId} onSelect={setSelectedOperationId} />
-            ) : null}
-          </section>
-          <section className="panel wide">
-            <div className="panel-header">
-              <h2>Operation detail</h2>
-              {selectedOperation ? (
-                <button
-                  type="button"
-                  onClick={() => void exportCsv(`/v1/operations/${selectedOperation.id}/attendance.csv`, `operation-${selectedOperation.id}-attendance.csv`)}
-                >
-                  Attendance CSV
-                </button>
-              ) : null}
-            </div>
-            {exportMessage ? <p className="message">{exportMessage}</p> : null}
-            <Message result={operationDetail} />
-            <Message result={operationSummary} />
-            <Message result={operationAttendance} />
-            {operationDetail.status === "ready" && operationSummary.status === "ready" ? (
-              <div className="detail-block">
-                <h3>{display(operationDetail.data.operation.mission_name)}</h3>
-                <div className="stat-grid compact">
-                  <StatTile label="Server" value={operationDetail.data.operation.server_key} />
-                  <StatTile label="Status" value={operationDetail.data.operation.status} />
-                  <StatTile label="Payloads" value={operationSummary.data.payloads.total} />
-                  <StatTile label="Start present" value={operationSummary.data.attendance.present_at_start} />
-                  <StatTile label="End present" value={operationSummary.data.attendance.present_at_end} />
-                  <StatTile label="AI kills" value={operationSummary.data.stats.ai_kills} />
-                  <StatTile label="Deaths" value={operationSummary.data.stats.deaths} />
-                </div>
-              </div>
-            ) : null}
-            {operationAttendance.status === "ready" ? <AttendanceTable rows={operationAttendance.data.attendance} /> : null}
-          </section>
-        </section>
-      ) : null}
-
-      {view === "players" ? (
-        <section className="view-grid">
-          <section className="panel wide">
-            <div className="panel-header">
-              <h2>Players</h2>
-              <button type="button" onClick={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}>
-                Players CSV
-              </button>
-            </div>
-            <form className="filters" onSubmit={(event) => event.preventDefault()}>
-              <input value={playerSearch} onChange={(event) => setPlayerSearch(event.target.value)} placeholder="Search players" />
-              <button type="button" onClick={() => void loadPlayers()}>
-                Search
-              </button>
-            </form>
-            <Message result={players} />
-            {players.status === "ready" ? (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Player UID</th>
-                    <th>Name</th>
-                    <th>Last seen</th>
-                    <th>Ops</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {players.data.players.map((player) => (
-                    <tr
-                      key={player.player_uid}
-                      className={player.player_uid === selectedPlayerUid ? "selected" : ""}
-                      onClick={() => setSelectedPlayerUid(player.player_uid)}
-                    >
-                      <td>{player.player_uid}</td>
-                      <td>{display(player.last_name)}</td>
-                      <td>{formatDate(player.last_seen_at)}</td>
-                      <td>{player.operation_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
-          </section>
-          <section className="panel wide">
-            <h2>Player detail</h2>
-            <Message result={playerDetail} />
-            <Message result={playerSummary} />
-            {playerDetail.status === "ready" && playerSummary.status === "ready" ? (
-              <div className="detail-block">
-                <h3>{display(playerDetail.data.player.last_name)}</h3>
-                <p className="mono">{playerDetail.data.player.player_uid}</p>
-                <div className="stat-grid compact">
-                  <StatTile label="Operations" value={playerSummary.data.summary.operation_count} />
-                  <StatTile label="Start count" value={playerSummary.data.summary.present_at_start_count} />
-                  <StatTile label="End count" value={playerSummary.data.summary.present_at_end_count} />
-                  <StatTile label="AI kills" value={playerSummary.data.summary.ai_kills} />
-                  <StatTile label="Deaths" value={playerSummary.data.summary.deaths} />
-                </div>
-                <h3>Recent operations</h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Mission</th>
-                      <th>Status</th>
-                      <th>Started</th>
-                      <th>Present</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {playerSummary.data.recent_operations.map((operation) => (
-                      <tr key={operation.operation_id}>
-                        <td>{display(operation.mission_name)}</td>
-                        <td>{operation.status}</td>
-                        <td>{formatDate(operation.started_at)}</td>
-                        <td>{operation.present_at_start || operation.present_at_end ? "yes" : "no"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-          </section>
-        </section>
-      ) : null}
-    </main>
-  );
-}
-
-function OperationsTable({
-  operations,
-  selectedId,
-  onSelect
-}: {
-  operations: OperationListItem[];
-  selectedId?: string;
-  onSelect: (operationId: string) => void;
-}) {
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Mission</th>
-          <th>World</th>
-          <th>Server</th>
-          <th>Status</th>
-          <th>Started</th>
-          <th>Payloads</th>
-        </tr>
-      </thead>
-      <tbody>
-        {operations.map((operation) => (
-          <tr
-            key={operation.id}
-            className={operation.id === selectedId ? "selected" : ""}
-            onClick={() => onSelect(operation.id)}
-          >
-            <td>{display(operation.mission_name)}</td>
-            <td>{display(operation.world_name)}</td>
-            <td>{operation.server_key}</td>
-            <td>{operation.status}</td>
-            <td>{formatDate(operation.started_at)}</td>
-            <td>{operation.payload_count}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function PlayerRankTable({
-  rows,
-  metricKey,
-  metricLabel
-}: {
-  rows: Array<{ player_uid: string; last_name: string | null } & Record<string, string | number | null>>;
-  metricKey: string;
-  metricLabel: string;
-}) {
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>Player</th>
-          <th>{metricLabel}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.player_uid}>
-            <td>{display(row.last_name) !== "—" ? display(row.last_name) : row.player_uid}</td>
-            <td>{display(row[metricKey])}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendance"] }) {
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>Player UID</th>
-          <th>Name</th>
-          <th>Present</th>
-          <th>Side</th>
-          <th>Group</th>
-          <th>Role</th>
-          <th>K/D</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.player_uid}>
-            <td>{row.player_uid}</td>
-            <td>{display(row.name_at_end ?? row.name_at_start)}</td>
-            <td>
-              {row.present_at_start ? "start" : ""}
-              {row.present_at_start && row.present_at_end ? " + " : ""}
-              {row.present_at_end ? "end" : ""}
-            </td>
-            <td>{display(row.side_at_end ?? row.side_at_start)}</td>
-            <td>{display(row.group_at_end ?? row.group_at_start)}</td>
-            <td>{display(row.role_at_end ?? row.role_at_start)}</td>
-            <td>
-              {row.stats ? `${row.stats.ai_kills + row.stats.infantry_kills + row.stats.vehicle_kills}/${row.stats.deaths}` : "—"}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <CommandShell
+      view={view}
+      health={health}
+      dbHealth={dbHealth}
+      sessionUser={sessionUser}
+      onViewChange={setView}
+      onLogout={() => void logout()}
+      inspector={<PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />}
+    >
+      {content}
+    </CommandShell>
   );
 }

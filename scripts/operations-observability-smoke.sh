@@ -81,6 +81,19 @@ print(len(data))
   fi
 }
 
+assert_json() {
+  local expression="$1"
+
+  node -e '
+const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const ok = Function("data", `return (${process.argv[1]});`)(data);
+if (!ok) {
+  console.error(JSON.stringify(data, null, 2));
+  process.exit(1);
+}
+' "$expression"
+}
+
 urlencode() {
   python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
 }
@@ -175,6 +188,17 @@ if [[ "$(printf '%s\n' "$operations_response" | json_value ".pagination.count")"
   echo "[smoke:operations:observability] Expected operation list to include at least one row." >&2
   exit 1
 fi
+
+echo "[smoke:operations:observability] Checking unauthenticated recent operations are redacted and capped..."
+public_operations_response="$(curl -fsS "$BASE_URL/v1/operations?server_key=$SERVER_KEY&limit=200&offset=50")"
+printf '%s\n' "$public_operations_response" | print_json
+printf '%s\n' "$public_operations_response" | assert_json '
+  data.ok === true
+  && data.pagination.limit <= 20
+  && data.pagination.offset === 0
+  && data.operations.length <= 20
+  && data.operations.some((operation) => operation.mission_name === "Operation Observability Smoke Test" && operation.id === null && operation.unit_id === null && operation.server_key === null && operation.mission_uid === null && operation.payload_count === undefined)
+'
 
 echo "[smoke:operations:observability] Fetching operation payloads..."
 payloads_response="$(

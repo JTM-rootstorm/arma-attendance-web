@@ -1,16 +1,27 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
 
+import { requireCsrfForUnsafeSessionRequest } from "./auth/csrf.js";
 import { config, loadedEnvFiles } from "./config.js";
 import { closeDbPool } from "./db/pool.js";
+import { registerAdminRoutes } from "./routes/admin.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
 import { registerDebugRoutes } from "./routes/debug.js";
+import { registerDiscordRoutes } from "./routes/discord.js";
 import { registerExportRoutes } from "./routes/exports.js";
 import { registerHealthDbRoutes } from "./routes/healthDb.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerIngestRequestRoutes } from "./routes/ingestRequests.js";
+import { registerLeaderboardRoutes } from "./routes/leaderboards.js";
 import { registerOperationRoutes } from "./routes/operations.js";
+import { registerOwnerRoutes } from "./routes/owner.js";
 import { registerPlayerRoutes } from "./routes/players.js";
+import { registerSquadXmlRoutes } from "./routes/squadXml.js";
 import { registerSummaryRoutes } from "./routes/summaries.js";
+import { registerUnitRoutes } from "./routes/units.js";
 import { registerWebRoutes } from "./routes/web.js";
 
 const app = Fastify({
@@ -24,6 +35,17 @@ app.log.info(
     nodeEnv: config.nodeEnv,
     envFilesLoaded: loadedEnvFiles.filter((envFile) => envFile.loaded).length,
     apiTokenPresent: Boolean(config.apiToken),
+    botApiTokenPresent: Boolean(config.botApiToken),
+    discordOAuthConfigured: Boolean(config.discordClientId && config.discordClientSecret && config.discordRedirectUri),
+    steamOpenIdConfigured: Boolean(config.steamReturnUrl && config.steamRealm),
+    sessionSecure: config.sessionSecure,
+    sessionSameSite: config.sessionSameSite,
+    corsAllowedOrigins: config.corsAllowedOrigins,
+    corsAllowCredentials: config.corsAllowCredentials,
+    oauthAllowedReturnOrigins: config.oauthAllowedReturnOrigins,
+    csrfEnabled: config.csrfEnabled,
+    initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
+    testAuthEnabled: config.enableTestAuth,
     databaseUrlPresent: Boolean(config.databaseUrl)
   },
   "configuration loaded"
@@ -68,15 +90,54 @@ app.addHook("onClose", async () => {
   await closeDbPool();
 });
 
+const allowedCorsOrigins = new Set(config.corsAllowedOrigins);
+
+await app.register(helmet, {
+  contentSecurityPolicy: false
+});
+
+await app.register(rateLimit, {
+  global: false
+});
+
+await app.register(cors, {
+  origin(origin, callback) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    callback(null, allowedCorsOrigins.has(origin));
+  },
+  credentials: config.corsAllowCredentials,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Authorization", "Content-Type", "X-CSRF-Token"],
+  exposedHeaders: ["Content-Disposition"],
+  maxAge: 600
+});
+
+app.addHook("preHandler", async (request, reply) => {
+  if (!(await requireCsrfForUnsafeSessionRequest(request, reply))) {
+    return;
+  }
+});
+
 await registerHealthRoutes(app);
 await registerHealthDbRoutes(app);
+await registerAuthRoutes(app);
+await registerAdminRoutes(app);
 await registerDebugRoutes(app);
 await registerSummaryRoutes(app);
 await registerExportRoutes(app);
 await registerDataQualityRoutes(app);
+await registerDiscordRoutes(app);
 await registerOperationRoutes(app);
+await registerOwnerRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
+await registerUnitRoutes(app);
+await registerLeaderboardRoutes(app);
+await registerSquadXmlRoutes(app);
 await registerWebRoutes(app);
 
 try {
