@@ -52,8 +52,8 @@ type StrictSquadMember = {
   roster_name: string | null;
   rank: string | null;
   rank_name: string | null;
-  squad_name: string | null;
-  billet: string | null;
+  rank_short_name: string | null;
+  specialization: number;
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -102,11 +102,8 @@ function simplePaaFilename(value: string | null | undefined, fallback: string): 
 }
 
 function memberRemark(row: StrictSquadMember): string {
-  const parts = [row.rank_name ?? row.rank, row.squad_name, row.billet]
-    .map((part) => part?.trim())
-    .filter((part): part is string => Boolean(part && part.length > 0 && part !== "unassigned"));
-
-  return parts.length > 0 ? parts.join(" / ") : "N/A";
+  const rank = fallbackText(row.rank_short_name ?? row.rank_name ?? row.rank);
+  return `${rank},${row.specialization}`;
 }
 
 function buildStrictSquadXml(input: { unit: StrictSquadUnit; members: StrictSquadMember[] }): string {
@@ -208,8 +205,8 @@ async function listPublicMembers(unitId: string): Promise<StrictSquadMember[]> {
       roster_name: unitPlayers.rosterName,
       rank: unitPlayers.rank,
       rank_name: unitRanks.name,
-      squad_name: unitSquads.name,
-      billet: unitRosterAssignments.billet
+      rank_short_name: unitRanks.shortName,
+      specialization: players.specialization
     })
     .from(unitPlayers)
     .innerJoin(players, eq(players.playerUid, unitPlayers.playerUid))

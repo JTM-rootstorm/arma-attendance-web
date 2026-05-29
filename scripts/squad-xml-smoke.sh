@@ -80,10 +80,11 @@ WITH seeded_unit AS (
   RETURNING id
 ),
 seeded_player AS (
-  INSERT INTO players (player_uid, last_name, raw_last_player)
-  VALUES (:'player_uid', 'Smoke <Pilot> & "Ace"', '{}'::jsonb)
+  INSERT INTO players (player_uid, last_name, specialization, raw_last_player)
+  VALUES (:'player_uid', 'Smoke <Pilot> & "Ace"', 3, '{}'::jsonb)
   ON CONFLICT (player_uid) DO UPDATE SET
     last_name = EXCLUDED.last_name,
+    specialization = EXCLUDED.specialization,
     updated_at = now()
   RETURNING player_uid
 ),
@@ -226,6 +227,8 @@ for member in members:
         raise SystemExit("member/icq must be N/A")
     if not (member.find("remark").text or "").strip():
         raise SystemExit("member/remark must not be empty")
+    if member.find("remark").text != "CPL,3":
+        raise SystemExit(f"member/remark must be RANK,SPECIALIZATION, got {member.find('remark').text!r}")
 
 print("[squad-xml-smoke] strict XML shape OK")
 PY
