@@ -23,10 +23,8 @@ fi
 : "${DATABASE_URL:?DATABASE_URL is required. Export it or place it in the root .env file.}"
 
 UNIT_SLUG="${UNIT_SLUG:-squad-xml-smoke-$STAMP}"
-SQUAD_ASSET_ROOT="${SQUAD_ASSET_ROOT:-/var/lib/arma-attendance/squad-assets}"
 PICTURE_FILENAME="${SQUAD_XML_DEFAULT_PICTURE:-logo.paa}"
 PLAYER_UID="7656119${STAMP}77"
-ASSET_DIR="$SQUAD_ASSET_ROOT/_default"
 XML_FILE="$TMP_DIR/squad.xml"
 DTD_FILE="$TMP_DIR/squad.dtd"
 XML_HEADERS="$TMP_DIR/squad-xml.headers"
@@ -37,10 +35,7 @@ if [[ ! "$PICTURE_FILENAME" =~ ^[A-Za-z0-9._-]+\.paa$ ]]; then
   exit 1
 fi
 
-mkdir -p "$ASSET_DIR"
-printf 'PAA smoke placeholder\n' > "$ASSET_DIR/$PICTURE_FILENAME"
-
-echo "[squad-xml-smoke] Seeding unit, rank, squad, member, and default PAA..."
+echo "[squad-xml-smoke] Seeding unit, rank, squad, and member..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v unit_slug="$UNIT_SLUG" \
   -v player_uid="$PLAYER_UID" \

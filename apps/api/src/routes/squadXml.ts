@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { access } from "node:fs/promises";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -32,6 +33,8 @@ const SQUAD_DTD = `<!ELEMENT squad (name,email,web,picture,title,member*)>
 <!ELEMENT icq (#PCDATA)>
 <!ELEMENT remark (#PCDATA)>
 `;
+
+const bundledSquadAssetRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "squad-assets");
 
 type StrictSquadUnit = {
   unit_key: string;
@@ -141,8 +144,8 @@ function buildStrictSquadXml(input: { unit: StrictSquadUnit; members: StrictSqua
   return lines.join("\n");
 }
 
-function safeAssetPath(unitSlug: string, filename: string, useDefaultFolder = false): string | null {
-  const root = resolve(config.squadAssetRoot);
+function safeAssetPath(rootPath: string, unitSlug: string, filename: string, useDefaultFolder = false): string | null {
+  const root = resolve(rootPath);
   const folder = useDefaultFolder ? "_default" : unitSlug;
   const fullPath = resolve(join(root, folder, basename(filename)));
   const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
@@ -272,14 +275,16 @@ export async function registerSquadXmlRoutes(app: FastifyInstance) {
     }
 
     const { unit_slug: unitSlug, filename } = parsed.data;
-    const unitPath = safeAssetPath(unitSlug, filename);
-    const defaultPath = safeAssetPath(unitSlug, filename, true);
+    const unitPath = safeAssetPath(config.squadAssetRoot, unitSlug, filename);
+    const configuredDefaultPath = safeAssetPath(config.squadAssetRoot, unitSlug, filename, true);
+    const bundledUnitPath = safeAssetPath(bundledSquadAssetRoot, unitSlug, filename);
+    const bundledDefaultPath = safeAssetPath(bundledSquadAssetRoot, unitSlug, filename, true);
 
-    if (!unitPath || !defaultPath) {
+    if (!unitPath || !configuredDefaultPath || !bundledUnitPath || !bundledDefaultPath) {
       return sendValidationFailed(reply);
     }
 
-    const found = await firstReadablePath([unitPath, defaultPath]);
+    const found = await firstReadablePath([unitPath, configuredDefaultPath, bundledUnitPath, bundledDefaultPath]);
     if (!found) {
       return notFound(reply, "paa_not_found", "Squad logo PAA was not found.");
     }
