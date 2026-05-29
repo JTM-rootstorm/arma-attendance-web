@@ -64,7 +64,7 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
     const query = parsed.data;
     const values: unknown[] = [];
     const filters = ["u.is_active = true", "u.deleted_at IS NULL"];
-    const operationJoinFilters = ["ops.operation_id = o.id"];
+    const operationFilters: string[] = [];
 
     if (query.unit_id) {
       values.push(query.unit_id);
@@ -73,8 +73,10 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
 
     if (query.lookback_days) {
       values.push(query.lookback_days);
-      operationJoinFilters.push(`o.started_at >= now() - ($${values.length}::int * interval '1 day')`);
+      operationFilters.push(`o.started_at >= now() - ($${values.length}::int * interval '1 day')`);
     }
+
+    const operationWhereClause = operationFilters.length > 0 ? `AND ${operationFilters.join(" AND ")}` : "";
 
     values.push(query.min_operations);
     const minOperationsParam = values.length;
@@ -86,27 +88,69 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
     try {
       const result = await queryDb<UnitLeaderboardRow>(
         `
-        WITH totals AS (
+        WITH active_units AS (
           SELECT
             u.id AS unit_id,
             u.unit_key,
-            COALESCE(u.display_name, u.name) AS name,
-            COUNT(DISTINCT up.player_uid)::int AS member_count,
-            COUNT(DISTINCT o.id)::int AS operation_count,
-            COALESCE(SUM(ops.infantry_kills) FILTER (WHERE o.id IS NOT NULL), 0)::int AS infantry_kills,
-            COALESCE(SUM(ops.soft_vehicle_kills) FILTER (WHERE o.id IS NOT NULL), 0)::int AS soft_vehicle_kills,
-            COALESCE(SUM(ops.armor_kills) FILTER (WHERE o.id IS NOT NULL), 0)::int AS armor_kills,
-            COALESCE(SUM(ops.air_kills) FILTER (WHERE o.id IS NOT NULL), 0)::int AS air_kills,
-            COALESCE(SUM(ops.deaths) FILTER (WHERE o.id IS NOT NULL), 0)::int AS deaths
+            COALESCE(u.display_name, u.name) AS name
           FROM units u
+          WHERE ${filters.join(" AND ")}
+        ),
+        active_unit_players AS (
+          SELECT
+            au.unit_id,
+            up.player_uid
+          FROM active_units au
           JOIN unit_players up
-            ON up.unit_id = u.id
+            ON up.unit_id = au.unit_id
             AND up.is_active = true
             AND up.roster_status <> 'inactive'
-          LEFT JOIN operation_player_stats ops ON ops.player_uid = up.player_uid
-          LEFT JOIN operations o ON ${operationJoinFilters.join(" AND ")}
-          WHERE ${filters.join(" AND ")}
-          GROUP BY u.id
+        ),
+        member_counts AS (
+          SELECT
+            unit_id,
+            COUNT(DISTINCT player_uid)::int AS member_count
+          FROM active_unit_players
+          GROUP BY unit_id
+        ),
+        unit_operation_counts AS (
+          SELECT
+            aup.unit_id,
+            COUNT(DISTINCT op.operation_id)::int AS operation_count
+          FROM active_unit_players aup
+          JOIN operation_players op ON op.player_uid = aup.player_uid
+          JOIN operations o ON o.id = op.operation_id ${operationWhereClause}
+          GROUP BY aup.unit_id
+        ),
+        unit_stats AS (
+          SELECT
+            aup.unit_id,
+            COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
+            COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+            COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
+            COALESCE(SUM(ops.air_kills), 0)::int AS air_kills,
+            COALESCE(SUM(ops.deaths), 0)::int AS deaths
+          FROM active_unit_players aup
+          JOIN operation_player_stats ops ON ops.player_uid = aup.player_uid
+          JOIN operations o ON o.id = ops.operation_id ${operationWhereClause}
+          GROUP BY aup.unit_id
+        ),
+        totals AS (
+          SELECT
+            au.unit_id,
+            au.unit_key,
+            au.name,
+            mc.member_count,
+            COALESCE(uoc.operation_count, 0)::int AS operation_count,
+            COALESCE(us.infantry_kills, 0)::int AS infantry_kills,
+            COALESCE(us.soft_vehicle_kills, 0)::int AS soft_vehicle_kills,
+            COALESCE(us.armor_kills, 0)::int AS armor_kills,
+            COALESCE(us.air_kills, 0)::int AS air_kills,
+            COALESCE(us.deaths, 0)::int AS deaths
+          FROM active_units au
+          JOIN member_counts mc ON mc.unit_id = au.unit_id
+          LEFT JOIN unit_operation_counts uoc ON uoc.unit_id = au.unit_id
+          LEFT JOIN unit_stats us ON us.unit_id = au.unit_id
         ),
         ranked AS (
           SELECT

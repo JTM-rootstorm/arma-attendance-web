@@ -148,6 +148,8 @@ printf "%s" "$leaderboard_response" | assert_json "
   && data.leaderboard.some((entry) => entry.unit_key === '$unit_a_key')
   && data.leaderboard.some((entry) => entry.unit_key === '$unit_b_key')
   && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').rank < data.leaderboard.find((entry) => entry.unit_key === '$unit_b_key').rank
+  && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').operation_count === 1
+  && data.leaderboard.find((entry) => entry.unit_key === '$unit_b_key').operation_count === 1
   && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').total_kills === 43
   && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').total_kills === (
     data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').infantry_kills
@@ -157,6 +159,12 @@ printf "%s" "$leaderboard_response" | assert_json "
   )
   && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').deaths === 3
 "
+
+echo "[smoke:leaderboard] Checking player operation counts still count personal attendance..."
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_one/summary" |
+  assert_json 'data.ok === true && data.summary.operation_count === 1'
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_two/summary" |
+  assert_json 'data.ok === true && data.summary.operation_count === 1'
 
 echo "[smoke:leaderboard] Checking unauthenticated leaderboard is available and redacted..."
 public_leaderboard_response="$(curl -fsS "$BASE_URL/v1/leaderboard/units?limit=200")"
