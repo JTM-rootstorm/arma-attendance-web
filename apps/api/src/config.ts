@@ -42,6 +42,11 @@ const envSchema = z.object({
     .or(z.boolean())
     .default(true),
   CSRF_TOKEN_TTL_MINUTES: z.coerce.number().int().min(1).max(24 * 60).default(120),
+  SQUAD_ASSET_ROOT: z.string().min(1).default("/var/lib/arma-attendance/squad-assets"),
+  SQUAD_XML_DEFAULT_PICTURE: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\.paa$/)
+    .default("logo.paa"),
   INITIAL_ADMIN_DISCORD_IDS: z.string().optional(),
   ENABLE_TEST_AUTH: z
     .enum(["true", "false"])
@@ -106,6 +111,8 @@ export const config = {
     .filter((value) => value.length > 0),
   csrfEnabled: env.CSRF_ENABLED,
   csrfTokenTtlMinutes: env.CSRF_TOKEN_TTL_MINUTES,
+  squadAssetRoot: env.SQUAD_ASSET_ROOT,
+  squadXmlDefaultPicture: env.SQUAD_XML_DEFAULT_PICTURE,
   initialAdminDiscordIds: (env.INITIAL_ADMIN_DISCORD_IDS ?? "")
     .split(",")
     .map((value) => value.trim())

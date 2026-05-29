@@ -19,6 +19,7 @@ import { registerLeaderboardRoutes } from "./routes/leaderboards.js";
 import { registerOperationRoutes } from "./routes/operations.js";
 import { registerOwnerRoutes } from "./routes/owner.js";
 import { registerPlayerRoutes } from "./routes/players.js";
+import { registerSquadXmlRoutes } from "./routes/squadXml.js";
 import { registerSummaryRoutes } from "./routes/summaries.js";
 import { registerUnitRoutes } from "./routes/units.js";
 import { registerWebRoutes } from "./routes/web.js";
@@ -136,6 +137,7 @@ await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
 await registerUnitRoutes(app);
 await registerLeaderboardRoutes(app);
+await registerSquadXmlRoutes(app);
 await registerWebRoutes(app);
 
 try {

@@ -17,6 +17,9 @@ export const units = pgTable("units", {
   displayName: text("display_name"),
   callsign: text("callsign"),
   emblemUrl: text("emblem_url"),
+  squadXmlTitle: text("squad_xml_title"),
+  squadXmlWebUrl: text("squad_xml_web_url"),
+  squadXmlPictureFilename: text("squad_xml_picture_filename").notNull().default("logo.paa"),
   sortOrder: integer("sort_order").notNull().default(0),
   deletedAt: timestamp("deleted_at", { withTimezone: true })
 });
