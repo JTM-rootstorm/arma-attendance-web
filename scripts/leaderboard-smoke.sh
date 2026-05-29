@@ -166,6 +166,31 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_one/summary" |
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_two/summary" |
   assert_json 'data.ok === true && data.summary.operation_count === 1'
 
+echo "[smoke:leaderboard] Checking removed players keep historical unit credit..."
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -v unit_a_key="$unit_a_key" \
+  -v player_a_two="$player_a_two" <<'SQL'
+UPDATE unit_players up
+SET is_active = false,
+    roster_status = 'inactive',
+    updated_at = now()
+FROM units u
+WHERE u.id = up.unit_id
+  AND u.unit_key = :'unit_a_key'
+  AND up.player_uid = :'player_a_two';
+SQL
+
+post_removal_response="$(curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/leaderboard/units?limit=200")"
+printf "%s" "$post_removal_response" | assert_json "
+  data.ok === true
+  && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').member_count === 1
+  && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').operation_count === 1
+  && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').total_kills === 43
+  && data.leaderboard.find((entry) => entry.unit_key === '$unit_a_key').deaths === 3
+"
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_two/summary" |
+  assert_json 'data.ok === true && data.summary.operation_count === 1'
+
 echo "[smoke:leaderboard] Checking unauthenticated leaderboard is available and redacted..."
 public_leaderboard_response="$(curl -fsS "$BASE_URL/v1/leaderboard/units?limit=200")"
 printf "%s" "$public_leaderboard_response" | assert_json '

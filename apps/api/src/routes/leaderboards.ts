@@ -106,6 +106,28 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
             AND up.is_active = true
             AND up.roster_status <> 'inactive'
         ),
+        historical_unit_players AS (
+          SELECT
+            au.unit_id,
+            up.player_uid
+          FROM active_units au
+          JOIN unit_players up
+            ON up.unit_id = au.unit_id
+        ),
+        eligible_unit_operations AS (
+          SELECT
+            au.unit_id,
+            o.id AS operation_id
+          FROM active_units au
+          JOIN operations o ON o.unit_id = au.unit_id ${operationWhereClause}
+          UNION
+          SELECT
+            au.unit_id,
+            o.id AS operation_id
+          FROM active_units au
+          JOIN operation_units ou ON ou.unit_id = au.unit_id
+          JOIN operations o ON o.id = ou.operation_id ${operationWhereClause}
+        ),
         member_counts AS (
           SELECT
             unit_id,
@@ -115,32 +137,36 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
         ),
         unit_operation_counts AS (
           SELECT
-            aup.unit_id,
+            hup.unit_id,
             COUNT(DISTINCT op.operation_id)::int AS operation_count
-          FROM active_unit_players aup
-          JOIN operation_players op ON op.player_uid = aup.player_uid
-          JOIN operations o ON o.id = op.operation_id ${operationWhereClause}
-          GROUP BY aup.unit_id
+          FROM historical_unit_players hup
+          JOIN operation_players op ON op.player_uid = hup.player_uid
+          JOIN eligible_unit_operations euo
+            ON euo.unit_id = hup.unit_id
+            AND euo.operation_id = op.operation_id
+          GROUP BY hup.unit_id
         ),
         unit_stats AS (
           SELECT
-            aup.unit_id,
+            hup.unit_id,
             COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
             COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
             COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
             COALESCE(SUM(ops.air_kills), 0)::int AS air_kills,
             COALESCE(SUM(ops.deaths), 0)::int AS deaths
-          FROM active_unit_players aup
-          JOIN operation_player_stats ops ON ops.player_uid = aup.player_uid
-          JOIN operations o ON o.id = ops.operation_id ${operationWhereClause}
-          GROUP BY aup.unit_id
+          FROM historical_unit_players hup
+          JOIN operation_player_stats ops ON ops.player_uid = hup.player_uid
+          JOIN eligible_unit_operations euo
+            ON euo.unit_id = hup.unit_id
+            AND euo.operation_id = ops.operation_id
+          GROUP BY hup.unit_id
         ),
         totals AS (
           SELECT
             au.unit_id,
             au.unit_key,
             au.name,
-            mc.member_count,
+            COALESCE(mc.member_count, 0)::int AS member_count,
             COALESCE(uoc.operation_count, 0)::int AS operation_count,
             COALESCE(us.infantry_kills, 0)::int AS infantry_kills,
             COALESCE(us.soft_vehicle_kills, 0)::int AS soft_vehicle_kills,
@@ -148,7 +174,7 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
             COALESCE(us.air_kills, 0)::int AS air_kills,
             COALESCE(us.deaths, 0)::int AS deaths
           FROM active_units au
-          JOIN member_counts mc ON mc.unit_id = au.unit_id
+          LEFT JOIN member_counts mc ON mc.unit_id = au.unit_id
           LEFT JOIN unit_operation_counts uoc ON uoc.unit_id = au.unit_id
           LEFT JOIN unit_stats us ON us.unit_id = au.unit_id
         ),
