@@ -111,6 +111,11 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
     reason: "role evaluation CTEs and action audit reporting"
   },
   {
+    pattern: /^apps\/api\/src\/discord\/membershipResolver\.ts$/,
+    category: "discord auth sync",
+    reason: "Discord guild role claim resolution and assignment reconciliation"
+  },
+  {
     pattern: /^apps\/api\/src\/scripts\/backfillAttendance\.ts$/,
     category: "backfill",
     reason: "maintenance backfill"

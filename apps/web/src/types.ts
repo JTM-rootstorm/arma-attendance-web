@@ -231,6 +231,16 @@ export type DiscordGuild = {
   bot_user_id: string | null;
   bot_present: boolean;
   last_role_sync_at: string | null;
+  last_member_sync_at?: string | null;
+  guild_type?: "fallback" | "partner" | "internal" | "unknown";
+  grants_login?: boolean;
+  sync_members?: boolean;
+  is_fallback?: boolean;
+  unit_priority?: number;
+  rank_priority?: number;
+  permission_priority?: number;
+  config_order?: number;
+  config_source?: string;
   created_at: string;
   updated_at: string;
   role_count?: number;
@@ -358,6 +368,104 @@ export type DiscordRoleActionsResponse = {
 export type DiscordAuditsResponse = {
   ok: true;
   audits: DiscordRoleAudit[];
+};
+
+export type DiscordAuthPolicyResponse = {
+  ok: true;
+  policy: {
+    version: 1;
+    defaultFallbackGuildIds: string[];
+    guilds: Array<{
+      guildId: string;
+      label?: string;
+      type: "fallback" | "partner" | "internal" | "unknown";
+      grantsLogin: boolean;
+      syncMembers: boolean;
+      fallback: boolean;
+      unitPriority: number;
+      rankPriority: number;
+      permissionPriority: number;
+      configOrder: number;
+    }>;
+  };
+  guilds: DiscordGuild[];
+};
+
+export type DiscordRoleMapping = {
+  id: string;
+  guild_id: string;
+  role_id: string;
+  role_name?: string | null;
+  mapping_type: "unit_primary" | "unit_secondary" | "rank" | "unit_role" | "app_role" | "roster_status" | "deny_login";
+  unit_id: string | null;
+  unit_name?: string | null;
+  rank_id: string | null;
+  rank_name?: string | null;
+  unit_role: string | null;
+  app_role: string | null;
+  roster_status: string | null;
+  priority: number;
+  is_enabled: boolean;
+  notes: string | null;
+  updated_at: string;
+};
+
+export type DiscordRoleMappingsResponse = {
+  ok: true;
+  mappings: DiscordRoleMapping[];
+};
+
+export type DiscordRoleClaim = {
+  claimType: string;
+  guildId: string;
+  roleId: string;
+  roleName: string | null;
+  unitId: string | null;
+  rankId: string | null;
+  unitRole: string | null;
+  appRole: string | null;
+  rosterStatus: string | null;
+  guildPriority: number;
+  mappingPriority: number;
+  rolePosition: number;
+  configOrder: number;
+  guildType: string;
+};
+
+export type DiscordReconcileResponse = {
+  ok: true;
+  dry_run: boolean;
+  user_id: string | null;
+  discord_user_id: string | null;
+  player_uid: string | null;
+  denied: boolean;
+  manual_locked: boolean;
+  winning_claims: {
+    unit_primary: DiscordRoleClaim | null;
+    rank: DiscordRoleClaim | null;
+    roster_status: DiscordRoleClaim | null;
+    unit_roles: DiscordRoleClaim[];
+    app_roles: DiscordRoleClaim[];
+  };
+  ignored_claims: Array<DiscordRoleClaim & { reason: string }>;
+  applied: string[];
+};
+
+export type DiscordAssignmentAudit = {
+  id: string;
+  user_id: string | null;
+  player_uid: string | null;
+  discord_user_id: string | null;
+  action: string;
+  field: string;
+  winning_claim: DiscordRoleClaim | null;
+  source: string;
+  created_at: string;
+};
+
+export type DiscordAssignmentAuditsResponse = {
+  ok: true;
+  audits: DiscordAssignmentAudit[];
 };
 
 export type AuthIdentity = {

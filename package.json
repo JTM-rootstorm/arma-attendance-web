@@ -40,6 +40,7 @@
     "smoke:exports": "bash scripts/exports-smoke.sh",
     "smoke:data-quality": "bash scripts/data-quality-smoke.sh",
     "smoke:discord": "bash scripts/discord-smoke.sh",
+    "smoke:discord-auth-policy": "bash scripts/discord-auth-policy-smoke.sh",
     "smoke:auth": "bash scripts/auth-smoke.sh",
     "smoke:rbac": "bash scripts/rbac-smoke.sh",
     "release:check": "bash scripts/release-check.sh"
