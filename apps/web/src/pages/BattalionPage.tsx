@@ -542,10 +542,8 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   const [collapsedSquadIds, setCollapsedSquadIds] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const [newUnit, setNewUnit] = useState({ unit_key: "", name: "", callsign: "" });
-  const [newPlayer, setNewPlayer] = useState({ player_uid: "", roster_name: "", rank: "" });
   const [newRank, setNewRank] = useState({ rank_key: "", name: "", short_name: "", sort_order: "0" });
   const [newSquad, setNewSquad] = useState({ squad_key: "", name: "", parent_squad_id: "", squad_type: "squad", hierarchy_mode: "flat" });
-  const [adminGrant, setAdminGrant] = useState({ user_id: "", role: "admin" });
 
   const unitList = units.status === "ready" ? units.data.units : [];
   const selectedUnit = unitList.find((unit) => unit.unit_id === selectedUnitId) ?? unitList[0] ?? null;
@@ -724,25 +722,6 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     await loadUnits();
   }
 
-  async function addPlayer() {
-    if (!selectedUnit) {
-      return;
-    }
-
-    await apiFetch(`/v1/units/${selectedUnit.unit_id}/players`, {
-      method: "POST",
-      body: {
-        player_uid: newPlayer.player_uid,
-        roster_name: newPlayer.roster_name || null,
-        rank: newPlayer.rank || null
-      }
-    });
-    setNewPlayer({ player_uid: "", roster_name: "", rank: "" });
-    setMessage("Roster player added.");
-    await loadRoster(selectedUnit.unit_id);
-    await loadPlayerCandidates(selectedUnit.unit_id, candidateSearch);
-  }
-
   async function addCandidatePlayer(playerUid: string, rosterName: string | null) {
     if (!selectedUnit) {
       return;
@@ -869,19 +848,6 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     });
     setMessage("Squad layout saved.");
     await loadRoster(selectedUnit.unit_id);
-  }
-
-  async function grantUnitAdmin() {
-    if (!selectedUnit) {
-      return;
-    }
-
-    await apiFetch(`/v1/units/${selectedUnit.unit_id}/admins/${adminGrant.user_id}`, {
-      method: "PUT",
-      body: { role: adminGrant.role }
-    });
-    setAdminGrant({ user_id: "", role: "admin" });
-    setMessage("Battalion role granted.");
   }
 
   return (
@@ -1057,14 +1023,6 @@ export function BattalionPage({ user }: { user: AuthUser }) {
             {selectedUnit ? (
               <>
                 <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-                  <input value={newPlayer.player_uid} onChange={(event) => setNewPlayer({ ...newPlayer, player_uid: event.target.value })} placeholder="Player UID" />
-                  <input value={newPlayer.roster_name} onChange={(event) => setNewPlayer({ ...newPlayer, roster_name: event.target.value })} placeholder="Roster name" />
-                  <input value={newPlayer.rank} onChange={(event) => setNewPlayer({ ...newPlayer, rank: event.target.value })} placeholder="Rank" />
-                  <button type="button" onClick={() => void addPlayer()} disabled={!newPlayer.player_uid}>
-                    Add trooper
-                  </button>
-                </form>
-                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
                   <input value={newSquad.squad_key} onChange={(event) => setNewSquad({ ...newSquad, squad_key: event.target.value })} placeholder="Squad key" />
                   <input value={newSquad.name} onChange={(event) => setNewSquad({ ...newSquad, name: event.target.value })} placeholder="Squad name" />
                   <select value={newSquad.parent_squad_id} onChange={(event) => setNewSquad({ ...newSquad, parent_squad_id: event.target.value })}>
@@ -1103,22 +1061,11 @@ export function BattalionPage({ user }: { user: AuthUser }) {
             ) : null}
 
             {isOwner(user) && selectedUnit ? (
-              <>
-                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-                  <input value={adminGrant.user_id} onChange={(event) => setAdminGrant({ ...adminGrant, user_id: event.target.value })} placeholder="User UUID" />
-                  <select value={adminGrant.role} onChange={(event) => setAdminGrant({ ...adminGrant, role: event.target.value })}>
-                    <option value="officer">Officer</option>
-                    <option value="admin">Admin</option>
-                    <option value="tcw_admin">TCW admin</option>
-                  </select>
-                  <button type="button" onClick={() => void grantUnitAdmin()} disabled={!adminGrant.user_id}>
-                    Grant role
-                  </button>
-                  <button type="button" className="danger" onClick={() => void deleteUnit()}>
-                    Deactivate battalion
-                  </button>
-                </form>
-              </>
+              <div className="inline-actions">
+                <button type="button" className="danger" onClick={() => void deleteUnit()}>
+                  Deactivate battalion
+                </button>
+              </div>
             ) : null}
           </div>
         </CommandPanel>
