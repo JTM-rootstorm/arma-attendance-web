@@ -422,18 +422,23 @@ Discord OAuth is the primary browser login. The app stores local `app_users`, li
 
 Steam OpenID is a linked identity only. Steam login does not grant app permissions by itself and the app never asks for a Steam username or password.
 
-Machine-token bearer auth remains available for Arma ingest, smoke scripts, and bot-facing automation endpoints. Browser/admin workflows should use the session cookie created by Discord login.
+Machine-token bearer auth remains available for Arma ingest, smoke scripts, and bot-facing automation endpoints. Browser/admin workflows should use either the session cookie created by Discord login or backend-owned JWT handoff mode for external frontends that cannot rely on third-party cookies.
 
 Session cookies are `HttpOnly`, `Path=/`, use `SESSION_SAME_SITE` (`Lax` by default), and are `Secure` when `SESSION_SECURE=true`.
 
+JWT auth is additive for external frontends. Start Discord OAuth with `mode=jwt`, exchange the returned one-time `auth_handoff` code at `POST /auth/jwt/exchange`, and send `Authorization: Bearer <access_jwt>` on API calls. The API never puts access JWTs or refresh tokens in redirect URLs, stores opaque refresh tokens as hashes, rotates refresh tokens, and loads roles from the database instead of trusting JWT role claims. See [`docs/auth/JWT_AUTH.md`](docs/auth/JWT_AUTH.md).
+
 ## Base44 Integration
 
-Base44 is a frontend for human users. User-facing Base44 screens should redirect through the API Discord OAuth flow, rely on the HttpOnly session cookie, and call the API with `credentials: "include"`. API keys and machine tokens must not be placed in Base44 client-side code.
+Base44 is a frontend for human users. User-facing Base44 screens should redirect through the API Discord OAuth flow and use JWT handoff mode when third-party cookies are unreliable. API keys and machine tokens must not be placed in Base44 client-side code.
 
-Base44 can still use two auth paths, but only the session path is appropriate for browser UI:
+Base44 can use three auth paths, but only the human auth paths are appropriate for browser UI:
 
 ```text
-Human users:
+Human users, external frontend:
+  Base44 UI -> /auth/discord/start?mode=jwt&return_to=... -> Discord OAuth -> auth_handoff -> app JWT -> RBAC
+
+Human users, hosted/same-site dashboard:
   Base44 UI -> /auth/discord/start?return_to=... -> Discord OAuth -> session cookie -> RBAC
 
 Automated/server-side Base44 actions, only if Base44 can store secrets server-side:
@@ -442,7 +447,7 @@ Automated/server-side Base44 actions, only if Base44 can store secrets server-si
 
 The API supports both `return_to` and `redirect_after` on `/auth/discord/start` and `/auth/steam/start`. Absolute return URLs are allowed only when their origin is listed in `OAUTH_ALLOWED_RETURN_ORIGINS`; relative app paths remain supported for the native/self-hosted web UI.
 
-For unsafe session-authenticated requests (`POST`, `PUT`, `PATCH`, `DELETE`), fetch `/auth/csrf` and send the returned value as `X-CSRF-Token`. Unsafe session requests also require an allowed browser `Origin`. Machine-token requests skip CSRF.
+For unsafe session-authenticated requests (`POST`, `PUT`, `PATCH`, `DELETE`), fetch `/auth/csrf` and send the returned value as `X-CSRF-Token`. Unsafe session requests also require an allowed browser `Origin`. JWT and machine-token requests skip cookie-session CSRF.
 
 The Base44 agent handoff is committed at [`docs/base44/BASE44_AGENT.md`](docs/base44/BASE44_AGENT.md).
 
@@ -454,11 +459,28 @@ CORS_ALLOW_CREDENTIALS=true
 SESSION_SAME_SITE=None
 SESSION_SECURE=true
 OAUTH_ALLOWED_RETURN_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
+JWT_AUTH_ENABLED=true
+JWT_ISSUER=https://arma-stats.root-storm.com
+JWT_AUDIENCE=arma-attendance-web
+JWT_SECRET=<openssl rand -hex 32>
+JWT_ACCESS_TTL_SECONDS=900
+JWT_REFRESH_TTL_DAYS=30
+JWT_HANDOFF_TTL_SECONDS=120
 CSRF_ENABLED=true
 CSRF_TOKEN_TTL_MINUTES=120
 ```
 
-Fetch pattern:
+JWT fetch pattern:
+
+```js
+await fetch("https://arma-stats.root-storm.com/v1/me", {
+  headers: {
+    Authorization: `Bearer ${accessToken}`
+  }
+});
+```
+
+Cookie-session fetch pattern:
 
 ```js
 await fetch("https://arma-stats.root-storm.com/v1/me", {
@@ -609,6 +631,13 @@ SESSION_SAME_SITE=Lax
 CORS_ALLOWED_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
 CORS_ALLOW_CREDENTIALS=true
 OAUTH_ALLOWED_RETURN_ORIGINS=https://tcwa3-galaxy-map.base44.app,https://preview-sandbox--6986a916d70fdb8646418766.base44.app
+JWT_AUTH_ENABLED=false
+JWT_ISSUER=https://arma-stats.example.com
+JWT_AUDIENCE=arma-attendance-web
+JWT_SECRET=change-this-jwt-secret
+JWT_ACCESS_TTL_SECONDS=900
+JWT_REFRESH_TTL_DAYS=30
+JWT_HANDOFF_TTL_SECONDS=120
 CSRF_ENABLED=true
 CSRF_TOKEN_TTL_MINUTES=120
 INITIAL_ADMIN_DISCORD_IDS=
