@@ -45,8 +45,5 @@
     "smoke:auth": "bash scripts/auth-smoke.sh",
     "smoke:rbac": "bash scripts/rbac-smoke.sh",
     "release:check": "bash scripts/release-check.sh"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
   }
 }
