@@ -880,6 +880,11 @@ tbody tr.selected {
   margin: 0;
 }
 
+.filters.battalion-edit-form {
+  grid-template-columns: minmax(12rem, 1fr) repeat(3, minmax(8rem, 1fr)) auto;
+  margin: 0;
+}
+
 .squad-tree {
   display: grid;
   gap: 0.85rem;
@@ -1245,6 +1250,7 @@ pre {
   .filters.discord-role-form,
   .filters.identity-role-form,
   .filters.battalion-form,
+  .filters.battalion-edit-form,
   .assignment-controls,
   .identity-account-grid,
   .leaderboard-podium,

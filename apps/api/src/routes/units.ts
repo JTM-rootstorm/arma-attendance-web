@@ -712,20 +712,21 @@ export async function registerUnitRoutes(app: FastifyInstance) {
 
     try {
       const db = getDrizzleDb();
+      const body = parsedBody.data;
       return await db.transaction(async (tx) => {
         const [unit] = await tx
           .update(units)
           .set({
-            unitKey: sql`COALESCE(${parsedBody.data.unit_key ?? null}, ${units.unitKey})`,
-            slug: sql`COALESCE(${parsedBody.data.unit_key ?? null}, ${units.slug})`,
-            name: sql`COALESCE(${parsedBody.data.name ?? null}, ${units.name})`,
-            displayName: sql`COALESCE(${parsedBody.data.display_name ?? null}, ${units.displayName})`,
-            callsign: parsedBody.data.callsign ?? null,
-            description: parsedBody.data.description ?? null,
-            emblemUrl: parsedBody.data.emblem_url ?? null,
-            sortOrder: sql`COALESCE(${parsedBody.data.sort_order ?? null}, ${units.sortOrder})`,
-            isActive: sql`COALESCE(${parsedBody.data.is_active ?? null}, ${units.isActive})`,
-            deletedAt: sql`CASE WHEN ${parsedBody.data.is_active ?? null} = true THEN NULL ELSE ${units.deletedAt} END`,
+            unitKey: sql`COALESCE(${body.unit_key ?? null}, ${units.unitKey})`,
+            slug: sql`COALESCE(${body.unit_key ?? null}, ${units.slug})`,
+            name: sql`COALESCE(${body.name ?? null}, ${units.name})`,
+            displayName: sql`COALESCE(${body.display_name ?? null}, ${units.displayName})`,
+            ...(Object.hasOwn(body, "callsign") ? { callsign: body.callsign ?? null } : {}),
+            ...(Object.hasOwn(body, "description") ? { description: body.description ?? null } : {}),
+            ...(Object.hasOwn(body, "emblem_url") ? { emblemUrl: body.emblem_url ?? null } : {}),
+            sortOrder: sql`COALESCE(${body.sort_order ?? null}, ${units.sortOrder})`,
+            isActive: sql`COALESCE(${body.is_active ?? null}, ${units.isActive})`,
+            deletedAt: sql`CASE WHEN ${body.is_active ?? null} = true THEN NULL ELSE ${units.deletedAt} END`,
             updatedAt: sql`now()`
           })
           .where(and(eq(units.id, unitId), isNull(units.deletedAt)))

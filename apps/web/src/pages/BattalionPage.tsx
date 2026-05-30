@@ -31,6 +31,7 @@ type AssignmentDraft = Record<
 type AssignmentPatch = Partial<AssignmentDraft[string]>;
 
 type SquadPatch = Partial<Pick<BattalionSquadNode, "parent_squad_id" | "hierarchy_mode" | "sort_order">>;
+type BattalionTab = "layout" | "setup";
 
 const emptyUnits: ApiResult<UnitsResponse> = { status: "idle", data: null, error: null };
 const emptyRoster: ApiResult<BattalionRosterResponse> = { status: "idle", data: null, error: null };
@@ -535,6 +536,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   const [units, setUnits] = useState<ApiResult<UnitsResponse>>(emptyUnits);
   const [roster, setRoster] = useState<ApiResult<BattalionRosterResponse>>(emptyRoster);
   const [playerCandidates, setPlayerCandidates] = useState<ApiResult<BattalionPlayerCandidatesResponse>>(emptyCandidates);
+  const [activeTab, setActiveTab] = useState<BattalionTab>("layout");
   const [selectedUnitId, setSelectedUnitId] = useState("");
   const [candidateSearch, setCandidateSearch] = useState("");
   const [assignmentDraft, setAssignmentDraft] = useState<AssignmentDraft>({});
@@ -542,6 +544,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   const [collapsedSquadIds, setCollapsedSquadIds] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const [newUnit, setNewUnit] = useState({ unit_key: "", name: "", callsign: "" });
+  const [editUnit, setEditUnit] = useState({ unit_id: "", unit_key: "", name: "", callsign: "" });
   const [newRank, setNewRank] = useState({ rank_key: "", name: "", short_name: "", sort_order: "0" });
   const [newSquad, setNewSquad] = useState({ squad_key: "", name: "", parent_squad_id: "", squad_type: "squad", hierarchy_mode: "flat" });
 
@@ -554,6 +557,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
   const visibleSquads = focusedSquad ? [focusedSquad] : rosterData?.squads ?? [];
   const rosterPlayers = useMemo(() => flattenPlayers(rosterData), [rosterData]);
   const canManage = canManageBattalion(user, selectedUnit);
+  const canManageBattalions = isOwner(user);
   const canRevealIds = canSeeSensitiveIds(user) || canManage;
 
   const loadUnits = useCallback(async () => {
@@ -640,6 +644,30 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     }
   }, [focusedSquadId, rosterData]);
 
+  useEffect(() => {
+    if (!canManageBattalions && activeTab === "setup") {
+      setActiveTab("layout");
+    }
+  }, [activeTab, canManageBattalions]);
+
+  useEffect(() => {
+    const selectedEditUnit = unitList.find((unit) => unit.unit_id === editUnit.unit_id) ?? unitList[0] ?? null;
+
+    if (!selectedEditUnit) {
+      setEditUnit({ unit_id: "", unit_key: "", name: "", callsign: "" });
+      return;
+    }
+
+    if (selectedEditUnit.unit_id !== editUnit.unit_id) {
+      setEditUnit({
+        unit_id: selectedEditUnit.unit_id,
+        unit_key: selectedEditUnit.unit_key,
+        name: selectedEditUnit.name,
+        callsign: selectedEditUnit.callsign ?? ""
+      });
+    }
+  }, [editUnit.unit_id, unitList]);
+
   function updateAssignmentDraft(playerUid: string, patch: AssignmentPatch) {
     setAssignmentDraft((current) => {
       const existing = current[playerUid] ?? { squad_id: "", billet: "unassigned", sort_order: 0 };
@@ -682,6 +710,15 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     setMessage(`Child element will attach under ${squad.name}. Fill out the squad form below.`);
   }
 
+  function selectEditUnit(unit: BattalionSummary) {
+    setEditUnit({
+      unit_id: unit.unit_id,
+      unit_key: unit.unit_key,
+      name: unit.name,
+      callsign: unit.callsign ?? ""
+    });
+  }
+
   async function createUnit() {
     const unitKey = slugifyUnitKey(newUnit.unit_key || newUnit.name);
     const unitName = newUnit.name.trim();
@@ -703,6 +740,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
       });
       setNewUnit({ unit_key: "", name: "", callsign: "" });
       setSelectedUnitId(created.unit.id);
+      setEditUnit({ unit_id: created.unit.id, unit_key: unitKey, name: unitName, callsign: newUnit.callsign.trim() });
       setMessage("Battalion created.");
       await loadUnits();
       await loadRoster(created.unit.id);
@@ -711,15 +749,47 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     }
   }
 
-  async function deleteUnit() {
-    if (!selectedUnit) {
+  async function deleteUnit(unitId = selectedUnit?.unit_id) {
+    if (!unitId) {
       return;
     }
 
-    await apiFetch(`/v1/units/${selectedUnit.unit_id}`, { method: "DELETE" });
-    setSelectedUnitId("");
+    await apiFetch(`/v1/units/${unitId}`, { method: "DELETE" });
+    if (selectedUnitId === unitId) {
+      setSelectedUnitId("");
+    }
     setMessage("Battalion deactivated.");
     await loadUnits();
+  }
+
+  async function updateUnit() {
+    const unitKey = slugifyUnitKey(editUnit.unit_key);
+    const unitName = editUnit.name.trim();
+
+    if (!editUnit.unit_id || !unitKey || !unitName) {
+      setMessage("Battalion key and name are required.");
+      return;
+    }
+
+    try {
+      await apiFetch(`/v1/units/${editUnit.unit_id}`, {
+        method: "PATCH",
+        body: {
+          unit_key: unitKey,
+          name: unitName,
+          display_name: unitName,
+          callsign: editUnit.callsign.trim() || null
+        }
+      });
+      setEditUnit({ ...editUnit, unit_key: unitKey, name: unitName, callsign: editUnit.callsign.trim() });
+      setMessage("Battalion updated.");
+      await loadUnits();
+      if (selectedUnitId === editUnit.unit_id) {
+        await loadRoster(editUnit.unit_id);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Battalion could not be updated.");
+    }
   }
 
   async function addCandidatePlayer(playerUid: string, rosterName: string | null) {
@@ -889,186 +959,267 @@ export function BattalionPage({ user }: { user: AuthUser }) {
         )}
       </CommandPanel>
 
-      <CommandPanel title="Squad Layout" eyebrow="Tree control" wide>
-        {rosterData ? (
-          <>
-            <UnassignedPool
-              members={rosterData.unassigned}
-              allSquads={allSquads}
-              ranks={rosterData.ranks}
-              canManage={canManage}
-              canRevealIds={canRevealIds}
-              assignmentDraft={assignmentDraft}
-              onDraftChange={updateAssignmentDraft}
-              onRankChange={(playerUid, rankId) => void updatePlayerRank(playerUid, rankId)}
-            />
-            {focusedSquad ? (
-              <div className="squad-focus-bar">
-                <p>{focusedPath.map((squad) => squad.name).join(" / ")}</p>
-                <button type="button" onClick={() => setFocusedSquadId("")}>
-                  Back to battalion layout
-                </button>
-              </div>
-            ) : null}
-            {visibleSquads.length > 0 ? (
-              <div className="squad-tree">
-                {visibleSquads.map((squad) => (
-                  <SquadPanel
-                    key={squad.id}
-                    squad={squad}
-                    depth={0}
-                    allSquads={allSquads}
-                    ranks={rosterData.ranks}
-                    canManage={canManage}
-                    canRevealIds={canRevealIds}
-                    assignmentDraft={assignmentDraft}
-                    collapsedSquadIds={collapsedSquadIds}
-                    onDraftChange={updateAssignmentDraft}
-                    onDeleteSquad={(target) => void deleteSquad(target)}
-                    onFocusSquad={setFocusedSquadId}
-                    onToggleCollapse={toggleSquadCollapse}
-                    onPrepareChild={prepareChildSquad}
-                    onUpdateSquad={(target, patch) => void updateSquad(target, patch)}
-                    onRankChange={(playerUid, rankId) => void updatePlayerRank(playerUid, rankId)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="empty-copy">Create the first squad or keep this battalion flat.</p>
-            )}
-          </>
-        ) : (
-          <DataMessage result={roster} />
-        )}
-        {canManage ? (
-          <div className="inline-actions layout-actions">
-            <button type="button" onClick={() => void saveLayout()}>
-              Save layout
-            </button>
-          </div>
+      <div className="comms-tabs" role="tablist" aria-label="Battalion sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "layout"}
+          className={activeTab === "layout" ? "active" : ""}
+          onClick={() => setActiveTab("layout")}
+        >
+          Layout
+        </button>
+        {canManageBattalions ? (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "setup"}
+            className={activeTab === "setup" ? "active" : ""}
+            onClick={() => setActiveTab("setup")}
+          >
+            Battalion Setup
+          </button>
         ) : null}
-      </CommandPanel>
+      </div>
 
-      {canManage ? (
-        <CommandPanel title="Available Players" eyebrow="Recruitment pool" wide>
-          <div className="panel-heading slim">
-            <h3>Player Registry Search</h3>
-            <button type="button" onClick={() => void loadPlayerCandidates(selectedUnitId, candidateSearch)}>
-              Search
-            </button>
-          </div>
-          <form className="filters roster-filter" onSubmit={(event) => event.preventDefault()}>
-            <input
-              value={candidateSearch}
-              onChange={(event) => setCandidateSearch(event.target.value)}
-              placeholder="Search unassigned players"
-              aria-label="Search unassigned players"
-            />
-            <button type="button" onClick={() => void loadPlayerCandidates(selectedUnitId, candidateSearch)}>
-              Refresh
-            </button>
-          </form>
-          <DataMessage result={playerCandidates} />
-          {playerCandidates.status === "ready" ? (
-            <TacticalTable label="Available players" maxVisibleRows={6} className="static-table">
+      {activeTab === "setup" && canManageBattalions ? (
+        <div className="tab-panel view-grid">
+          <CommandPanel title="Battalion Registry" eyebrow="Unit index" wide>
+            <DataMessage result={units} />
+            <TacticalTable label="Battalions" maxVisibleRows={10} className="static-table">
               <thead>
                 <tr>
-                  <th>Player</th>
-                  <th>Last Seen</th>
-                  <th>Ops</th>
-                  <th>Add</th>
+                  <th>Battalion Key</th>
+                  <th>Battalion Name</th>
+                  <th>Callsign</th>
                 </tr>
               </thead>
               <tbody>
-                {playerCandidates.data.players.map((player) => (
-                  <tr key={player.player_uid}>
-                    <td>
-                      <strong>{displayValue(player.last_name)}</strong>
-                      <p className="mono">{player.player_uid}</p>
-                    </td>
-                    <td>{formatDate(player.last_seen_at)}</td>
-                    <td>{player.operation_count}</td>
-                    <td>
-                      <button type="button" onClick={() => void addCandidatePlayer(player.player_uid, player.last_name)}>
-                        Add
-                      </button>
-                    </td>
+                {unitList.map((unit) => (
+                  <tr key={unit.unit_id}>
+                    <td>{unit.unit_key}</td>
+                    <td>{unit.name}</td>
+                    <td>{displayValue(unit.callsign)}</td>
                   </tr>
                 ))}
-                {playerCandidates.data.players.length === 0 ? (
+                {unitList.length === 0 ? (
                   <tr>
-                    <td colSpan={4}>No unassigned players found.</td>
+                    <td colSpan={3}>No battalions found.</td>
                   </tr>
                 ) : null}
               </tbody>
             </TacticalTable>
-          ) : null}
-        </CommandPanel>
-      ) : null}
+          </CommandPanel>
 
-      {canManage ? (
-        <CommandPanel title="Command Assignment" eyebrow="Admin controls" wide>
-          <div className="battalion-forms">
-            {isOwner(user) ? (
-              <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-                <input value={newUnit.unit_key} onChange={(event) => setNewUnit({ ...newUnit, unit_key: event.target.value })} placeholder="battalion-key" />
-                <input value={newUnit.name} onChange={(event) => setNewUnit({ ...newUnit, name: event.target.value })} placeholder="Battalion name" />
-                <input value={newUnit.callsign} onChange={(event) => setNewUnit({ ...newUnit, callsign: event.target.value })} placeholder="Callsign" />
-                <button type="button" onClick={() => void createUnit()} disabled={!newUnit.name.trim()}>
-                  Create battalion
-                </button>
-              </form>
-            ) : null}
+          <CommandPanel title="Create Battalion" eyebrow="New unit" wide>
+            <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+              <input value={newUnit.unit_key} onChange={(event) => setNewUnit({ ...newUnit, unit_key: event.target.value })} placeholder="battalion-key" />
+              <input value={newUnit.name} onChange={(event) => setNewUnit({ ...newUnit, name: event.target.value })} placeholder="Battalion name" />
+              <input value={newUnit.callsign} onChange={(event) => setNewUnit({ ...newUnit, callsign: event.target.value })} placeholder="Callsign" />
+              <button type="button" onClick={() => void createUnit()} disabled={!newUnit.name.trim()}>
+                Create battalion
+              </button>
+            </form>
+          </CommandPanel>
 
+          <CommandPanel title="Edit Battalion" eyebrow="Unit identity" wide>
+            <form className="filters battalion-edit-form" onSubmit={(event) => event.preventDefault()}>
+              <select value={editUnit.unit_id} onChange={(event) => {
+                const unit = unitList.find((item) => item.unit_id === event.target.value);
+                if (unit) {
+                  selectEditUnit(unit);
+                }
+              }}>
+                {unitList.length === 0 ? <option value="">No battalions</option> : null}
+                {unitList.map((unit) => (
+                  <option key={unit.unit_id} value={unit.unit_id}>
+                    {unit.display_name}
+                  </option>
+                ))}
+              </select>
+              <input value={editUnit.unit_key} onChange={(event) => setEditUnit({ ...editUnit, unit_key: event.target.value })} placeholder="battalion-key" />
+              <input value={editUnit.name} onChange={(event) => setEditUnit({ ...editUnit, name: event.target.value })} placeholder="Battalion name" />
+              <input value={editUnit.callsign} onChange={(event) => setEditUnit({ ...editUnit, callsign: event.target.value })} placeholder="Callsign" />
+              <button type="button" onClick={() => void updateUnit()} disabled={!editUnit.unit_id || !editUnit.unit_key.trim() || !editUnit.name.trim()}>
+                Save battalion
+              </button>
+            </form>
             {selectedUnit ? (
-              <>
-                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-                  <input value={newSquad.squad_key} onChange={(event) => setNewSquad({ ...newSquad, squad_key: event.target.value })} placeholder="Squad key" />
-                  <input value={newSquad.name} onChange={(event) => setNewSquad({ ...newSquad, name: event.target.value })} placeholder="Squad name" />
-                  <select value={newSquad.parent_squad_id} onChange={(event) => setNewSquad({ ...newSquad, parent_squad_id: event.target.value })}>
-                    <option value="">No parent</option>
-                    {allSquads.map((squad) => (
-                      <option key={squad.id} value={squad.id}>
-                        {squad.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select value={newSquad.squad_type} onChange={(event) => setNewSquad({ ...newSquad, squad_type: event.target.value })}>
-                    <option value="squad">Squad</option>
-                    <option value="fireteam">Fireteam</option>
-                    <option value="platoon">Platoon</option>
-                    <option value="company">Company</option>
-                    <option value="detachment">Detachment</option>
-                  </select>
-                  <select value={newSquad.hierarchy_mode} onChange={(event) => setNewSquad({ ...newSquad, hierarchy_mode: event.target.value })}>
-                    <option value="flat">Flat</option>
-                    <option value="tree">Tree</option>
-                  </select>
-                  <button type="button" onClick={() => void createSquad()} disabled={!newSquad.squad_key || !newSquad.name}>
-                    Create squad
-                  </button>
-                </form>
-                <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
-                  <input value={newRank.rank_key} onChange={(event) => setNewRank({ ...newRank, rank_key: event.target.value })} placeholder="Rank key" />
-                  <input value={newRank.name} onChange={(event) => setNewRank({ ...newRank, name: event.target.value })} placeholder="Rank name" />
-                  <input value={newRank.short_name} onChange={(event) => setNewRank({ ...newRank, short_name: event.target.value })} placeholder="Short" />
-                  <input value={newRank.sort_order} onChange={(event) => setNewRank({ ...newRank, sort_order: event.target.value })} placeholder="Sort" />
-                  <button type="button" onClick={() => void createRank()} disabled={!newRank.rank_key || !newRank.name}>
-                    Add rank
-                  </button>
-                </form>
-              </>
-            ) : null}
-
-            {isOwner(user) && selectedUnit ? (
               <div className="inline-actions">
-                <button type="button" className="danger" onClick={() => void deleteUnit()}>
+                <button type="button" className="danger" onClick={() => void deleteUnit(editUnit.unit_id)} disabled={!editUnit.unit_id}>
                   Deactivate battalion
                 </button>
               </div>
             ) : null}
-          </div>
-        </CommandPanel>
+          </CommandPanel>
+        </div>
+      ) : null}
+
+      {activeTab === "layout" ? (
+        <>
+          <CommandPanel title="Squad Layout" eyebrow="Tree control" wide>
+            {rosterData ? (
+              <>
+                <UnassignedPool
+                  members={rosterData.unassigned}
+                  allSquads={allSquads}
+                  ranks={rosterData.ranks}
+                  canManage={canManage}
+                  canRevealIds={canRevealIds}
+                  assignmentDraft={assignmentDraft}
+                  onDraftChange={updateAssignmentDraft}
+                  onRankChange={(playerUid, rankId) => void updatePlayerRank(playerUid, rankId)}
+                />
+                {focusedSquad ? (
+                  <div className="squad-focus-bar">
+                    <p>{focusedPath.map((squad) => squad.name).join(" / ")}</p>
+                    <button type="button" onClick={() => setFocusedSquadId("")}>
+                      Back to battalion layout
+                    </button>
+                  </div>
+                ) : null}
+                {visibleSquads.length > 0 ? (
+                  <div className="squad-tree">
+                    {visibleSquads.map((squad) => (
+                      <SquadPanel
+                        key={squad.id}
+                        squad={squad}
+                        depth={0}
+                        allSquads={allSquads}
+                        ranks={rosterData.ranks}
+                        canManage={canManage}
+                        canRevealIds={canRevealIds}
+                        assignmentDraft={assignmentDraft}
+                        collapsedSquadIds={collapsedSquadIds}
+                        onDraftChange={updateAssignmentDraft}
+                        onDeleteSquad={(target) => void deleteSquad(target)}
+                        onFocusSquad={setFocusedSquadId}
+                        onToggleCollapse={toggleSquadCollapse}
+                        onPrepareChild={prepareChildSquad}
+                        onUpdateSquad={(target, patch) => void updateSquad(target, patch)}
+                        onRankChange={(playerUid, rankId) => void updatePlayerRank(playerUid, rankId)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-copy">Create the first squad or keep this battalion flat.</p>
+                )}
+              </>
+            ) : (
+              <DataMessage result={roster} />
+            )}
+            {canManage ? (
+              <div className="inline-actions layout-actions">
+                <button type="button" onClick={() => void saveLayout()}>
+                  Save layout
+                </button>
+              </div>
+            ) : null}
+          </CommandPanel>
+
+          {canManage ? (
+            <CommandPanel title="Available Players" eyebrow="Recruitment pool" wide>
+              <div className="panel-heading slim">
+                <h3>Player Registry Search</h3>
+                <button type="button" onClick={() => void loadPlayerCandidates(selectedUnitId, candidateSearch)}>
+                  Search
+                </button>
+              </div>
+              <form className="filters roster-filter" onSubmit={(event) => event.preventDefault()}>
+                <input
+                  value={candidateSearch}
+                  onChange={(event) => setCandidateSearch(event.target.value)}
+                  placeholder="Search unassigned players"
+                  aria-label="Search unassigned players"
+                />
+                <button type="button" onClick={() => void loadPlayerCandidates(selectedUnitId, candidateSearch)}>
+                  Refresh
+                </button>
+              </form>
+              <DataMessage result={playerCandidates} />
+              {playerCandidates.status === "ready" ? (
+                <TacticalTable label="Available players" maxVisibleRows={6} className="static-table">
+                  <thead>
+                    <tr>
+                      <th>Player</th>
+                      <th>Last Seen</th>
+                      <th>Ops</th>
+                      <th>Add</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {playerCandidates.data.players.map((player) => (
+                      <tr key={player.player_uid}>
+                        <td>
+                          <strong>{displayValue(player.last_name)}</strong>
+                          <p className="mono">{player.player_uid}</p>
+                        </td>
+                        <td>{formatDate(player.last_seen_at)}</td>
+                        <td>{player.operation_count}</td>
+                        <td>
+                          <button type="button" onClick={() => void addCandidatePlayer(player.player_uid, player.last_name)}>
+                            Add
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {playerCandidates.data.players.length === 0 ? (
+                      <tr>
+                        <td colSpan={4}>No unassigned players found.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </TacticalTable>
+              ) : null}
+            </CommandPanel>
+          ) : null}
+
+          {canManage ? (
+            <CommandPanel title="Command Assignment" eyebrow="Admin controls" wide>
+              <div className="battalion-forms">
+                {selectedUnit ? (
+                  <>
+                    <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+                      <input value={newSquad.squad_key} onChange={(event) => setNewSquad({ ...newSquad, squad_key: event.target.value })} placeholder="Squad key" />
+                      <input value={newSquad.name} onChange={(event) => setNewSquad({ ...newSquad, name: event.target.value })} placeholder="Squad name" />
+                      <select value={newSquad.parent_squad_id} onChange={(event) => setNewSquad({ ...newSquad, parent_squad_id: event.target.value })}>
+                        <option value="">No parent</option>
+                        {allSquads.map((squad) => (
+                          <option key={squad.id} value={squad.id}>
+                            {squad.name}
+                          </option>
+                        ))}
+                      </select>
+                      <select value={newSquad.squad_type} onChange={(event) => setNewSquad({ ...newSquad, squad_type: event.target.value })}>
+                        <option value="squad">Squad</option>
+                        <option value="fireteam">Fireteam</option>
+                        <option value="platoon">Platoon</option>
+                        <option value="company">Company</option>
+                        <option value="detachment">Detachment</option>
+                      </select>
+                      <select value={newSquad.hierarchy_mode} onChange={(event) => setNewSquad({ ...newSquad, hierarchy_mode: event.target.value })}>
+                        <option value="flat">Flat</option>
+                        <option value="tree">Tree</option>
+                      </select>
+                      <button type="button" onClick={() => void createSquad()} disabled={!newSquad.squad_key || !newSquad.name}>
+                        Create squad
+                      </button>
+                    </form>
+                    <form className="filters battalion-form" onSubmit={(event) => event.preventDefault()}>
+                      <input value={newRank.rank_key} onChange={(event) => setNewRank({ ...newRank, rank_key: event.target.value })} placeholder="Rank key" />
+                      <input value={newRank.name} onChange={(event) => setNewRank({ ...newRank, name: event.target.value })} placeholder="Rank name" />
+                      <input value={newRank.short_name} onChange={(event) => setNewRank({ ...newRank, short_name: event.target.value })} placeholder="Short" />
+                      <input value={newRank.sort_order} onChange={(event) => setNewRank({ ...newRank, sort_order: event.target.value })} placeholder="Sort" />
+                      <button type="button" onClick={() => void createRank()} disabled={!newRank.rank_key || !newRank.name}>
+                        Add rank
+                      </button>
+                    </form>
+                  </>
+                ) : null}
+              </div>
+            </CommandPanel>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
