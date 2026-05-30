@@ -192,6 +192,7 @@ function RosterMemberCard({
   canRevealIds,
   draft,
   onDraftChange,
+  onRemovePlayer,
   onRankChange
 }: {
   player: BattalionRosterPlayer;
@@ -201,6 +202,7 @@ function RosterMemberCard({
   canRevealIds: boolean;
   draft: AssignmentDraft[string] | null;
   onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+  onRemovePlayer: (player: BattalionRosterPlayer) => void;
   onRankChange: (playerUid: string, rankId: string) => void;
 }) {
   const playerUid = player.player_uid ?? "";
@@ -262,6 +264,9 @@ function RosterMemberCard({
             onChange={(event) => onDraftChange(playerUid, { sort_order: Number(event.target.value || "0") })}
             aria-label={`Sort order for ${player.roster_name}`}
           />
+          <button type="button" className="danger" onClick={() => onRemovePlayer(player)}>
+            Remove from unit
+          </button>
         </div>
       ) : null}
     </article>
@@ -277,6 +282,7 @@ function SquadSection({
   canRevealIds,
   assignmentDraft,
   onDraftChange,
+  onRemovePlayer,
   onRankChange
 }: {
   title: string;
@@ -287,6 +293,7 @@ function SquadSection({
   canRevealIds: boolean;
   assignmentDraft: AssignmentDraft;
   onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+  onRemovePlayer: (player: BattalionRosterPlayer) => void;
   onRankChange: (playerUid: string, rankId: string) => void;
 }) {
   return (
@@ -307,6 +314,7 @@ function SquadSection({
                 canRevealIds={canRevealIds}
                 draft={playerUid ? assignmentDraft[playerUid] ?? null : null}
                 onDraftChange={onDraftChange}
+                onRemovePlayer={onRemovePlayer}
                 onRankChange={onRankChange}
               />
             );
@@ -327,6 +335,7 @@ function UnassignedPool({
   canRevealIds,
   assignmentDraft,
   onDraftChange,
+  onRemovePlayer,
   onRankChange
 }: {
   members: BattalionRosterPlayer[];
@@ -336,6 +345,7 @@ function UnassignedPool({
   canRevealIds: boolean;
   assignmentDraft: AssignmentDraft;
   onDraftChange: (playerUid: string, patch: AssignmentPatch) => void;
+  onRemovePlayer: (player: BattalionRosterPlayer) => void;
   onRankChange: (playerUid: string, rankId: string) => void;
 }) {
   return (
@@ -359,6 +369,7 @@ function UnassignedPool({
                 canRevealIds={canRevealIds}
                 draft={playerUid ? assignmentDraft[playerUid] ?? null : null}
                 onDraftChange={onDraftChange}
+                onRemovePlayer={onRemovePlayer}
                 onRankChange={onRankChange}
               />
             );
@@ -386,6 +397,7 @@ function SquadPanel({
   onToggleCollapse,
   onPrepareChild,
   onUpdateSquad,
+  onRemovePlayer,
   onRankChange
 }: {
   squad: BattalionSquadNode;
@@ -402,6 +414,7 @@ function SquadPanel({
   onToggleCollapse: (squadId: string) => void;
   onPrepareChild: (squad: BattalionSquadNode) => void;
   onUpdateSquad: (squad: BattalionSquadNode, patch: SquadPatch) => void;
+  onRemovePlayer: (player: BattalionRosterPlayer) => void;
   onRankChange: (playerUid: string, rankId: string) => void;
 }) {
   const hasChildren = squad.children.length > 0;
@@ -504,6 +517,7 @@ function SquadPanel({
           canRevealIds={canRevealIds}
           assignmentDraft={assignmentDraft}
           onDraftChange={onDraftChange}
+          onRemovePlayer={onRemovePlayer}
           onRankChange={onRankChange}
         />
         <SquadSection
@@ -515,6 +529,7 @@ function SquadPanel({
           canRevealIds={canRevealIds}
           assignmentDraft={assignmentDraft}
           onDraftChange={onDraftChange}
+          onRemovePlayer={onRemovePlayer}
           onRankChange={onRankChange}
         />
       </div>
@@ -544,6 +559,7 @@ function SquadPanel({
                 onToggleCollapse={onToggleCollapse}
                 onPrepareChild={onPrepareChild}
                 onUpdateSquad={onUpdateSquad}
+                onRemovePlayer={onRemovePlayer}
                 onRankChange={onRankChange}
               />
             ))}
@@ -856,6 +872,26 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     await loadRoster(selectedUnit.unit_id);
   }
 
+  async function removePlayerFromUnit(player: BattalionRosterPlayer) {
+    if (!selectedUnit || !player.player_uid) {
+      return;
+    }
+
+    if (!window.confirm(`Remove ${player.roster_name} from ${selectedUnit.display_name}? Past operation records will be retained.`)) {
+      return;
+    }
+
+    await apiFetch(`/v1/units/${selectedUnit.unit_id}/players/${encodeURIComponent(player.player_uid)}`, { method: "DELETE" });
+    setAssignmentDraft((current) => {
+      const next = { ...current };
+      delete next[player.player_uid ?? ""];
+      return next;
+    });
+    setMessage("Trooper removed from unit assignment.");
+    await loadRoster(selectedUnit.unit_id);
+    await loadPlayerCandidates(selectedUnit.unit_id, candidateSearch);
+  }
+
   async function createRank() {
     if (!selectedUnit) {
       return;
@@ -1108,6 +1144,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                   canRevealIds={canRevealIds}
                   assignmentDraft={assignmentDraft}
                   onDraftChange={updateAssignmentDraft}
+                  onRemovePlayer={(player) => void removePlayerFromUnit(player)}
                   onRankChange={(playerUid, rankId) => void updatePlayerRank(playerUid, rankId)}
                 />
                 {focusedSquad ? (
@@ -1137,6 +1174,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                         onToggleCollapse={toggleSquadCollapse}
                         onPrepareChild={prepareChildSquad}
                         onUpdateSquad={(target, patch) => void updateSquad(target, patch)}
+                        onRemovePlayer={(player) => void removePlayerFromUnit(player)}
                         onRankChange={(playerUid, rankId) => void updatePlayerRank(playerUid, rankId)}
                       />
                     ))}

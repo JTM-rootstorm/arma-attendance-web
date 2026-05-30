@@ -968,7 +968,7 @@ tbody tr.selected {
 .assignment-controls,
 .squad-mode-controls {
   display: grid;
-  grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 0.8fr) 5.25rem;
+  grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 0.8fr) 5.25rem minmax(8rem, auto);
   gap: 0.45rem;
 }
 
