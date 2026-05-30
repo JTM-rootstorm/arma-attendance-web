@@ -52,6 +52,12 @@ const guildParamsSchema = z.object({
   guild_id: z.string().min(1).max(64)
 });
 
+const roleBodySchema = z.object({
+  role_id: z.string().min(1).max(64),
+  name: z.string().min(1).max(200),
+  assignable: z.boolean().default(true)
+});
+
 const ruleParamsSchema = guildParamsSchema.extend({
   rule_id: z.string().uuid()
 });
@@ -591,6 +597,71 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
 
       return { ok: true, roles: result.rows };
     } catch (error) {
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/discord/guilds/:guild_id/roles", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = guildParamsSchema.safeParse(request.params);
+    const parsedBody = roleBodySchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const guildId = parsedParams.data.guild_id;
+    const body = parsedBody.data;
+
+    try {
+      if (!(await guildExists(guildId))) {
+        return reply.code(404).send({ ok: false, error: { code: "guild_not_found", message: "Discord guild was not found." } });
+      }
+
+      const [role] = await getDrizzleDb()
+        .insert(discordRoles)
+        .values({
+          guildId,
+          roleId: body.role_id,
+          name: body.name,
+          assignable: body.assignable,
+          managed: false,
+          isDeleted: false,
+          rawRole: { source: "manual_admin" }
+        })
+        .onConflictDoUpdate({
+          target: [discordRoles.guildId, discordRoles.roleId],
+          set: {
+            name: sql`excluded.name`,
+            assignable: sql`excluded.assignable`,
+            managed: false,
+            isDeleted: false,
+            lastSeenAt: sql`now()`,
+            updatedAt: sql`now()`,
+            rawRole: sql`excluded.raw_role`
+          }
+        })
+        .returning({
+          guild_id: discordRoles.guildId,
+          role_id: discordRoles.roleId,
+          name: discordRoles.name,
+          color: discordRoles.color,
+          position: discordRoles.position,
+          managed: discordRoles.managed,
+          assignable: discordRoles.assignable,
+          is_deleted: discordRoles.isDeleted,
+          last_seen_at: discordRoles.lastSeenAt,
+          updated_at: discordRoles.updatedAt
+        });
+
+      return { ok: true, role };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to attach Discord role");
       return sendDatabaseUnavailable(reply);
     }
   });

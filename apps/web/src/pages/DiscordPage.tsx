@@ -14,15 +14,24 @@ import type {
   DiscordGuild,
   DiscordGuildsResponse,
   DiscordPlayerLinksResponse,
-  DiscordRoleClaim,
   DiscordReconcileResponse,
+  DiscordRoleClaim,
   DiscordRoleMappingsResponse,
-  DiscordRoleActionsResponse,
   DiscordRolesResponse,
-  DiscordRulesResponse
+  UnitsResponse
 } from "../types";
 
 const emptyResult: ApiResult<never> = { status: "idle", data: null, error: null };
+
+const commsTabs = [
+  { id: "guilds", label: "Guilds" },
+  { id: "unit-mapping", label: "Unit Mapping" },
+  { id: "players", label: "Player Links" },
+  { id: "sync", label: "Sync" },
+  { id: "audit", label: "Audit" }
+] as const;
+
+type CommsTab = (typeof commsTabs)[number]["id"];
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   const parsed = resultError(error, fallback);
@@ -51,43 +60,23 @@ function selectedGuildFrom(guilds: DiscordGuild[], guildId: string): DiscordGuil
   return guilds.find((guild) => guild.guild_id === guildId) ?? guilds[0] ?? null;
 }
 
-function formatPercent(value: number | string | null | undefined) {
-  if (value === null || value === undefined || value === "") {
-    return "n/a";
-  }
-
-  return `${Number(value).toFixed(1)}%`;
-}
-
 export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: string }) {
+  const [activeTab, setActiveTab] = useState<CommsTab>("guilds");
   const [guilds, setGuilds] = useState<ApiResult<DiscordGuildsResponse>>(emptyResult);
   const [authPolicy, setAuthPolicy] = useState<ApiResult<DiscordAuthPolicyResponse>>(emptyResult);
   const [roles, setRoles] = useState<ApiResult<DiscordRolesResponse>>(emptyResult);
   const [links, setLinks] = useState<ApiResult<DiscordPlayerLinksResponse>>(emptyResult);
-  const [rules, setRules] = useState<ApiResult<DiscordRulesResponse>>(emptyResult);
   const [mappings, setMappings] = useState<ApiResult<DiscordRoleMappingsResponse>>(emptyResult);
   const [reconcile, setReconcile] = useState<ApiResult<DiscordReconcileResponse>>(emptyResult);
   const [assignmentAudits, setAssignmentAudits] = useState<ApiResult<DiscordAssignmentAuditsResponse>>(emptyResult);
-  const [actions, setActions] = useState<ApiResult<DiscordRoleActionsResponse>>(emptyResult);
   const [audits, setAudits] = useState<ApiResult<DiscordAuditsResponse>>(emptyResult);
+  const [units, setUnits] = useState<ApiResult<UnitsResponse>>(emptyResult);
   const [selectedGuildId, setSelectedGuildId] = useState("");
+  const [roleDraft, setRoleDraft] = useState({ role_id: "", name: "" });
   const [linkDraft, setLinkDraft] = useState({ player_uid: "", discord_user_id: "", discord_display_name: "" });
-  const [ruleDraft, setRuleDraft] = useState({
-    name: "",
-    role_id: "",
-    min_attendance_points: "1",
-    min_attendance_percent: "",
-    lookback_days: "",
-    server_key: ""
-  });
   const [mappingDraft, setMappingDraft] = useState({
     role_id: "",
-    mapping_type: "unit_primary",
     unit_id: "",
-    rank_id: "",
-    unit_role: "",
-    app_role: "",
-    roster_status: "",
     priority: "0"
   });
   const [reconcileDraft, setReconcileDraft] = useState({ discord_user_id: "", user_id: "" });
@@ -97,11 +86,11 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
   const authPolicyGuilds = authPolicy.status === "ready" ? authPolicy.data.guilds : [];
   const roleData = roles.status === "ready" ? roles.data.roles : [];
   const linkData = links.status === "ready" ? links.data.links : [];
-  const ruleData = rules.status === "ready" ? rules.data.rules : [];
   const mappingData = mappings.status === "ready" ? mappings.data.mappings : [];
+  const unitMappingData = mappingData.filter((mapping) => mapping.mapping_type === "unit_primary");
   const assignmentAuditData = assignmentAudits.status === "ready" ? assignmentAudits.data.audits : [];
   const auditData = audits.status === "ready" ? audits.data.audits : [];
-  const actionData = actions.status === "ready" ? [...actions.data.actions, ...actions.data.skipped] : [];
+  const unitData = units.status === "ready" ? units.data.units : [];
   const selectedGuild = useMemo(() => selectedGuildFrom(guildData, selectedGuildId), [guildData, selectedGuildId]);
 
   const loadGuilds = useCallback(async () => {
@@ -132,39 +121,32 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     async (guildId: string) => {
       if (!hasToken || guildId.length === 0) {
         setRoles(emptyResult);
-        setRules(emptyResult);
         setMappings(emptyResult);
-        setActions(emptyResult);
         setAudits(emptyResult);
         setAssignmentAudits(emptyResult);
         return;
       }
 
       setRoles({ status: "loading", data: null, error: null });
-      setRules({ status: "loading", data: null, error: null });
       setMappings({ status: "loading", data: null, error: null });
       setAudits({ status: "loading", data: null, error: null });
       setAssignmentAudits({ status: "loading", data: null, error: null });
 
       try {
-        const [nextRoles, nextRules, nextMappings, nextAudits, nextAssignmentAudits] = await Promise.all([
+        const [nextRoles, nextMappings, nextAudits, nextAssignmentAudits] = await Promise.all([
           apiFetch<DiscordRolesResponse>(`/v1/discord/guilds/${encodeURIComponent(guildId)}/roles`, { token }),
-          apiFetch<DiscordRulesResponse>(`/v1/discord/guilds/${encodeURIComponent(guildId)}/rules`, { token }),
           apiFetch<DiscordRoleMappingsResponse>(`/v1/discord/guilds/${encodeURIComponent(guildId)}/role-mappings`, { token }),
           apiFetch<DiscordAuditsResponse>(`/v1/discord/guilds/${encodeURIComponent(guildId)}/role-action-audits`, { token }),
           apiFetch<DiscordAssignmentAuditsResponse>("/v1/discord/assignment-audits", { token })
         ]);
 
         setRoles({ status: "ready", data: nextRoles, error: null });
-        setRules({ status: "ready", data: nextRules, error: null });
         setMappings({ status: "ready", data: nextMappings, error: null });
         setAudits({ status: "ready", data: nextAudits, error: null });
         setAssignmentAudits({ status: "ready", data: nextAssignmentAudits, error: null });
-        setRuleDraft((draft) => ({ ...draft, role_id: draft.role_id || nextRoles.roles.find((role) => role.assignable)?.role_id || "" }));
         setMappingDraft((draft) => ({ ...draft, role_id: draft.role_id || nextRoles.roles.find((role) => role.assignable)?.role_id || "" }));
       } catch (error) {
         setRoles(errorResult(error, "Discord roles failed."));
-        setRules(errorResult(error, "Discord rules failed."));
         setMappings(errorResult(error, "Discord role mappings failed."));
         setAudits(errorResult(error, "Discord audits failed."));
         setAssignmentAudits(errorResult(error, "Discord assignment audits failed."));
@@ -192,14 +174,60 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
   }, [hasToken, token]);
 
+  const loadUnits = useCallback(async () => {
+    if (!hasToken) {
+      setUnits(emptyResult);
+      return;
+    }
+
+    setUnits({ status: "loading", data: null, error: null });
+
+    try {
+      setUnits({
+        status: "ready",
+        data: await apiFetch<UnitsResponse>("/v1/units", { token, params: { include_inactive: "true", limit: "200" } }),
+        error: null
+      });
+    } catch (error) {
+      setUnits(errorResult(error, "Units failed."));
+    }
+  }, [hasToken, token]);
+
   useEffect(() => {
     void loadGuilds();
     void loadLinks();
-  }, [loadGuilds, loadLinks]);
+    void loadUnits();
+  }, [loadGuilds, loadLinks, loadUnits]);
 
   useEffect(() => {
     void loadGuildDetail(selectedGuild?.guild_id ?? "");
   }, [loadGuildDetail, selectedGuild?.guild_id]);
+
+  async function createRole(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!hasToken || !selectedGuild) {
+      setMessage("Guild selection required.");
+      return;
+    }
+
+    try {
+      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/roles`, {
+        method: "POST",
+        token,
+        body: {
+          role_id: roleDraft.role_id,
+          name: roleDraft.name,
+          assignable: true
+        }
+      });
+      setMessage("Discord role attached.");
+      setRoleDraft({ role_id: "", name: "" });
+      void loadGuildDetail(selectedGuild.guild_id);
+    } catch (error) {
+      setMessage(resultError(error, "Discord role attach failed.").message);
+    }
+  }
 
   async function createLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -229,39 +257,6 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
   }
 
-  async function createRule(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!hasToken || !selectedGuild) {
-      setMessage("Guild selection required.");
-      return;
-    }
-
-    try {
-      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/rules`, {
-        method: "POST",
-        token,
-        body: {
-          role_id: ruleDraft.role_id,
-          name: ruleDraft.name,
-          min_attendance_points: Number(ruleDraft.min_attendance_points || 0),
-          min_operation_count: Number(ruleDraft.min_attendance_points || 0),
-          min_attendance_percent: ruleDraft.min_attendance_percent ? Number(ruleDraft.min_attendance_percent) : null,
-          lookback_days: ruleDraft.lookback_days ? Number(ruleDraft.lookback_days) : null,
-          server_key: ruleDraft.server_key || null,
-          require_present_at_end: true,
-          include_started_operations: false,
-          grant_mode: "grant_and_revoke_preview"
-        }
-      });
-      setMessage("Attendance rule saved.");
-      setRuleDraft((draft) => ({ ...draft, name: "" }));
-      void loadGuildDetail(selectedGuild.guild_id);
-    } catch (error) {
-      setMessage(resultError(error, "Attendance rule save failed.").message);
-    }
-  }
-
   async function createMapping(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -276,20 +271,16 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
         token,
         body: {
           role_id: mappingDraft.role_id,
-          mapping_type: mappingDraft.mapping_type,
-          unit_id: mappingDraft.unit_id || null,
-          rank_id: mappingDraft.rank_id || null,
-          unit_role: mappingDraft.unit_role || null,
-          app_role: mappingDraft.app_role || null,
-          roster_status: mappingDraft.roster_status || null,
+          mapping_type: "unit_primary",
+          unit_id: mappingDraft.unit_id,
           priority: Number(mappingDraft.priority || 0),
           is_enabled: true
         }
       });
-      setMessage("Role mapping saved.");
+      setMessage("Unit mapping saved.");
       void loadGuildDetail(selectedGuild.guild_id);
     } catch (error) {
-      setMessage(resultError(error, "Role mapping save failed.").message);
+      setMessage(resultError(error, "Unit mapping save failed.").message);
     }
   }
 
@@ -321,37 +312,8 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
   }
 
-  async function evaluateRoles(persist: boolean) {
-    if (!hasToken || !selectedGuild) {
-      setMessage("Guild selection required.");
-      return;
-    }
-
-    setActions({ status: "loading", data: null, error: null });
-
-    try {
-      const data = await apiFetch<DiscordRoleActionsResponse>(
-        `/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/role-actions`,
-        {
-          token,
-          params: {
-            dry_run: persist ? "false" : "true",
-            persist: persist ? "true" : "false"
-          }
-        }
-      );
-      setActions({ status: "ready", data, error: null });
-      setMessage(persist ? "Role evaluation persisted." : "Dry-run evaluation ready.");
-      if (persist) {
-        void loadGuildDetail(selectedGuild.guild_id);
-      }
-    } catch (error) {
-      setActions(errorResult(error, "Role evaluation failed."));
-    }
-  }
-
   return (
-    <div className="view-grid">
+    <div className="view-grid comms-view">
       {!hasToken ? (
         <CommandPanel title="Token Gate" eyebrow="Secure uplink" wide>
           <p className="message">Enter a bearer token to load Discord integration controls.</p>
@@ -364,354 +326,310 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
         </CommandPanel>
       ) : null}
 
-      <CommandPanel title="Guild Status" eyebrow="Discord readiness" actions={<button type="button" onClick={() => void loadGuilds()}>Refresh</button>}>
-        <DataMessage result={guilds} />
-        <div className="discord-selector">
-          <select value={selectedGuild?.guild_id ?? ""} onChange={(event) => setSelectedGuildId(event.target.value)} aria-label="Discord guild">
-            {guildData.length === 0 ? <option value="">no guilds synced</option> : null}
-            {guildData.map((guild) => (
-              <option key={guild.guild_id} value={guild.guild_id}>
-                {guild.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="metric-grid compact">
-          <MetricTile label="Roles" value={selectedGuild?.role_count ?? 0} />
-          <MetricTile label="Links" value={selectedGuild?.linked_player_count ?? linkData.length} />
-          <MetricTile label="Rules" value={selectedGuild?.enabled_rule_count ?? 0} detail="enabled" />
-        </div>
-        {selectedGuild ? (
-          <div className="detail-meta discord-meta">
-            <StatusChip label={selectedGuild.bot_present ? "bot present" : "bot absent"} tone={selectedGuild.bot_present ? "ready" : "warn"} />
-            <span>{formatDate(selectedGuild.last_role_sync_at)}</span>
-          </div>
-        ) : null}
-      </CommandPanel>
-
-      <CommandPanel title="Auth Guild Policy" eyebrow="Login gate" wide actions={<button type="button" onClick={() => void loadGuilds()}>Refresh</button>}>
-        <DataMessage result={authPolicy} />
-        <TacticalTable label="Discord auth guild policy" maxVisibleRows={5}>
-          <thead>
-            <tr>
-              <th>Guild</th>
-              <th>Type</th>
-              <th>Login</th>
-              <th>Priority</th>
-            </tr>
-          </thead>
-          <tbody>
-            {authPolicyGuilds.map((guild) => (
-              <tr key={guild.guild_id}>
-                <td>{guild.name}</td>
-                <td>{guild.guild_type ?? "unknown"} / {guild.config_source ?? "db"}</td>
-                <td>
-                  <StatusChip label={guild.grants_login ? "grants" : "blocked"} tone={guild.grants_login ? "ready" : "muted"} />
-                </td>
-                <td>U{guild.unit_priority ?? 0} / R{guild.rank_priority ?? 0} / P{guild.permission_priority ?? 0}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
-
-      <CommandPanel title="Role Snapshot" eyebrow="Assignable roles" actions={<button type="button" onClick={() => void loadGuildDetail(selectedGuild?.guild_id ?? "")}>Refresh</button>}>
-        <DataMessage result={roles} />
-        <TacticalTable label="Discord roles" maxVisibleRows={6}>
-          <thead>
-            <tr>
-              <th>Role</th>
-              <th>State</th>
-              <th>Position</th>
-            </tr>
-          </thead>
-          <tbody>
-            {roleData.map((role) => (
-              <tr key={role.role_id}>
-                <td>{role.name}</td>
-                <td>
-                  <StatusChip label={role.assignable && !role.managed && !role.is_deleted ? "assignable" : "blocked"} tone={role.assignable && !role.managed && !role.is_deleted ? "ready" : "muted"} />
-                </td>
-                <td>{displayValue(role.position)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
-
-      <CommandPanel title="Role Mappings" eyebrow="Auth and roster claims" wide>
-        <form className="filters discord-rule-form" onSubmit={createMapping}>
-          <select value={mappingDraft.role_id} onChange={(event) => setMappingDraft({ ...mappingDraft, role_id: event.target.value })} aria-label="Mapping Discord role">
-            <option value="">select role</option>
-            {roleData.map((role) => (
-              <option key={role.role_id} value={role.role_id}>
-                {role.name}
-              </option>
-            ))}
-          </select>
-          <select value={mappingDraft.mapping_type} onChange={(event) => setMappingDraft({ ...mappingDraft, mapping_type: event.target.value })} aria-label="Mapping type">
-            <option value="unit_primary">unit_primary</option>
-            <option value="rank">rank</option>
-            <option value="unit_role">unit_role</option>
-            <option value="app_role">app_role</option>
-            <option value="roster_status">roster_status</option>
-            <option value="deny_login">deny_login</option>
-          </select>
-          <input value={mappingDraft.unit_id} onChange={(event) => setMappingDraft({ ...mappingDraft, unit_id: event.target.value })} placeholder="unit_id" aria-label="Unit ID" />
-          <input value={mappingDraft.rank_id} onChange={(event) => setMappingDraft({ ...mappingDraft, rank_id: event.target.value })} placeholder="rank_id" aria-label="Rank ID" />
-          <input value={mappingDraft.unit_role} onChange={(event) => setMappingDraft({ ...mappingDraft, unit_role: event.target.value })} placeholder="unit role" aria-label="Unit role" />
-          <input value={mappingDraft.app_role} onChange={(event) => setMappingDraft({ ...mappingDraft, app_role: event.target.value })} placeholder="app role" aria-label="App role" />
-          <input value={mappingDraft.roster_status} onChange={(event) => setMappingDraft({ ...mappingDraft, roster_status: event.target.value })} placeholder="status" aria-label="Roster status" />
-          <input value={mappingDraft.priority} onChange={(event) => setMappingDraft({ ...mappingDraft, priority: event.target.value })} placeholder="priority" aria-label="Mapping priority" />
-          <button type="submit" disabled={!hasToken || !selectedGuild || mappingDraft.role_id.length === 0}>
-            Save Mapping
+      <div className="comms-tabs" role="tablist" aria-label="Comms sections">
+        {commsTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={activeTab === tab.id ? "active" : ""}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
           </button>
-        </form>
-        <DataMessage result={mappings} />
-        <TacticalTable label="Discord role mappings" maxVisibleRows={6}>
-          <thead>
-            <tr>
-              <th>Role</th>
-              <th>Type</th>
-              <th>Target</th>
-              <th>Priority</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mappingData.map((mapping) => (
-              <tr key={mapping.id}>
-                <td>
-                  <StatusChip label={mapping.is_enabled ? "enabled" : "off"} tone={mapping.is_enabled ? "ready" : "muted"} /> {displayValue(mapping.role_name ?? mapping.role_id)}
-                </td>
-                <td>{mapping.mapping_type}</td>
-                <td>{displayValue(mapping.unit_name ?? mapping.unit_id ?? mapping.rank_name ?? mapping.app_role ?? mapping.unit_role ?? mapping.roster_status)}</td>
-                <td>{mapping.priority}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
+        ))}
+      </div>
 
-      <CommandPanel title="Player Links" eyebrow="Roster mapping" wide>
-        <form className="filters discord-link-form" onSubmit={createLink}>
-          <input value={linkDraft.player_uid} onChange={(event) => setLinkDraft({ ...linkDraft, player_uid: event.target.value })} placeholder="player_uid" aria-label="Player UID" />
-          <input value={linkDraft.discord_user_id} onChange={(event) => setLinkDraft({ ...linkDraft, discord_user_id: event.target.value })} placeholder="discord_user_id" aria-label="Discord user ID" />
-          <input value={linkDraft.discord_display_name} onChange={(event) => setLinkDraft({ ...linkDraft, discord_display_name: event.target.value })} placeholder="display name" aria-label="Discord display name" />
-          <button type="submit" disabled={!hasToken || linkDraft.player_uid.length === 0 || linkDraft.discord_user_id.length === 0}>
-            Save Link
-          </button>
-        </form>
-        <DataMessage result={links} />
-        <TacticalTable label="Discord player links" maxVisibleRows={6}>
-          <thead>
-            <tr>
-              <th>Player</th>
-              <th>Discord</th>
-              <th>Source</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {linkData.map((link) => (
-              <tr key={link.discord_user_id}>
-                <td>{displayValue(link.player_name) !== "n/a" ? displayValue(link.player_name) : link.player_uid}</td>
-                <td>{displayValue(link.discord_display_name ?? link.discord_username ?? link.discord_user_id)}</td>
-                <td>{link.source}</td>
-                <td>{formatDate(link.updated_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
-
-      <CommandPanel
-        title="Reconcile Preview"
-        eyebrow="Membership sync"
-        wide
-        actions={
-          <>
-            <button type="button" onClick={() => void runReconcile(true)} disabled={!hasToken || (reconcileDraft.discord_user_id.length === 0 && reconcileDraft.user_id.length === 0)}>
-              Dry Run
-            </button>
-            <button type="button" onClick={() => void runReconcile(false)} disabled={!hasToken || (reconcileDraft.discord_user_id.length === 0 && reconcileDraft.user_id.length === 0)}>
-              Apply
-            </button>
-          </>
-        }
-      >
-        <div className="filters">
-          <input value={reconcileDraft.discord_user_id} onChange={(event) => setReconcileDraft({ ...reconcileDraft, discord_user_id: event.target.value })} placeholder="discord_user_id" aria-label="Discord user ID" />
-          <input value={reconcileDraft.user_id} onChange={(event) => setReconcileDraft({ ...reconcileDraft, user_id: event.target.value })} placeholder="user_id" aria-label="User ID" />
-        </div>
-        <DataMessage result={reconcile} />
-        {reconcile.status === "ready" ? (
-          <div className="metric-grid compact discord-eval-metrics">
-            <MetricTile label="Denied" value={reconcile.data.denied ? "yes" : "no"} />
-            <MetricTile label="Locked" value={reconcile.data.manual_locked ? "yes" : "no"} />
-            <MetricTile label="Applied" value={reconcile.data.applied.length} />
-            <MetricTile label="Ignored" value={reconcile.data.ignored_claims.length} />
-          </div>
-        ) : null}
-        <TacticalTable label="Winning Discord claims" maxVisibleRows={4}>
-          <thead>
-            <tr>
-              <th>Field</th>
-              <th>Guild</th>
-              <th>Role</th>
-              <th>Target</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reconcile.status === "ready" ? (
-              ([
-                ["unit", reconcile.data.winning_claims.unit_primary],
-                ["rank", reconcile.data.winning_claims.rank],
-                ["status", reconcile.data.winning_claims.roster_status]
-              ] as Array<[string, DiscordRoleClaim | null]>).map(([field, claim]) => (
-                <tr key={String(field)}>
-                  <td>{String(field)}</td>
-                  <td>{claim ? claim.guildId : "n/a"}</td>
-                  <td>{claim ? displayValue(claim.roleName ?? claim.roleId) : "n/a"}</td>
-                  <td>{claim ? displayValue(claim.unitId ?? claim.rankId ?? claim.rosterStatus) : "n/a"}</td>
-                </tr>
-              ))
+      {activeTab === "guilds" ? (
+        <div className="tab-panel view-grid">
+          <CommandPanel title="Guild Directory" eyebrow="Discord readiness" actions={<button type="button" onClick={() => void loadGuilds()}>Refresh</button>}>
+            <DataMessage result={guilds} />
+            <div className="discord-selector">
+              <select value={selectedGuild?.guild_id ?? ""} onChange={(event) => setSelectedGuildId(event.target.value)} aria-label="Discord guild">
+                {guildData.length === 0 ? <option value="">no guilds synced</option> : null}
+                {guildData.map((guild) => (
+                  <option key={guild.guild_id} value={guild.guild_id}>
+                    {guild.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="metric-grid compact">
+              <MetricTile label="Guilds" value={guildData.length} />
+              <MetricTile label="Roles" value={roleData.length} />
+              <MetricTile label="Links" value={selectedGuild?.linked_player_count ?? linkData.length} />
+            </div>
+            {selectedGuild ? (
+              <div className="detail-meta discord-meta">
+                <StatusChip label={selectedGuild.bot_present ? "bot present" : "bot absent"} tone={selectedGuild.bot_present ? "ready" : "warn"} />
+                <span>{formatDate(selectedGuild.last_role_sync_at)}</span>
+              </div>
             ) : null}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
+          </CommandPanel>
 
-      <CommandPanel title="Attendance Rules" eyebrow="Role policy" wide>
-        <form className="filters discord-rule-form" onSubmit={createRule}>
-          <input value={ruleDraft.name} onChange={(event) => setRuleDraft({ ...ruleDraft, name: event.target.value })} placeholder="rule name" aria-label="Rule name" />
-          <select value={ruleDraft.role_id} onChange={(event) => setRuleDraft({ ...ruleDraft, role_id: event.target.value })} aria-label="Discord role">
-            <option value="">select role</option>
-            {roleData.map((role) => (
-              <option key={role.role_id} value={role.role_id}>
-                {role.name}
-              </option>
-            ))}
-          </select>
-          <input value={ruleDraft.min_attendance_points} onChange={(event) => setRuleDraft({ ...ruleDraft, min_attendance_points: event.target.value })} placeholder="points" aria-label="Minimum attendance points" />
-          <input value={ruleDraft.min_attendance_percent} onChange={(event) => setRuleDraft({ ...ruleDraft, min_attendance_percent: event.target.value })} placeholder="percent" aria-label="Minimum attendance percent" />
-          <input value={ruleDraft.lookback_days} onChange={(event) => setRuleDraft({ ...ruleDraft, lookback_days: event.target.value })} placeholder="lookback days" aria-label="Lookback days" />
-          <input value={ruleDraft.server_key} onChange={(event) => setRuleDraft({ ...ruleDraft, server_key: event.target.value })} placeholder="server_key" aria-label="Server key" />
-          <button type="submit" disabled={!hasToken || !selectedGuild || ruleDraft.name.length === 0 || ruleDraft.role_id.length === 0}>
-            Save Rule
-          </button>
-        </form>
-        <DataMessage result={rules} />
-        <TacticalTable label="Discord attendance rules" maxVisibleRows={6}>
-          <thead>
-            <tr>
-              <th>Rule</th>
-              <th>Role</th>
-              <th>Threshold</th>
-              <th>Scope</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ruleData.map((rule) => (
-              <tr key={rule.id}>
-                <td>
-                  <StatusChip label={rule.is_enabled ? "enabled" : "off"} tone={rule.is_enabled ? "ready" : "muted"} /> {rule.name}
-                </td>
-                <td>{displayValue(rule.role_name ?? rule.role_id)}</td>
-                <td>{rule.min_attendance_points} pts / {formatPercent(rule.min_attendance_percent)}</td>
-                <td>{displayValue(rule.server_key)} / {displayValue(rule.lookback_days ? `${rule.lookback_days}d` : null)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
+          <CommandPanel title="Auth Guild Policy" eyebrow="Login gate" wide actions={<button type="button" onClick={() => void loadGuilds()}>Refresh</button>}>
+            <DataMessage result={authPolicy} />
+            <TacticalTable label="Discord auth guild policy" maxVisibleRows={7}>
+              <thead>
+                <tr>
+                  <th>Guild</th>
+                  <th>Type</th>
+                  <th>Login</th>
+                  <th>Priority</th>
+                </tr>
+              </thead>
+              <tbody>
+                {authPolicyGuilds.map((guild) => (
+                  <tr key={guild.guild_id}>
+                    <td>{guild.name}</td>
+                    <td>{guild.guild_type ?? "unknown"} / {guild.config_source ?? "db"}</td>
+                    <td>
+                      <StatusChip label={guild.grants_login ? "grants" : "blocked"} tone={guild.grants_login ? "ready" : "muted"} />
+                    </td>
+                    <td>U{guild.unit_priority ?? 0} / R{guild.rank_priority ?? 0} / P{guild.permission_priority ?? 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </TacticalTable>
+          </CommandPanel>
+        </div>
+      ) : null}
 
-      <CommandPanel
-        title="Evaluation"
-        eyebrow="Role action preview"
-        wide
-        actions={
-          <>
-            <button type="button" onClick={() => void evaluateRoles(false)} disabled={!hasToken || !selectedGuild}>
-              Dry Run
-            </button>
-            <button type="button" onClick={() => void evaluateRoles(true)} disabled={!hasToken || !selectedGuild}>
-              Persist
-            </button>
-          </>
-        }
-      >
-        <DataMessage result={actions} />
-        {actions.status === "ready" ? (
-          <div className="metric-grid compact discord-eval-metrics">
-            <MetricTile label="Rules" value={actions.data.summary.rules_evaluated} />
-            <MetricTile label="Players" value={actions.data.summary.players_evaluated} />
-            <MetricTile label="Grants" value={actions.data.summary.grant_count} />
-          </div>
-        ) : null}
-        <TacticalTable label="Discord role actions" maxVisibleRows={7}>
-          <thead>
-            <tr>
-              <th>Action</th>
-              <th>Player</th>
-              <th>Role</th>
-              <th>Score</th>
-            </tr>
-          </thead>
-          <tbody>
-            {actionData.map((action) => (
-              <tr key={`${action.action}-${action.rule_id}-${action.player_uid}-${action.role_id}`}>
-                <td>{action.action}</td>
-                <td>{displayValue(action.player_name ?? action.player_uid)}</td>
-                <td>{action.role_name}</td>
-                <td>{action.score.attendance_points} pts / {formatPercent(action.score.attendance_percent)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
+      {activeTab === "unit-mapping" ? (
+        <div className="tab-panel view-grid">
+          <CommandPanel title="Unit Mapping" eyebrow="Discord role to roster" wide actions={<button type="button" onClick={() => void loadGuildDetail(selectedGuild?.guild_id ?? "")}>Refresh</button>}>
+            <div className="discord-selector">
+              <select value={selectedGuild?.guild_id ?? ""} onChange={(event) => setSelectedGuildId(event.target.value)} aria-label="Discord guild for unit mapping">
+                {guildData.length === 0 ? <option value="">no guilds synced</option> : null}
+                {guildData.map((guild) => (
+                  <option key={guild.guild_id} value={guild.guild_id}>
+                    {guild.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <form className="filters discord-role-form" onSubmit={createRole}>
+              <input value={roleDraft.role_id} onChange={(event) => setRoleDraft({ ...roleDraft, role_id: event.target.value })} placeholder="discord role id" aria-label="Discord role ID" />
+              <input value={roleDraft.name} onChange={(event) => setRoleDraft({ ...roleDraft, name: event.target.value })} placeholder="friendly role name" aria-label="Friendly role name" />
+              <button type="submit" disabled={!hasToken || !selectedGuild || roleDraft.role_id.length === 0 || roleDraft.name.length === 0}>
+                Attach Role
+              </button>
+            </form>
+            <form className="filters discord-unit-map-form" onSubmit={createMapping}>
+              <select value={mappingDraft.role_id} onChange={(event) => setMappingDraft({ ...mappingDraft, role_id: event.target.value })} aria-label="Mapping Discord role">
+                <option value="">select role</option>
+                {roleData.map((role) => (
+                  <option key={role.role_id} value={role.role_id}>
+                    {role.name}
+                  </option>
+                ))}
+              </select>
+              <select value={mappingDraft.unit_id} onChange={(event) => setMappingDraft({ ...mappingDraft, unit_id: event.target.value })} aria-label="Mapped unit">
+                <option value="">select unit</option>
+                {unitData.map((unit) => (
+                  <option key={unit.unit_id} value={unit.unit_id}>
+                    {unit.display_name ?? unit.name}
+                  </option>
+                ))}
+              </select>
+              <input value={mappingDraft.priority} onChange={(event) => setMappingDraft({ ...mappingDraft, priority: event.target.value })} placeholder="priority" aria-label="Mapping priority" />
+              <button type="submit" disabled={!hasToken || !selectedGuild || mappingDraft.role_id.length === 0 || mappingDraft.unit_id.length === 0}>
+                Link Unit
+              </button>
+            </form>
+            <DataMessage result={roles} />
+            <DataMessage result={mappings} />
+            <DataMessage result={units} />
+            <div className="split-grid">
+              <TacticalTable label="Attached Discord roles" maxVisibleRows={6}>
+                <thead>
+                  <tr>
+                    <th>Friendly Name</th>
+                    <th>Role ID</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roleData.map((role) => (
+                    <tr key={role.role_id}>
+                      <td>{role.name}</td>
+                      <td>{role.role_id}</td>
+                      <td>
+                        <StatusChip label={role.assignable && !role.is_deleted ? "usable" : "blocked"} tone={role.assignable && !role.is_deleted ? "ready" : "muted"} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TacticalTable>
+              <TacticalTable label="Unit membership mappings" maxVisibleRows={6}>
+                <thead>
+                  <tr>
+                    <th>Role</th>
+                    <th>Unit</th>
+                    <th>Priority</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unitMappingData.map((mapping) => (
+                    <tr key={mapping.id}>
+                      <td>
+                        <StatusChip label={mapping.is_enabled ? "enabled" : "off"} tone={mapping.is_enabled ? "ready" : "muted"} /> {displayValue(mapping.role_name ?? mapping.role_id)}
+                      </td>
+                      <td>{displayValue(mapping.unit_name ?? mapping.unit_id)}</td>
+                      <td>{mapping.priority}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TacticalTable>
+            </div>
+          </CommandPanel>
+        </div>
+      ) : null}
 
-      <CommandPanel title="Audit Trail" eyebrow="Bot handoff" wide actions={<button type="button" onClick={() => void loadGuildDetail(selectedGuild?.guild_id ?? "")}>Refresh</button>}>
-        <DataMessage result={audits} />
-        <TacticalTable label="Discord role action audits" maxVisibleRows={7}>
-          <thead>
-            <tr>
-              <th>Action</th>
-              <th>Status</th>
-              <th>Player</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {auditData.map((audit) => (
-              <tr key={audit.id}>
-                <td>{audit.action}</td>
-                <td>{audit.status}</td>
-                <td>{displayValue(audit.player_uid)}</td>
-                <td>{formatDate(audit.created_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-        <TacticalTable label="Discord assignment audits" maxVisibleRows={6}>
-          <thead>
-            <tr>
-              <th>Action</th>
-              <th>Field</th>
-              <th>Player</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {assignmentAuditData.map((audit) => (
-              <tr key={audit.id}>
-                <td>{audit.action}</td>
-                <td>{audit.field}</td>
-                <td>{displayValue(audit.player_uid ?? audit.discord_user_id)}</td>
-                <td>{formatDate(audit.created_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </TacticalTable>
-      </CommandPanel>
+      {activeTab === "players" ? (
+        <div className="tab-panel view-grid">
+          <CommandPanel title="Player Links" eyebrow="Roster mapping" wide>
+            <form className="filters discord-link-form" onSubmit={createLink}>
+              <input value={linkDraft.player_uid} onChange={(event) => setLinkDraft({ ...linkDraft, player_uid: event.target.value })} placeholder="player_uid" aria-label="Player UID" />
+              <input value={linkDraft.discord_user_id} onChange={(event) => setLinkDraft({ ...linkDraft, discord_user_id: event.target.value })} placeholder="discord_user_id" aria-label="Discord user ID" />
+              <input value={linkDraft.discord_display_name} onChange={(event) => setLinkDraft({ ...linkDraft, discord_display_name: event.target.value })} placeholder="display name" aria-label="Discord display name" />
+              <button type="submit" disabled={!hasToken || linkDraft.player_uid.length === 0 || linkDraft.discord_user_id.length === 0}>
+                Save Link
+              </button>
+            </form>
+            <DataMessage result={links} />
+            <TacticalTable label="Discord player links" maxVisibleRows={10}>
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>Discord</th>
+                  <th>Source</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linkData.map((link) => (
+                  <tr key={link.discord_user_id}>
+                    <td>{displayValue(link.player_name) !== "n/a" ? displayValue(link.player_name) : link.player_uid}</td>
+                    <td>{displayValue(link.discord_display_name ?? link.discord_username ?? link.discord_user_id)}</td>
+                    <td>{link.source}</td>
+                    <td>{formatDate(link.updated_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </TacticalTable>
+          </CommandPanel>
+        </div>
+      ) : null}
+
+      {activeTab === "sync" ? (
+        <div className="tab-panel view-grid">
+          <CommandPanel
+            title="Reconcile Preview"
+            eyebrow="Membership sync"
+            wide
+            actions={
+              <>
+                <button type="button" onClick={() => void runReconcile(true)} disabled={!hasToken || (reconcileDraft.discord_user_id.length === 0 && reconcileDraft.user_id.length === 0)}>
+                  Dry Run
+                </button>
+                <button type="button" onClick={() => void runReconcile(false)} disabled={!hasToken || (reconcileDraft.discord_user_id.length === 0 && reconcileDraft.user_id.length === 0)}>
+                  Apply
+                </button>
+              </>
+            }
+          >
+            <div className="filters">
+              <input value={reconcileDraft.discord_user_id} onChange={(event) => setReconcileDraft({ ...reconcileDraft, discord_user_id: event.target.value })} placeholder="discord_user_id" aria-label="Discord user ID" />
+              <input value={reconcileDraft.user_id} onChange={(event) => setReconcileDraft({ ...reconcileDraft, user_id: event.target.value })} placeholder="user_id" aria-label="User ID" />
+            </div>
+            <DataMessage result={reconcile} />
+            {reconcile.status === "ready" ? (
+              <div className="metric-grid compact discord-eval-metrics">
+                <MetricTile label="Denied" value={reconcile.data.denied ? "yes" : "no"} />
+                <MetricTile label="Locked" value={reconcile.data.manual_locked ? "yes" : "no"} />
+                <MetricTile label="Applied" value={reconcile.data.applied.length} />
+                <MetricTile label="Ignored" value={reconcile.data.ignored_claims.length} />
+              </div>
+            ) : null}
+            <TacticalTable label="Winning Discord claims" maxVisibleRows={4}>
+              <thead>
+                <tr>
+                  <th>Field</th>
+                  <th>Guild</th>
+                  <th>Role</th>
+                  <th>Target</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reconcile.status === "ready" ? (
+                  ([
+                    ["unit", reconcile.data.winning_claims.unit_primary],
+                    ["rank", reconcile.data.winning_claims.rank],
+                    ["status", reconcile.data.winning_claims.roster_status]
+                  ] as Array<[string, DiscordRoleClaim | null]>).map(([field, claim]) => (
+                    <tr key={String(field)}>
+                      <td>{String(field)}</td>
+                      <td>{claim ? claim.guildId : "n/a"}</td>
+                      <td>{claim ? displayValue(claim.roleName ?? claim.roleId) : "n/a"}</td>
+                      <td>{claim ? displayValue(claim.unitId ?? claim.rankId ?? claim.rosterStatus) : "n/a"}</td>
+                    </tr>
+                  ))
+                ) : null}
+              </tbody>
+            </TacticalTable>
+          </CommandPanel>
+        </div>
+      ) : null}
+
+      {activeTab === "audit" ? (
+        <div className="tab-panel view-grid">
+          <CommandPanel title="Audit Trail" eyebrow="Bot handoff" wide actions={<button type="button" onClick={() => void loadGuildDetail(selectedGuild?.guild_id ?? "")}>Refresh</button>}>
+            <DataMessage result={audits} />
+            <TacticalTable label="Discord role action audits" maxVisibleRows={7}>
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Status</th>
+                  <th>Player</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditData.map((audit) => (
+                  <tr key={audit.id}>
+                    <td>{audit.action}</td>
+                    <td>{audit.status}</td>
+                    <td>{displayValue(audit.player_uid)}</td>
+                    <td>{formatDate(audit.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </TacticalTable>
+            <TacticalTable label="Discord assignment audits" maxVisibleRows={6}>
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Field</th>
+                  <th>Player</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignmentAuditData.map((audit) => (
+                  <tr key={audit.id}>
+                    <td>{audit.action}</td>
+                    <td>{audit.field}</td>
+                    <td>{displayValue(audit.player_uid ?? audit.discord_user_id)}</td>
+                    <td>{formatDate(audit.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </TacticalTable>
+          </CommandPanel>
+        </div>
+      ) : null}
     </div>
   );
 }
