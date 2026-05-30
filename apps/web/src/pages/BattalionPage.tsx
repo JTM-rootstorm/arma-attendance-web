@@ -154,6 +154,28 @@ function slugifyUnitKey(value: string): string {
     .slice(0, 80);
 }
 
+function csvField(value: string | null): string {
+  const text = value ?? "";
+
+  if (!/[",\n\r]/.test(text)) {
+    return text;
+  }
+
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows.map((row) => row.map((field) => csvField(field)).join(",")).join("\n");
+  const blob = new Blob([`${csv}\n`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function canManageBattalion(user: AuthUser, unit: BattalionSummary | null): boolean {
   if (isOwner(user) || isTcwAdmin(user)) {
     return true;
@@ -719,6 +741,14 @@ export function BattalionPage({ user }: { user: AuthUser }) {
     });
   }
 
+  function exportBattalionsCsv() {
+    downloadCsv("battalions.csv", [
+      ["battalion_key", "battalion_name", "callsign"],
+      ...unitList.map((unit) => [unit.unit_key, unit.name, unit.callsign ?? ""])
+    ]);
+    setMessage("Export ready: battalions.csv");
+  }
+
   async function createUnit() {
     const unitKey = slugifyUnitKey(newUnit.unit_key || newUnit.name);
     const unitName = newUnit.name.trim();
@@ -947,7 +977,16 @@ export function BattalionPage({ user }: { user: AuthUser }) {
 
       {activeTab === "setup" && canManageBattalions ? (
         <div className="tab-panel view-grid">
-          <CommandPanel title="Battalion Registry" eyebrow="Unit index" wide>
+          <CommandPanel
+            title="Battalion Registry"
+            eyebrow="Unit index"
+            wide
+            actions={
+              <button type="button" onClick={exportBattalionsCsv} disabled={unitList.length === 0}>
+                Export CSV
+              </button>
+            }
+          >
             <DataMessage result={units} />
             {message ? <p className="message">{message}</p> : null}
             <TacticalTable label="Battalions" maxVisibleRows={10} className="static-table">
