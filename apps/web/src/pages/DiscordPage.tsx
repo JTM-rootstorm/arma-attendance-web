@@ -93,6 +93,30 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
   const assignmentAuditData = assignmentAudits.status === "ready" ? assignmentAudits.data.audits : [];
   const auditData = audits.status === "ready" ? audits.data.audits : [];
   const unitData = units.status === "ready" ? units.data.units : [];
+  const mappedRoleIds = new Set(unitMappingData.map((mapping) => mapping.role_id));
+  const unitMappingRows = [
+    ...unitMappingData.map((mapping) => {
+      const role = activeRoleData.find((item) => item.role_id === mapping.role_id);
+      return {
+        key: mapping.id,
+        role_id: mapping.role_id,
+        friendly_name: role?.name ?? mapping.role_name ?? mapping.role_id,
+        linked_unit: mapping.unit_name ?? mapping.unit_id,
+        priority: String(mapping.priority),
+        mapping_id: mapping.id
+      };
+    }),
+    ...activeRoleData
+      .filter((role) => !mappedRoleIds.has(role.role_id))
+      .map((role) => ({
+        key: role.role_id,
+        role_id: role.role_id,
+        friendly_name: role.name,
+        linked_unit: null,
+        priority: "n/a",
+        mapping_id: null
+      }))
+  ];
   const selectedGuild = useMemo(() => selectedGuildFrom(guildData, selectedGuildId), [guildData, selectedGuildId]);
 
   const loadGuilds = useCallback(async () => {
@@ -440,60 +464,38 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
             <DataMessage result={roles} />
             <DataMessage result={mappings} />
             <DataMessage result={units} />
-            <div className="split-grid">
-              <TacticalTable label="Attached Discord roles" maxVisibleRows={6}>
-                <thead>
-                  <tr>
-                    <th>Friendly Name</th>
-                    <th>Role ID</th>
-                    <th>State</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeRoleData.map((role) => (
-                    <tr key={role.role_id}>
-                      <td>{role.name}</td>
-                      <td>{role.role_id}</td>
-                      <td>
-                        <StatusChip label={role.assignable && !role.is_deleted ? "usable" : "blocked"} tone={role.assignable && !role.is_deleted ? "ready" : "muted"} />
-                      </td>
-                      <td>
-                        <button type="button" className="secondary" onClick={() => void deleteRole(role.role_id)}>
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </TacticalTable>
-              <TacticalTable label="Unit membership mappings" maxVisibleRows={6}>
-                <thead>
-                  <tr>
-                    <th>Role</th>
-                    <th>Unit</th>
-                    <th>Priority</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {unitMappingData.map((mapping) => (
-                    <tr key={mapping.id}>
-                      <td>
-                        <StatusChip label={mapping.is_enabled ? "enabled" : "off"} tone={mapping.is_enabled ? "ready" : "muted"} /> {displayValue(mapping.role_name ?? mapping.role_id)}
-                      </td>
-                      <td>{displayValue(mapping.unit_name ?? mapping.unit_id)}</td>
-                      <td>{mapping.priority}</td>
-                      <td>
-                        <button type="button" className="secondary" onClick={() => void unlinkMapping(mapping.id)}>
+            <TacticalTable label="Unit role mappings" maxVisibleRows={8}>
+              <thead>
+                <tr>
+                  <th>Role ID</th>
+                  <th>Friendly Name</th>
+                  <th>Linked Unit</th>
+                  <th>Priority</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unitMappingRows.map((row) => (
+                  <tr key={row.key}>
+                    <td>
+                      <p className="mono">{row.role_id}</p>
+                      <button type="button" className="secondary" onClick={() => void deleteRole(row.role_id)}>
+                        Delete
+                      </button>
+                    </td>
+                    <td>{row.friendly_name}</td>
+                    <td>
+                      {displayValue(row.linked_unit)}
+                      {row.mapping_id ? (
+                        <button type="button" className="secondary" onClick={() => void unlinkMapping(row.mapping_id)}>
                           Unlink
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </TacticalTable>
-            </div>
+                      ) : null}
+                    </td>
+                    <td>{row.priority}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </TacticalTable>
           </CommandPanel>
         </div>
       ) : null}
