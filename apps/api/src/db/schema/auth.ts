@@ -1,4 +1,4 @@
-import { jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, primaryKey, text, timestamp, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 export const appUsers = pgTable("app_users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -57,9 +57,40 @@ export const oauthStates = pgTable("oauth_states", {
   provider: text("provider").notNull(),
   redirectAfter: text("redirect_after"),
   codeVerifier: text("code_verifier"),
+  flowMode: text("flow_mode").notNull().default("cookie"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   consumedAt: timestamp("consumed_at", { withTimezone: true })
+});
+
+export const authJwtHandoffCodes = pgTable("auth_jwt_handoff_codes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  codeHash: text("code_hash").notNull().unique(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => appUsers.id, { onDelete: "cascade" }),
+  returnTo: text("return_to").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent")
+});
+
+export const authRefreshTokens = pgTable("auth_refresh_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => appUsers.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  familyId: uuid("family_id").notNull().defaultRandom(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  replacedByTokenId: uuid("replaced_by_token_id").references((): AnyPgColumn => authRefreshTokens.id, { onDelete: "set null" }),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent")
 });
 
 export const sessionCsrfTokens = pgTable("session_csrf_tokens", {

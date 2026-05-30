@@ -43,6 +43,7 @@ app.log.info(
     corsAllowedOrigins: config.corsAllowedOrigins,
     corsAllowCredentials: config.corsAllowCredentials,
     oauthAllowedReturnOrigins: config.oauthAllowedReturnOrigins,
+    jwtAuthEnabled: config.jwtAuthEnabled,
     csrfEnabled: config.csrfEnabled,
     initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
     testAuthEnabled: config.enableTestAuth,

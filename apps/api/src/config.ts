@@ -59,6 +59,17 @@ const envSchema = z.object({
     .or(z.boolean())
     .default(true),
   OAUTH_ALLOWED_RETURN_ORIGINS: z.string().optional(),
+  JWT_AUTH_ENABLED: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(false),
+  JWT_ISSUER: z.string().url().optional(),
+  JWT_AUDIENCE: z.string().min(1).default("arma-attendance-web"),
+  JWT_SECRET: z.string().optional(),
+  JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(60 * 60).default(900),
+  JWT_REFRESH_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
+  JWT_HANDOFF_TTL_SECONDS: z.coerce.number().int().min(30).max(600).default(120),
   CSRF_ENABLED: z
     .enum(["true", "false"])
     .transform((value) => value === "true")
@@ -96,6 +107,13 @@ if (env.NODE_ENV === "production") {
 
   if (!env.SESSION_SECRET || env.SESSION_SECRET === "change-this-session-secret" || env.SESSION_SECRET.length < 24) {
     throw new Error("Invalid application configuration: SESSION_SECRET must be replaced with a strong production secret.");
+  }
+
+  if (
+    env.JWT_AUTH_ENABLED &&
+    (!env.JWT_SECRET || env.JWT_SECRET === "change-this-jwt-secret" || env.JWT_SECRET.length < 32)
+  ) {
+    throw new Error("Invalid application configuration: JWT_SECRET must be replaced with a strong production secret.");
   }
 }
 
@@ -142,6 +160,13 @@ export const config = {
     .split(",")
     .map((value) => value.trim())
     .filter((value) => value.length > 0),
+  jwtAuthEnabled: env.JWT_AUTH_ENABLED,
+  jwtIssuer: env.JWT_ISSUER ?? env.PUBLIC_BASE_URL,
+  jwtAudience: env.JWT_AUDIENCE,
+  jwtSecret: env.JWT_SECRET && env.JWT_SECRET.length > 0 ? env.JWT_SECRET : undefined,
+  jwtAccessTtlSeconds: env.JWT_ACCESS_TTL_SECONDS,
+  jwtRefreshTtlDays: env.JWT_REFRESH_TTL_DAYS,
+  jwtHandoffTtlSeconds: env.JWT_HANDOFF_TTL_SECONDS,
   csrfEnabled: env.CSRF_ENABLED,
   csrfTokenTtlMinutes: env.CSRF_TOKEN_TTL_MINUTES,
   squadAssetRoot: env.SQUAD_ASSET_ROOT,
