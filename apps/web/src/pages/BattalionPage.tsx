@@ -922,43 +922,6 @@ export function BattalionPage({ user }: { user: AuthUser }) {
 
   return (
     <div className="view-grid battalion-view">
-      <CommandPanel
-        title="Battalion Command"
-        eyebrow="Holo-board"
-        wide
-        actions={
-          <div className="inline-actions">
-            <button type="button" onClick={() => void loadUnits()}>
-              Refresh
-            </button>
-            {selectedUnit ? (
-              <select value={selectedUnit.unit_id} onChange={(event) => setSelectedUnitId(event.target.value)} aria-label="Battalion selector">
-                {unitList.map((unit) => (
-                  <option key={unit.unit_id} value={unit.unit_id}>
-                    {unit.display_name}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-          </div>
-        }
-      >
-        <DataMessage result={units} />
-        {selectedUnit ? (
-          <>
-            <div className="metric-grid compact">
-              <MetricTile label="Battalion" value={selectedUnit.display_name} detail={selectedUnit.callsign ?? "No callsign"} />
-              <MetricTile label="Troopers" value={selectedUnit.member_count} detail="active roster" />
-              <MetricTile label="Unassigned" value={selectedUnit.unassigned_count} detail="intake bay" />
-              <MetricTile label="Squads" value={selectedUnit.squad_count} detail="active nodes" />
-            </div>
-            {message ? <p className="message">{message}</p> : null}
-          </>
-        ) : (
-          <p className="empty-copy">No battalion assignment yet.</p>
-        )}
-      </CommandPanel>
-
       <div className="comms-tabs" role="tablist" aria-label="Battalion sections">
         <button
           type="button"
@@ -986,6 +949,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
         <div className="tab-panel view-grid">
           <CommandPanel title="Battalion Registry" eyebrow="Unit index" wide>
             <DataMessage result={units} />
+            {message ? <p className="message">{message}</p> : null}
             <TacticalTable label="Battalions" maxVisibleRows={10} className="static-table">
               <thead>
                 <tr>
@@ -1057,6 +1021,43 @@ export function BattalionPage({ user }: { user: AuthUser }) {
 
       {activeTab === "layout" ? (
         <>
+          <CommandPanel
+            title="Battalion Command"
+            eyebrow="Holo-board"
+            wide
+            actions={
+              <div className="inline-actions">
+                <button type="button" onClick={() => void loadUnits()}>
+                  Refresh
+                </button>
+                {selectedUnit ? (
+                  <select value={selectedUnit.unit_id} onChange={(event) => setSelectedUnitId(event.target.value)} aria-label="Battalion selector">
+                    {unitList.map((unit) => (
+                      <option key={unit.unit_id} value={unit.unit_id}>
+                        {unit.display_name}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </div>
+            }
+          >
+            <DataMessage result={units} />
+            {selectedUnit ? (
+              <>
+                <div className="metric-grid compact">
+                  <MetricTile label="Battalion" value={selectedUnit.display_name} detail={selectedUnit.callsign ?? "No callsign"} />
+                  <MetricTile label="Troopers" value={selectedUnit.member_count} detail="active roster" />
+                  <MetricTile label="Unassigned" value={selectedUnit.unassigned_count} detail="intake bay" />
+                  <MetricTile label="Squads" value={selectedUnit.squad_count} detail="active nodes" />
+                </div>
+                {message ? <p className="message">{message}</p> : null}
+              </>
+            ) : (
+              <p className="empty-copy">No battalion assignment yet.</p>
+            )}
+          </CommandPanel>
+
           <CommandPanel title="Squad Layout" eyebrow="Tree control" wide>
             {rosterData ? (
               <>
