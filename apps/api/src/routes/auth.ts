@@ -45,6 +45,7 @@ import { unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 
 const discordStartQuerySchema = z.object({
+  mode: z.enum(["cookie", "jwt"]).default("cookie"),
   return_to: z.string().max(1000).optional(),
   redirect_after: z.string().max(500).optional()
 });
@@ -93,6 +94,7 @@ type OAuthStateRow = {
   provider: "discord" | "steam";
   redirect_after: string | null;
   code_verifier: string | null;
+  flow_mode: "cookie" | "jwt";
   expires_at: Date;
   consumed_at: Date | null;
 };
@@ -402,18 +404,29 @@ async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displa
   };
 }
 
-async function insertOAuthState(provider: "discord" | "steam", redirectAfter: string | null, codeVerifier: string | null) {
+async function insertOAuthState(
+  provider: "discord" | "steam",
+  redirectAfter: string | null,
+  codeVerifier: string | null,
+  flowMode: "cookie" | "jwt" = "cookie"
+) {
   const state = randomState();
 
   await queryDb(
     `
-    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, expires_at)
-    VALUES ($1, $2, $3, $4, now() + interval '10 minutes')
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
+    VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
     `,
-    [state, provider, redirectAfter, codeVerifier]
+    [state, provider, redirectAfter, codeVerifier, flowMode]
   );
 
   return state;
+}
+
+function appendAuthHandoff(returnTo: string, handoffCode: string): string {
+  const redirectUrl = new URL(returnTo, config.publicBaseUrl);
+  redirectUrl.searchParams.set("auth_handoff", handoffCode);
+  return redirectUrl.toString();
 }
 
 async function consumeOAuthState(provider: "discord" | "steam", state: string): Promise<OAuthStateRow | null> {
@@ -811,11 +824,16 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return sendAuthUnavailable(reply, "Discord OAuth is not configured.");
     }
 
+    if (parsedQuery.data.mode === "jwt" && !isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
     try {
       const state = await insertOAuthState(
         "discord",
         getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after),
-        null
+        null,
+        parsedQuery.data.mode
       );
       const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
       authorizeUrl.searchParams.set("client_id", config.discordClientId);
@@ -885,9 +903,18 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         }
       }
 
+      if (state.flow_mode === "jwt") {
+        if (!isJwtAuthEnabled()) {
+          return sendJwtAuthDisabled(reply);
+        }
+
+        const returnTo = getSafeReturnTo(state.redirect_after);
+        const handoff = await createJwtHandoffCode(userId, returnTo, request);
+        return reply.redirect(appendAuthHandoff(returnTo, handoff.code));
+      }
+
       const session = await createUserSession(userId, request);
       setSessionCookie(reply, session.token, session.expires_at);
-
       return reply.redirect(getSafeReturnTo(state.redirect_after));
     } catch (error) {
       request.log.error({ err: error }, "Discord OAuth callback failed");
