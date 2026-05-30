@@ -23,6 +23,7 @@ import {
   playerDiscordLinks
 } from "../db/schema/discord.js";
 import { players } from "../db/schema/players.js";
+import { unitDiscordGuilds, units } from "../db/schema/units.js";
 
 const guildSyncSchema = z.object({
   guild: z
@@ -55,6 +56,7 @@ const guildParamsSchema = z.object({
 const roleBodySchema = z.object({
   role_id: z.string().min(1).max(64),
   name: z.string().min(1).max(200),
+  priority: z.number().int().default(0),
   assignable: z.boolean().default(true)
 });
 
@@ -623,43 +625,99 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
         return reply.code(404).send({ ok: false, error: { code: "guild_not_found", message: "Discord guild was not found." } });
       }
 
-      const [role] = await getDrizzleDb()
-        .insert(discordRoles)
-        .values({
-          guildId,
-          roleId: body.role_id,
-          name: body.name,
-          assignable: body.assignable,
-          managed: false,
-          isDeleted: false,
-          rawRole: { source: "manual_admin" }
-        })
-        .onConflictDoUpdate({
-          target: [discordRoles.guildId, discordRoles.roleId],
-          set: {
-            name: sql`excluded.name`,
-            assignable: sql`excluded.assignable`,
+      return await getDrizzleDb().transaction(async (tx) => {
+        const [role] = await tx
+          .insert(discordRoles)
+          .values({
+            guildId,
+            roleId: body.role_id,
+            name: body.name,
+            assignable: body.assignable,
             managed: false,
             isDeleted: false,
-            lastSeenAt: sql`now()`,
-            updatedAt: sql`now()`,
-            rawRole: sql`excluded.raw_role`
-          }
-        })
-        .returning({
-          guild_id: discordRoles.guildId,
-          role_id: discordRoles.roleId,
-          name: discordRoles.name,
-          color: discordRoles.color,
-          position: discordRoles.position,
-          managed: discordRoles.managed,
-          assignable: discordRoles.assignable,
-          is_deleted: discordRoles.isDeleted,
-          last_seen_at: discordRoles.lastSeenAt,
-          updated_at: discordRoles.updatedAt
-        });
+            rawRole: { source: "manual_admin" }
+          })
+          .onConflictDoUpdate({
+            target: [discordRoles.guildId, discordRoles.roleId],
+            set: {
+              name: sql`excluded.name`,
+              assignable: sql`excluded.assignable`,
+              managed: false,
+              isDeleted: false,
+              lastSeenAt: sql`now()`,
+              updatedAt: sql`now()`,
+              rawRole: sql`excluded.raw_role`
+            }
+          })
+          .returning({
+            guild_id: discordRoles.guildId,
+            role_id: discordRoles.roleId,
+            name: discordRoles.name,
+            color: discordRoles.color,
+            position: discordRoles.position,
+            managed: discordRoles.managed,
+            assignable: discordRoles.assignable,
+            is_deleted: discordRoles.isDeleted,
+            last_seen_at: discordRoles.lastSeenAt,
+            updated_at: discordRoles.updatedAt
+          });
 
-      return { ok: true, role };
+        const linkedUnits = await tx
+          .selectDistinct({
+            unit_id: units.id
+          })
+          .from(units)
+          .leftJoin(unitDiscordGuilds, eq(unitDiscordGuilds.unitId, units.id))
+          .where(and(sql`${units.deletedAt} IS NULL`, sql`(${units.primaryDiscordGuildId} = ${guildId} OR ${unitDiscordGuilds.guildId} = ${guildId})`))
+          .limit(2);
+
+        if (linkedUnits.length !== 1) {
+          return { ok: true, role, mapping: null, linked_unit_count: linkedUnits.length };
+        }
+
+        const unitId = linkedUnits[0]?.unit_id;
+        if (!unitId) {
+          return { ok: true, role, mapping: null, linked_unit_count: linkedUnits.length };
+        }
+
+        const existing = await tx
+          .select({ id: discordRoleMappings.id })
+          .from(discordRoleMappings)
+          .where(
+            and(
+              eq(discordRoleMappings.guildId, guildId),
+              eq(discordRoleMappings.roleId, body.role_id),
+              eq(discordRoleMappings.mappingType, "unit_primary"),
+              eq(discordRoleMappings.unitId, unitId)
+            )
+          )
+          .limit(1);
+
+        const [mapping] = existing[0]
+          ? await tx
+              .update(discordRoleMappings)
+              .set({
+                priority: body.priority,
+                isEnabled: true,
+                updatedAt: sql`now()`
+              })
+              .where(eq(discordRoleMappings.id, existing[0].id))
+              .returning(discordRoleMappingReturning)
+          : await tx
+              .insert(discordRoleMappings)
+              .values({
+                guildId,
+                roleId: body.role_id,
+                mappingType: "unit_primary",
+                unitId,
+                priority: body.priority,
+                isEnabled: true,
+                notes: "Created from COMMS unit mapping role attach."
+              })
+              .returning(discordRoleMappingReturning);
+
+        return { ok: true, role, mapping, linked_unit_count: linkedUnits.length };
+      });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to attach Discord role");
       return sendDatabaseUnavailable(reply);

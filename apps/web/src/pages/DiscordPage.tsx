@@ -17,8 +17,7 @@ import type {
   DiscordReconcileResponse,
   DiscordRoleClaim,
   DiscordRoleMappingsResponse,
-  DiscordRolesResponse,
-  UnitsResponse
+  DiscordRolesResponse
 } from "../types";
 
 const emptyResult: ApiResult<never> = { status: "idle", data: null, error: null };
@@ -32,6 +31,12 @@ const commsTabs = [
 ] as const;
 
 type CommsTab = (typeof commsTabs)[number]["id"];
+
+type DiscordRoleAttachResponse = {
+  ok: true;
+  mapping: unknown | null;
+  linked_unit_count: number;
+};
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   const parsed = resultError(error, fallback);
@@ -70,15 +75,9 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
   const [reconcile, setReconcile] = useState<ApiResult<DiscordReconcileResponse>>(emptyResult);
   const [assignmentAudits, setAssignmentAudits] = useState<ApiResult<DiscordAssignmentAuditsResponse>>(emptyResult);
   const [audits, setAudits] = useState<ApiResult<DiscordAuditsResponse>>(emptyResult);
-  const [units, setUnits] = useState<ApiResult<UnitsResponse>>(emptyResult);
   const [selectedGuildId, setSelectedGuildId] = useState("");
-  const [roleDraft, setRoleDraft] = useState({ role_id: "", name: "" });
+  const [roleDraft, setRoleDraft] = useState({ role_id: "", name: "", priority: "0" });
   const [linkDraft, setLinkDraft] = useState({ player_uid: "", discord_user_id: "", discord_display_name: "" });
-  const [mappingDraft, setMappingDraft] = useState({
-    role_id: "",
-    unit_id: "",
-    priority: "0"
-  });
   const [reconcileDraft, setReconcileDraft] = useState({ discord_user_id: "", user_id: "" });
   const [message, setMessage] = useState("");
 
@@ -90,7 +89,6 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
   const unitMappingData = mappingData.filter((mapping) => mapping.mapping_type === "unit_primary");
   const assignmentAuditData = assignmentAudits.status === "ready" ? assignmentAudits.data.audits : [];
   const auditData = audits.status === "ready" ? audits.data.audits : [];
-  const unitData = units.status === "ready" ? units.data.units : [];
   const selectedGuild = useMemo(() => selectedGuildFrom(guildData, selectedGuildId), [guildData, selectedGuildId]);
 
   const loadGuilds = useCallback(async () => {
@@ -144,7 +142,6 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
         setMappings({ status: "ready", data: nextMappings, error: null });
         setAudits({ status: "ready", data: nextAudits, error: null });
         setAssignmentAudits({ status: "ready", data: nextAssignmentAudits, error: null });
-        setMappingDraft((draft) => ({ ...draft, role_id: draft.role_id || nextRoles.roles.find((role) => role.assignable)?.role_id || "" }));
       } catch (error) {
         setRoles(errorResult(error, "Discord roles failed."));
         setMappings(errorResult(error, "Discord role mappings failed."));
@@ -174,30 +171,10 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
   }, [hasToken, token]);
 
-  const loadUnits = useCallback(async () => {
-    if (!hasToken) {
-      setUnits(emptyResult);
-      return;
-    }
-
-    setUnits({ status: "loading", data: null, error: null });
-
-    try {
-      setUnits({
-        status: "ready",
-        data: await apiFetch<UnitsResponse>("/v1/units", { token, params: { include_inactive: "true", limit: "200" } }),
-        error: null
-      });
-    } catch (error) {
-      setUnits(errorResult(error, "Units failed."));
-    }
-  }, [hasToken, token]);
-
   useEffect(() => {
     void loadGuilds();
     void loadLinks();
-    void loadUnits();
-  }, [loadGuilds, loadLinks, loadUnits]);
+  }, [loadGuilds, loadLinks]);
 
   useEffect(() => {
     void loadGuildDetail(selectedGuild?.guild_id ?? "");
@@ -212,17 +189,18 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
 
     try {
-      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/roles`, {
+      const response = await apiFetch<DiscordRoleAttachResponse>(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/roles`, {
         method: "POST",
         token,
         body: {
           role_id: roleDraft.role_id,
           name: roleDraft.name,
+          priority: Number(roleDraft.priority || 0),
           assignable: true
         }
       });
-      setMessage("Discord role attached.");
-      setRoleDraft({ role_id: "", name: "" });
+      setMessage(response.mapping ? "Discord role attached and unit mapping updated." : "Discord role attached; no single linked unit was found for this guild.");
+      setRoleDraft({ role_id: "", name: "", priority: "0" });
       void loadGuildDetail(selectedGuild.guild_id);
     } catch (error) {
       setMessage(resultError(error, "Discord role attach failed.").message);
@@ -254,33 +232,6 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
       void loadLinks();
     } catch (error) {
       setMessage(resultError(error, "Player link save failed.").message);
-    }
-  }
-
-  async function createMapping(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!hasToken || !selectedGuild) {
-      setMessage("Guild selection required.");
-      return;
-    }
-
-    try {
-      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/role-mappings`, {
-        method: "POST",
-        token,
-        body: {
-          role_id: mappingDraft.role_id,
-          mapping_type: "unit_primary",
-          unit_id: mappingDraft.unit_id,
-          priority: Number(mappingDraft.priority || 0),
-          is_enabled: true
-        }
-      });
-      setMessage("Unit mapping saved.");
-      void loadGuildDetail(selectedGuild.guild_id);
-    } catch (error) {
-      setMessage(resultError(error, "Unit mapping save failed.").message);
     }
   }
 
@@ -412,35 +363,13 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
             <form className="filters discord-role-form" onSubmit={createRole}>
               <input value={roleDraft.role_id} onChange={(event) => setRoleDraft({ ...roleDraft, role_id: event.target.value })} placeholder="discord role id" aria-label="Discord role ID" />
               <input value={roleDraft.name} onChange={(event) => setRoleDraft({ ...roleDraft, name: event.target.value })} placeholder="friendly role name" aria-label="Friendly role name" />
+              <input value={roleDraft.priority} onChange={(event) => setRoleDraft({ ...roleDraft, priority: event.target.value })} placeholder="priority" aria-label="Mapping priority" />
               <button type="submit" disabled={!hasToken || !selectedGuild || roleDraft.role_id.length === 0 || roleDraft.name.length === 0}>
                 Attach Role
               </button>
             </form>
-            <form className="filters discord-unit-map-form" onSubmit={createMapping}>
-              <select value={mappingDraft.role_id} onChange={(event) => setMappingDraft({ ...mappingDraft, role_id: event.target.value })} aria-label="Mapping Discord role">
-                <option value="">select role</option>
-                {roleData.map((role) => (
-                  <option key={role.role_id} value={role.role_id}>
-                    {role.name}
-                  </option>
-                ))}
-              </select>
-              <select value={mappingDraft.unit_id} onChange={(event) => setMappingDraft({ ...mappingDraft, unit_id: event.target.value })} aria-label="Mapped unit">
-                <option value="">select unit</option>
-                {unitData.map((unit) => (
-                  <option key={unit.unit_id} value={unit.unit_id}>
-                    {unit.display_name ?? unit.name}
-                  </option>
-                ))}
-              </select>
-              <input value={mappingDraft.priority} onChange={(event) => setMappingDraft({ ...mappingDraft, priority: event.target.value })} placeholder="priority" aria-label="Mapping priority" />
-              <button type="submit" disabled={!hasToken || !selectedGuild || mappingDraft.role_id.length === 0 || mappingDraft.unit_id.length === 0}>
-                Link Unit
-              </button>
-            </form>
             <DataMessage result={roles} />
             <DataMessage result={mappings} />
-            <DataMessage result={units} />
             <div className="split-grid">
               <TacticalTable label="Attached Discord roles" maxVisibleRows={6}>
                 <thead>
