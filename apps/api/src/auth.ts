@@ -195,31 +195,17 @@ export async function revokeCurrentSession(request: FastifyRequest): Promise<voi
     .where(and(eq(userSessions.sessionTokenHash, hashSessionToken(token)), isNull(userSessions.revokedAt)));
 }
 
-export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {
-  const token = getSessionToken(request);
-
-  if (!token) {
-    return null;
-  }
-
+export async function loadCurrentUserById(userId: string, sessionId = "jwt"): Promise<CurrentUser | null> {
   const db = getDrizzleDb();
   const [row] = await db
     .select({
-      session_id: userSessions.id,
       user_id: appUsers.id,
       display_name: appUsers.displayName,
       avatar_url: appUsers.avatarUrl,
       disabled_at: appUsers.disabledAt
     })
-    .from(userSessions)
-    .innerJoin(appUsers, eq(appUsers.id, userSessions.userId))
-    .where(
-      and(
-        eq(userSessions.sessionTokenHash, hashSessionToken(token)),
-        isNull(userSessions.revokedAt),
-        gt(userSessions.expiresAt, sql<Date>`now()`)
-      )
-    )
+    .from(appUsers)
+    .where(eq(appUsers.id, userId))
     .limit(1);
 
   if (!row || row.disabled_at) {
@@ -239,8 +225,6 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
       .where(eq(userIdentities.userId, row.user_id))
   ]);
 
-  await db.update(userSessions).set({ lastSeenAt: sql`now()` }).where(eq(userSessions.id, row.session_id));
-
   return {
     id: row.user_id,
     display_name: row.display_name,
@@ -257,8 +241,47 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
         display_name: identity.display_name,
         avatar_url: identity.avatar_url
       })),
-    session_id: row.session_id
+    session_id: sessionId
   };
+}
+
+export async function getCurrentUserFromCookie(request: FastifyRequest): Promise<CurrentUser | null> {
+  const token = getSessionToken(request);
+
+  if (!token) {
+    return null;
+  }
+
+  const db = getDrizzleDb();
+  const [row] = (await db
+    .select({
+      session_id: userSessions.id,
+      user_id: appUsers.id,
+      display_name: appUsers.displayName,
+      avatar_url: appUsers.avatarUrl,
+      disabled_at: appUsers.disabledAt
+    })
+    .from(userSessions)
+    .innerJoin(appUsers, eq(appUsers.id, userSessions.userId))
+    .where(
+      and(
+        eq(userSessions.sessionTokenHash, hashSessionToken(token)),
+        isNull(userSessions.revokedAt),
+        gt(userSessions.expiresAt, sql<Date>`now()`)
+      )
+    )
+    .limit(1)) as SessionUserRow[];
+
+  if (!row || row.disabled_at) {
+    return null;
+  }
+
+  await db.update(userSessions).set({ lastSeenAt: sql`now()` }).where(eq(userSessions.id, row.session_id));
+  return loadCurrentUserById(row.user_id, row.session_id);
+}
+
+export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {
+  return getCurrentUserFromCookie(request);
 }
 
 async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {

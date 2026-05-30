@@ -9,12 +9,22 @@ import {
   clearSessionCookie,
   createUserSession,
   hasRole,
+  loadCurrentUserById,
   requireUser,
   revokeCurrentSession,
   setSessionCookie,
   type CurrentUser
 } from "../auth.js";
 import { createCsrfToken } from "../auth/csrf.js";
+import {
+  consumeJwtHandoffCode,
+  createJwtHandoffCode,
+  isJwtAuthEnabled,
+  issueAccessJwt,
+  issueRefreshToken,
+  revokeRefreshToken,
+  rotateRefreshToken
+} from "../auth/jwt.js";
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
@@ -60,6 +70,18 @@ const testLoginBodySchema = z.object({
 
 const testSteamLinkBodySchema = z.object({
   provider_user_id: z.string().min(1).max(64)
+});
+
+const jwtExchangeBodySchema = z.object({
+  handoff_code: z.string().min(16).max(256)
+});
+
+const jwtRefreshBodySchema = z.object({
+  refresh_token: z.string().min(32).max(512)
+});
+
+const testJwtHandoffBodySchema = z.object({
+  return_to: z.string().max(1000).optional()
 });
 
 const selfPlayerBodySchema = z.object({
@@ -188,6 +210,26 @@ function sendConflict(reply: FastifyReply, message: string) {
     ok: false,
     error: {
       code: "identity_conflict",
+      message
+    }
+  });
+}
+
+function sendJwtAuthDisabled(reply: FastifyReply) {
+  return reply.code(503).send({
+    ok: false,
+    error: {
+      code: "jwt_auth_disabled",
+      message: "JWT authentication is not enabled."
+    }
+  });
+}
+
+function sendJwtUnauthorized(reply: FastifyReply, message = "JWT credentials are invalid or expired.") {
+  return reply.code(401).send({
+    ok: false,
+    error: {
+      code: "jwt_unauthorized",
       message
     }
   });
@@ -859,6 +901,102 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  app.post("/auth/jwt/exchange", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const parsedBody = jwtExchangeBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const handoff = await consumeJwtHandoffCode(parsedBody.data.handoff_code);
+
+      if (!handoff) {
+        return sendJwtUnauthorized(reply, "Handoff code is invalid or expired.");
+      }
+
+      const user = await loadCurrentUserById(handoff.user_id);
+
+      if (!user) {
+        return sendJwtUnauthorized(reply);
+      }
+
+      const [accessToken, refreshToken] = await Promise.all([
+        issueAccessJwt(user.id),
+        issueRefreshToken(user.id, request)
+      ]);
+
+      return {
+        ok: true,
+        token_type: "Bearer",
+        access_token: accessToken,
+        expires_in: config.jwtAccessTtlSeconds,
+        refresh_token: refreshToken.token,
+        user: await serializeUser(user)
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to exchange JWT handoff");
+      return sendProviderFailure(reply, "JWT handoff exchange failed.");
+    }
+  });
+
+  app.post("/auth/jwt/refresh", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const parsedBody = jwtRefreshBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const rotated = await rotateRefreshToken(parsedBody.data.refresh_token, request);
+
+      if (!rotated) {
+        return sendJwtUnauthorized(reply, "Refresh token is invalid or expired.");
+      }
+
+      const user = await loadCurrentUserById(rotated.user_id);
+
+      if (!user) {
+        await revokeRefreshToken(rotated.refresh_token.token);
+        return sendJwtUnauthorized(reply);
+      }
+
+      return {
+        ok: true,
+        token_type: "Bearer",
+        access_token: await issueAccessJwt(user.id),
+        expires_in: config.jwtAccessTtlSeconds,
+        refresh_token: rotated.refresh_token.token,
+        user: await serializeUser(user)
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to refresh JWT auth");
+      return sendProviderFailure(reply, "JWT refresh failed.");
+    }
+  });
+
+  app.post("/auth/jwt/logout", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const parsedBody = jwtRefreshBodySchema.safeParse(request.body);
+
+    if (parsedBody.success) {
+      await revokeRefreshToken(parsedBody.data.refresh_token);
+    }
+
+    return { ok: true };
+  });
+
   app.get("/v1/me", async (request, reply) => {
     const user = await requireUser(request, reply);
 
@@ -1397,6 +1535,38 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     setSessionCookie(reply, session.token, session.expires_at);
 
     return { ok: true, user_id: userId };
+  });
+
+  app.post("/auth/test/jwt-handoff", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (config.nodeEnv === "production" && !config.enableTestAuth) {
+      return reply.code(404).send({ ok: false, error: { code: "not_found", message: "Route not found." } });
+    }
+
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = testJwtHandoffBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const returnTo = getSafeReturnTo(parsedBody.data.return_to);
+    const handoff = await createJwtHandoffCode(user.id, returnTo, request);
+
+    return {
+      ok: true,
+      handoff_code: handoff.code,
+      expires_at: handoff.expires_at,
+      return_to: returnTo
+    };
   });
 
   app.post("/auth/test/link-steam", async (request, reply) => {

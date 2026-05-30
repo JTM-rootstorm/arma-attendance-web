@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import { queryDb } from "../db/pool.js";
 
 const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const csrfExemptPaths = new Set(["/auth/jwt/exchange", "/auth/jwt/refresh", "/auth/jwt/logout"]);
 
 type CsrfTokenRow = {
   expires_at: Date;
@@ -95,6 +96,10 @@ export async function requireCsrfForUnsafeSessionRequest(
   reply: FastifyReply
 ): Promise<boolean> {
   if (!config.csrfEnabled || !unsafeMethods.has(request.method.toUpperCase())) {
+    return true;
+  }
+
+  if (csrfExemptPaths.has(request.url.split("?")[0] ?? request.url)) {
     return true;
   }
 
