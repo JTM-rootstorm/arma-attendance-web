@@ -244,7 +244,7 @@ export type DiscordGuild = {
   created_at: string;
   updated_at: string;
   role_count?: number;
-  linked_player_count?: number;
+  linked_member_count?: number;
   enabled_rule_count?: number;
 };
 

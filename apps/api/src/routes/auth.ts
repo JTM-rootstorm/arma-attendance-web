@@ -28,12 +28,10 @@ import {
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
-import { getLoginGrantGuildIds } from "../config/discordAuth.js";
 import { fetchCurrentUserGuildMember, type DiscordCurrentGuildMember, type DiscordOAuthToken } from "../discord/client.js";
 import {
   getLoginGrantGuildIdsFromDb,
   reconcileDiscordMembership,
-  syncDiscordAuthPolicyToDb,
   upsertDiscordMemberSnapshot
 } from "../discord/membershipResolver.js";
 import { getDrizzleDb } from "../db/drizzle.js";
@@ -509,18 +507,26 @@ async function fetchDiscordLoginGuildMemberships(token: DiscordTokenResponse): P
     return [];
   }
 
-  await syncDiscordAuthPolicyToDb();
-  const guildIds = Array.from(new Set([...getLoginGrantGuildIds(), ...(await getLoginGrantGuildIdsFromDb())]));
-  const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
+  const guildIds = await getLoginGrantGuildIdsFromDb();
+  const checks = await Promise.allSettled(
+    guildIds.map(async (guildId) => ({
+      guildId,
+      member: await fetchCurrentUserGuildMember(token, guildId)
+    }))
+  );
+  const failedCheck = checks.find((result) => result.status === "rejected");
 
-  for (const guildId of guildIds) {
-    const member = await fetchCurrentUserGuildMember(token, guildId);
-    if (member) {
-      memberships.push({ guildId, member });
-    }
+  if (failedCheck?.status === "rejected") {
+    throw failedCheck.reason;
   }
 
-  return memberships;
+  return checks.flatMap((result) => {
+    if (result.status === "rejected" || !result.value.member) {
+      return [];
+    }
+
+    return [{ guildId: result.value.guildId, member: result.value.member }];
+  });
 }
 
 function sendDiscordGuildMembershipRequired(reply: FastifyReply) {

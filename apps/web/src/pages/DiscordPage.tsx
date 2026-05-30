@@ -374,7 +374,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
             <div className="metric-grid compact">
               <MetricTile label="Guilds" value={guildData.length} />
               <MetricTile label="Roles" value={activeRoleData.length} />
-              <MetricTile label="Links" value={selectedGuild?.linked_player_count ?? linkData.length} />
+              <MetricTile label="Linked Members" value={selectedGuild?.linked_member_count ?? linkData.length} />
             </div>
             {selectedGuild ? (
               <div className="detail-meta discord-meta">

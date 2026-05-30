@@ -86,6 +86,11 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
     reason: "OAuth and synthetic auth bridge with provider-state, self-stat aggregates, and audit transactions"
   },
   {
+    pattern: /^apps\/api\/src\/auth\/jwt\.ts$/,
+    category: "auth/session bridge",
+    reason: "JWT handoff and refresh-token transaction bridge"
+  },
+  {
     pattern: /^apps\/api\/src\/routes\/admin\.ts$/,
     category: "admin/user search",
     reason: "admin multi-filter search, role transactions, audit writes, and player-name reset projections"

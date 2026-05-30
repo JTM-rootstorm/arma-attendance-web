@@ -151,6 +151,7 @@ POST /v1/system/machine-tokens
 DELETE /v1/system/machine-tokens/:token_id
 POST /v1/discord/guilds/sync
 GET  /v1/discord/auth-policy
+POST /v1/discord/auth-policy/sync
 GET  /v1/discord/guilds
 GET  /v1/discord/guilds/:guild_id
 PUT  /v1/discord/guilds/:guild_id/auth-policy
@@ -559,7 +560,7 @@ pnpm smoke:rbac
 
 Discord readiness provides the database schema, authenticated API contracts, deterministic role evaluation, and the COMMS admin tab needed before a separate bot is built. The app does not store a Discord bot token and does not run a Discord client process.
 
-Discord auth can be restricted to one or more configured guilds with `DISCORD_AUTH_ENABLED=true` and `DISCORD_AUTH_REQUIRE_GUILD=true`. The OAuth flow requests `identify guilds.members.read`, stores per-guild member-role snapshots at login, and can reconcile unit/rank assignments from role mappings. Partner guild mappings should use higher unit/rank priorities than fallback guilds; explicit app-role mappings are required for global permissions. A sample policy lives at `config/discord-guild-auth.example.json`.
+Discord auth can be restricted to one or more database-approved guilds with `DISCORD_AUTH_ENABLED=true` and `DISCORD_AUTH_REQUIRE_GUILD=true`. The OAuth flow requests `identify guilds.members.read`, checks guilds where `discord_guilds.grants_login = true`, stores per-guild member-role snapshots at login, and can reconcile unit/rank assignments from role mappings. A sample seed policy lives at `config/discord-guild-auth.example.json`; run `POST /v1/discord/auth-policy/sync` after changing that file because runtime login policy is read from the database. Partner guild mappings should use higher unit/rank priorities than fallback guilds; explicit app-role mappings are required for global permissions.
 
 Bot-facing endpoints accept the normal `API_TOKEN`. If `BOT_API_TOKEN` is set, those same endpoints also accept that token:
 

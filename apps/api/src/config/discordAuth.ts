@@ -24,13 +24,6 @@ const discordAuthPolicySchema = z.object({
   version: z.literal(1).default(1),
   defaultFallbackGuildIds: z.array(z.string().min(1).max(64)).default([]),
   guilds: z.array(discordAuthGuildSchema).default([]),
-  tieBreakers: z.array(z.enum(["guildPriority", "mappingPriority", "rolePosition", "configOrder"])).default([
-    "guildPriority",
-    "mappingPriority",
-    "rolePosition",
-    "configOrder"
-  ]),
-  denyRoleBehavior: z.enum(["deny_login_overrides_all"]).default("deny_login_overrides_all"),
   permissions: z
     .object({
       partnerGuildsMayGrantGlobalAdmin: z.boolean().default(false)
@@ -113,33 +106,4 @@ export function getDiscordAuthPolicy(): DiscordAuthPolicy {
 
 export function getAuthGuilds(): DiscordAuthGuildConfig[] {
   return getDiscordAuthPolicy().guilds;
-}
-
-export function getLoginGrantGuildIds(): string[] {
-  return getAuthGuilds()
-    .filter((guild) => guild.grantsLogin)
-    .map((guild) => guild.guildId);
-}
-
-export function getFallbackGuildIds(): string[] {
-  return getAuthGuilds()
-    .filter((guild) => guild.fallback || guild.type === "fallback")
-    .map((guild) => guild.guildId);
-}
-
-export function getGuildPriority(guildId: string, field: "unit" | "rank" | "permission"): number {
-  const guild = getAuthGuilds().find((candidate) => candidate.guildId === guildId);
-  if (!guild) {
-    return 0;
-  }
-
-  if (field === "unit") {
-    return guild.unitPriority;
-  }
-
-  if (field === "rank") {
-    return guild.rankPriority;
-  }
-
-  return guild.permissionPriority;
 }

@@ -48,6 +48,7 @@ type ClaimRow = {
 };
 
 type PlayerIdentityRow = {
+  user_id: string | null;
   player_uid: string | null;
   discord_user_id: string | null;
 };
@@ -101,8 +102,10 @@ export type ReconcileDiscordMembershipResult = {
 const allowedAppRoles = new Set(["viewer", "officer", "admin", "tcw_admin", "owner"]);
 const globalAdminRoles = new Set(["admin", "tcw_admin", "owner"]);
 const allowedUnitRoles = new Set(["member", "officer", "admin", "tcw_admin"]);
+const unitUserRoleGrantRoles = new Set(["officer", "admin", "tcw_admin"]);
+const unitMembershipGrantRoles = new Set(["member", "officer", "admin"]);
 
-export async function syncDiscordAuthPolicyToDb(): Promise<void> {
+export async function syncDiscordAuthPolicyToDb(): Promise<number> {
   const policy = getDiscordAuthPolicy();
 
   for (const guild of policy.guilds) {
@@ -152,6 +155,8 @@ export async function syncDiscordAuthPolicyToDb(): Promise<void> {
       ]
     );
   }
+
+  return policy.guilds.length;
 }
 
 export async function getLoginGrantGuildIdsFromDb(): Promise<string[]> {
@@ -310,13 +315,14 @@ async function findIdentity(options: ReconcileDiscordMembershipOptions): Promise
       FROM selected_identity si
     )
     SELECT
+      (SELECT user_id::text FROM selected_identity LIMIT 1) AS user_id,
       (SELECT player_uid FROM chosen_player ORDER BY priority LIMIT 1) AS player_uid,
       (SELECT discord_user_id FROM selected_identity LIMIT 1) AS discord_user_id
     `,
     [options.userId ?? null, options.discordUserId ?? null]
   );
 
-  return result.rows[0] ?? { player_uid: null, discord_user_id: options.discordUserId ?? null };
+  return result.rows[0] ?? { user_id: options.userId ?? null, player_uid: null, discord_user_id: options.discordUserId ?? null };
 }
 
 async function loadClaims(options: ReconcileDiscordMembershipOptions, discordUserId: string | null): Promise<DiscordRoleClaim[]> {
@@ -423,6 +429,7 @@ export async function reconcileDiscordMembership(
   const dryRun = options.dryRun ?? true;
   const source = options.source ?? "discord_reconcile";
   const identity = await findIdentity(options);
+  const targetUserId = options.userId ?? identity.user_id;
   const claims = await loadClaims(options, identity.discord_user_id);
   const denyClaims = claims.filter((claim) => claim.claimType === "deny_login");
   const unitClaims = claims.filter((claim) => claim.claimType === "unit_primary" && claim.unitId);
@@ -444,6 +451,46 @@ export async function reconcileDiscordMembership(
   ];
   const applied: string[] = [];
   let manualLocked = false;
+  const denyWinner = pickWinner(denyClaims);
+
+  if (denyWinner) {
+    if (!dryRun) {
+      await auditChange(
+        targetUserId ?? null,
+        identity.player_uid,
+        identity.discord_user_id,
+        "deny",
+        "login",
+        null,
+        { denied: true },
+        denyWinner,
+        ignoredClaims(denyClaims, denyWinner, "lower deny priority"),
+        source
+      );
+    }
+
+    return {
+      ok: true,
+      dry_run: dryRun,
+      user_id: targetUserId ?? null,
+      discord_user_id: identity.discord_user_id,
+      player_uid: identity.player_uid,
+      denied: true,
+      manual_locked: false,
+      winning_claims: {
+        unit_primary: null,
+        rank: null,
+        roster_status: null,
+        unit_roles: [],
+        app_roles: []
+      },
+      ignored_claims: [
+        ...ignoredClaims(denyClaims, denyWinner, "lower deny priority"),
+        ...claims.filter((claim) => claim.claimType !== "deny_login").map((claim) => ({ ...claim, reason: "login denied" }))
+      ],
+      applied
+    };
+  }
 
   if (!dryRun && identity.player_uid) {
     const currentRows = await currentUnitRows(identity.player_uid);
@@ -507,7 +554,7 @@ export async function reconcileDiscordMembership(
       applied.push("unit_primary");
       if (!currentPrimary || currentPrimary.unit_id !== unitWinner.unitId || currentPrimary.rank_id !== (rankWinner?.rankId ?? null)) {
         await auditChange(
-          options.userId ?? null,
+          targetUserId ?? null,
           identity.player_uid,
           identity.discord_user_id,
           "apply",
@@ -522,7 +569,7 @@ export async function reconcileDiscordMembership(
     }
   }
 
-  if (!dryRun && options.userId) {
+  if (!dryRun && targetUserId) {
     const unitRoleRows = [
       ...(unitWinner
         ? [
@@ -539,28 +586,33 @@ export async function reconcileDiscordMembership(
         claim
       }))
     ].filter((row): row is { unit_id: string; role: string; claim: DiscordRoleClaim } => Boolean(row.unit_id && row.role));
-    await queryDb("DELETE FROM unit_user_roles WHERE user_id = $1 AND grant_source = 'discord'", [options.userId]);
-    await queryDb("DELETE FROM unit_memberships WHERE user_id = $1 AND grant_source = 'discord'", [options.userId]);
+    await queryDb("DELETE FROM unit_user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+    await queryDb("DELETE FROM unit_memberships WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
     for (const row of unitRoleRows) {
-      await queryDb(
-        `
-        INSERT INTO unit_user_roles (unit_id, user_id, role, grant_source)
-        VALUES ($1::uuid, $2::uuid, $3, 'discord')
-        ON CONFLICT (unit_id, user_id, role) DO UPDATE SET grant_source = 'discord'
-        `,
-        [row.unit_id, options.userId, row.role]
-      );
-      await queryDb(
-        `
-        INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
-        VALUES ($1::uuid, $2::uuid, $3, 'discord')
-        ON CONFLICT (unit_id, user_id, role) DO UPDATE SET grant_source = 'discord', updated_at = now()
-        `,
-        [row.unit_id, options.userId, row.role]
-      );
+      if (unitUserRoleGrantRoles.has(row.role)) {
+        await queryDb(
+          `
+          INSERT INTO unit_user_roles (unit_id, user_id, role, grant_source)
+          VALUES ($1::uuid, $2::uuid, $3, 'discord')
+          ON CONFLICT (unit_id, user_id, role) DO UPDATE SET grant_source = 'discord'
+          `,
+          [row.unit_id, targetUserId, row.role]
+        );
+      }
+
+      if (unitMembershipGrantRoles.has(row.role)) {
+        await queryDb(
+          `
+          INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
+          VALUES ($1::uuid, $2::uuid, $3, 'discord')
+          ON CONFLICT (unit_id, user_id, role) DO UPDATE SET grant_source = 'discord', updated_at = now()
+          `,
+          [row.unit_id, targetUserId, row.role]
+        );
+      }
     }
 
-    await queryDb("DELETE FROM user_roles WHERE user_id = $1 AND grant_source = 'discord'", [options.userId]);
+    await queryDb("DELETE FROM user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
     for (const claim of appRoleClaims) {
       await queryDb(
         `
@@ -568,7 +620,7 @@ export async function reconcileDiscordMembership(
         VALUES ($1::uuid, $2, 'discord')
         ON CONFLICT (user_id, role) DO UPDATE SET grant_source = 'discord'
         `,
-        [options.userId, claim.appRole]
+        [targetUserId, claim.appRole]
       );
     }
 
@@ -580,25 +632,10 @@ export async function reconcileDiscordMembership(
     }
   }
 
-  if (!dryRun && denyClaims.length > 0) {
-    await auditChange(
-      options.userId ?? null,
-      identity.player_uid,
-      identity.discord_user_id,
-      "deny",
-      "login",
-      null,
-      { denied: true },
-      denyClaims[0] ?? null,
-      [],
-      source
-    );
-  }
-
   return {
     ok: true,
     dry_run: dryRun,
-    user_id: options.userId ?? null,
+    user_id: targetUserId ?? null,
     discord_user_id: identity.discord_user_id,
     player_uid: identity.player_uid,
     denied: denyClaims.length > 0,
