@@ -154,6 +154,19 @@ export async function syncDiscordAuthPolicyToDb(): Promise<void> {
   }
 }
 
+export async function getLoginGrantGuildIdsFromDb(): Promise<string[]> {
+  const result = await queryDb<{ guild_id: string }>(
+    `
+    SELECT guild_id
+    FROM discord_guilds
+    WHERE grants_login = true
+    ORDER BY unit_priority DESC, rank_priority DESC, permission_priority DESC, config_order ASC, name ASC
+    `
+  );
+
+  return result.rows.map((row) => row.guild_id);
+}
+
 export async function upsertDiscordMemberSnapshot(input: DiscordMemberSnapshotInput): Promise<void> {
   const joinedAt = input.joinedAt ? new Date(input.joinedAt) : null;
   await queryDb(
@@ -447,7 +460,7 @@ export async function reconcileDiscordMembership(
             updated_at = now()
         WHERE player_uid = $1
           AND unit_id <> $2::uuid
-          AND assignment_source = 'discord'
+          AND assignment_source IN ('discord', 'auth-default')
           AND assignment_locked = false
           AND is_active = true
         `,
@@ -510,11 +523,22 @@ export async function reconcileDiscordMembership(
   }
 
   if (!dryRun && options.userId) {
-    const unitRoleRows = unitRoleClaims.map((claim) => ({
-      unit_id: claim.unitId,
-      role: claim.unitRole,
-      claim
-    }));
+    const unitRoleRows = [
+      ...(unitWinner
+        ? [
+            {
+              unit_id: unitWinner.unitId,
+              role: "member",
+              claim: unitWinner
+            }
+          ]
+        : []),
+      ...unitRoleClaims.map((claim) => ({
+        unit_id: claim.unitId,
+        role: claim.unitRole,
+        claim
+      }))
+    ].filter((row): row is { unit_id: string; role: string; claim: DiscordRoleClaim } => Boolean(row.unit_id && row.role));
     await queryDb("DELETE FROM unit_user_roles WHERE user_id = $1 AND grant_source = 'discord'", [options.userId]);
     await queryDb("DELETE FROM unit_memberships WHERE user_id = $1 AND grant_source = 'discord'", [options.userId]);
     for (const row of unitRoleRows) {

@@ -667,6 +667,17 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
             updated_at: discordRoles.updatedAt
           });
 
+        await tx
+          .update(discordGuilds)
+          .set({
+            grantsLogin: true,
+            syncMembers: true,
+            configSource: sql`CASE WHEN ${discordGuilds.configSource} = 'file' THEN ${discordGuilds.configSource} ELSE 'db' END`,
+            lastConfigLoadedAt: sql`now()`,
+            updatedAt: sql`now()`
+          })
+          .where(eq(discordGuilds.guildId, guildId));
+
         const linkedUnits = body.unit_id
           ? await tx
               .select({
@@ -733,7 +744,45 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
               })
               .returning(discordRoleMappingReturning);
 
-        return { ok: true, role, mapping, linked_unit_count: linkedUnits.length };
+        const existingMemberMapping = await tx
+          .select({ id: discordRoleMappings.id })
+          .from(discordRoleMappings)
+          .where(
+            and(
+              eq(discordRoleMappings.guildId, guildId),
+              eq(discordRoleMappings.roleId, body.role_id),
+              eq(discordRoleMappings.mappingType, "unit_role"),
+              eq(discordRoleMappings.unitId, unitId),
+              eq(discordRoleMappings.unitRole, "member")
+            )
+          )
+          .limit(1);
+
+        const [memberMapping] = existingMemberMapping[0]
+          ? await tx
+              .update(discordRoleMappings)
+              .set({
+                priority: body.priority,
+                isEnabled: true,
+                updatedAt: sql`now()`
+              })
+              .where(eq(discordRoleMappings.id, existingMemberMapping[0].id))
+              .returning(discordRoleMappingReturning)
+          : await tx
+              .insert(discordRoleMappings)
+              .values({
+                guildId,
+                roleId: body.role_id,
+                mappingType: "unit_role",
+                unitId,
+                unitRole: "member",
+                priority: body.priority,
+                isEnabled: true,
+                notes: "Created from COMMS unit mapping role attach."
+              })
+              .returning(discordRoleMappingReturning);
+
+        return { ok: true, role, mapping, member_mapping: memberMapping, linked_unit_count: linkedUnits.length };
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to attach Discord role");

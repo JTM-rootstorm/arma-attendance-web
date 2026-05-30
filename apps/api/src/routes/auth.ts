@@ -31,6 +31,7 @@ import { config } from "../config.js";
 import { getLoginGrantGuildIds } from "../config/discordAuth.js";
 import { fetchCurrentUserGuildMember, type DiscordCurrentGuildMember, type DiscordOAuthToken } from "../discord/client.js";
 import {
+  getLoginGrantGuildIdsFromDb,
   reconcileDiscordMembership,
   syncDiscordAuthPolicyToDb,
   upsertDiscordMemberSnapshot
@@ -500,7 +501,7 @@ async function fetchDiscordLoginGuildMemberships(token: DiscordTokenResponse): P
   }
 
   await syncDiscordAuthPolicyToDb();
-  const guildIds = getLoginGrantGuildIds();
+  const guildIds = Array.from(new Set([...getLoginGrantGuildIds(), ...(await getLoginGrantGuildIdsFromDb())]));
   const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
 
   for (const guildId of guildIds) {
@@ -671,12 +672,16 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
   );
   await tx.query(
     `
-    INSERT INTO unit_players (unit_id, player_uid, roster_name)
-    VALUES ($1, $2, $3)
+    INSERT INTO unit_players (unit_id, player_uid, roster_name, assignment_source)
+    VALUES ($1, $2, $3, 'auth-default')
     ON CONFLICT (unit_id, player_uid) DO UPDATE
     SET
       roster_name = COALESCE(unit_players.roster_name, EXCLUDED.roster_name),
       is_active = true,
+      assignment_source = CASE
+        WHEN unit_players.assignment_source = 'manual' THEN unit_players.assignment_source
+        ELSE EXCLUDED.assignment_source
+      END,
       updated_at = now()
     `,
     [unitId, playerUid, displayName]

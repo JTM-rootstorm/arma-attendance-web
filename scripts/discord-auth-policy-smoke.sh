@@ -58,6 +58,8 @@ fallback_unit_role="fallback-unit-$STAMP"
 fallback_rank_role="fallback-rank-$STAMP"
 partner_unit_role="partner-unit-$STAMP"
 partner_rank_role="partner-rank-$STAMP"
+attach_guild="attach-guild-$STAMP"
+attach_role="attach-unit-$STAMP"
 discord_user_id="discord-auth-policy-$STAMP"
 player_uid="discord:$discord_user_id"
 
@@ -116,6 +118,15 @@ SELECT
 SQL
 )
 
+attach_unit_id="$(
+  psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -v stamp="$STAMP" <<'SQL'
+INSERT INTO units (unit_key, slug, name, display_name)
+VALUES ('discord-auth-attach-' || :'stamp', 'discord-auth-attach-' || :'stamp', 'Discord Attach Unit', 'Discord Attach Unit')
+RETURNING id;
+SQL
+)"
+attach_unit_id="$(printf "%s\n" "$attach_unit_id" | head -n 1)"
+
 echo "[smoke:discord-auth-policy] Syncing fallback and partner guild role snapshots..."
 api_post "/v1/discord/guilds/sync" "{
   \"guild\": { \"guild_id\": \"$fallback_guild\", \"name\": \"TCWA3 Main\", \"bot_present\": true },
@@ -130,6 +141,10 @@ api_post "/v1/discord/guilds/sync" "{
     { \"role_id\": \"$partner_unit_role\", \"name\": \"Partner Unit\", \"position\": 20, \"assignable\": true },
     { \"role_id\": \"$partner_rank_role\", \"name\": \"Partner Sergeant\", \"position\": 19, \"assignable\": true }
   ]
+}" | assert_json "data.ok === true"
+api_post "/v1/discord/guilds/sync" "{
+  \"guild\": { \"guild_id\": \"$attach_guild\", \"name\": \"Attach Guild\", \"bot_present\": true },
+  \"roles\": []
 }" | assert_json "data.ok === true"
 
 echo "[smoke:discord-auth-policy] Setting auth guild policy and role mappings..."
@@ -180,6 +195,37 @@ api_post "/v1/discord/guilds/$partner_guild/role-mappings" "{
   \"rank_id\": \"$partner_rank_id\",
   \"priority\": 100
 }" | assert_json "data.ok === true"
+
+echo "[smoke:discord-auth-policy] Checking COMMS role attach enables login mapping..."
+api_post "/v1/discord/guilds/$attach_guild/roles" "{
+  \"role_id\": \"$attach_role\",
+  \"name\": \"Attach Unit\",
+  \"unit_id\": \"$attach_unit_id\",
+  \"priority\": 25,
+  \"assignable\": true
+}" | assert_json "data.ok === true && data.mapping.mapping_type === 'unit_primary' && data.member_mapping.mapping_type === 'unit_role' && data.member_mapping.unit_role === 'member'"
+
+psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 \
+  -v guild_id="$attach_guild" \
+  -v role_id="$attach_role" \
+  -v unit_id="$attach_unit_id" <<'SQL' |
+SELECT EXISTS (
+  SELECT 1
+  FROM discord_guilds dg
+  WHERE dg.guild_id = :'guild_id'
+    AND dg.grants_login = true
+    AND dg.sync_members = true
+) AND (
+  SELECT COUNT(*) = 2
+  FROM discord_role_mappings drm
+  WHERE drm.guild_id = :'guild_id'
+    AND drm.role_id = :'role_id'
+    AND drm.unit_id = :'unit_id'
+    AND drm.mapping_type IN ('unit_primary', 'unit_role')
+    AND drm.is_enabled = true
+);
+SQL
+  grep -qx "t"
 
 echo "[smoke:discord-auth-policy] Posting snapshots and checking partner priority wins..."
 api_post "/v1/discord/guilds/$fallback_guild/member-snapshots" "{
