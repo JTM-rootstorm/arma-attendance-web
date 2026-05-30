@@ -152,6 +152,44 @@ button.danger:hover {
   background: linear-gradient(180deg, rgba(150, 39, 55, 0.96), rgba(80, 20, 34, 0.96));
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background:
+    linear-gradient(rgba(5, 8, 20, 0.82), rgba(5, 8, 20, 0.86)),
+    radial-gradient(circle at center, rgba(103, 199, 255, 0.12), transparent 56%);
+}
+
+.confirm-dialog {
+  display: grid;
+  width: min(30rem, 100%);
+  gap: 0.8rem;
+  border: 1px solid rgba(255, 107, 107, 0.62);
+  border-radius: 4px;
+  padding: 1rem;
+  background: linear-gradient(180deg, rgba(17, 36, 61, 0.98), rgba(7, 17, 32, 0.98));
+  box-shadow:
+    inset 0 0 24px rgba(255, 107, 107, 0.08),
+    0 1.25rem 4rem rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog h3,
+.confirm-dialog p {
+  margin: 0;
+}
+
+.confirm-subtext {
+  color: var(--text-secondary);
+}
+
+.confirm-actions {
+  justify-content: end;
+}
+
 input,
 select {
   width: 100%;

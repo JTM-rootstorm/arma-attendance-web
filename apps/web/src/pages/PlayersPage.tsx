@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { StatusChip } from "../components/StatusChip";
@@ -52,11 +54,34 @@ export function PlayersPage({
 }) {
   const detail = playerDetail.status === "ready" ? playerDetail.data : null;
   const summary = playerSummary.status === "ready" ? playerSummary.data : null;
+  const [deletePlayerUid, setDeletePlayerUid] = useState("");
+  const [isDeletingPlayer, setIsDeletingPlayer] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const isDetailOpen = selectedPlayerUid.length > 0;
   const canSeeOperationCounts =
     players.status === "ready" && players.data.players.some((player) => player.operation_count !== null);
   const canSeeRecentOperations = Boolean(summary && summary.recent_operations.length > 0);
   const scoreboardTotals = summary?.scoreboard_totals;
+  const deletingSelectedPlayer = deletePlayerUid === selectedPlayerUid ? detail?.player : null;
+  const deletingPlayerName = displayValue(deletingSelectedPlayer?.last_name);
+
+  async function confirmDeletePlayer() {
+    if (!deletePlayerUid || isDeletingPlayer) {
+      return;
+    }
+
+    setIsDeletingPlayer(true);
+    setDeleteError("");
+
+    try {
+      await onDeletePlayer(deletePlayerUid);
+      setDeletePlayerUid("");
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Player could not be deleted.");
+    } finally {
+      setIsDeletingPlayer(false);
+    }
+  }
 
   return (
     <div className="view-grid">
@@ -134,7 +159,10 @@ export function PlayersPage({
                     </button>
                   ) : null}
                   {canDeletePlayers ? (
-                    <button type="button" className="danger" onClick={() => void onDeletePlayer(selectedPlayerUid)}>
+                    <button type="button" className="danger" onClick={() => {
+                      setDeleteError("");
+                      setDeletePlayerUid(selectedPlayerUid);
+                    }}>
                       Delete player
                     </button>
                   ) : null}
@@ -194,6 +222,29 @@ export function PlayersPage({
           ) : null}
         </div>
       </CommandPanel>
+
+      {deletePlayerUid ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-player-title">
+            <p className="panel-eyebrow">Roster deletion</p>
+            <h3 id="delete-player-title">Delete Player Link</h3>
+            <p>
+              Remove <strong>{deletingPlayerName}</strong> from active unit rosters and delete their Discord OAuth link.
+              SteamID and past operation records will be retained.
+            </p>
+            {deletingSelectedPlayer?.player_uid ? <p className="mono confirm-subtext">{deletingSelectedPlayer.player_uid}</p> : null}
+            {deleteError ? <p className="message error">{deleteError}</p> : null}
+            <div className="inline-actions confirm-actions">
+              <button type="button" className="secondary" onClick={() => setDeletePlayerUid("")} disabled={isDeletingPlayer}>
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={() => void confirmDeletePlayer()} disabled={isDeletingPlayer}>
+                {isDeletingPlayer ? "Deleting" : "Delete player"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

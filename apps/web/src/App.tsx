@@ -516,10 +516,6 @@ export function App() {
   }
 
   async function deletePlayer(playerUid: string) {
-    if (!window.confirm("Delete this player login link and remove them from active unit rosters? Past operation records will be retained.")) {
-      return;
-    }
-
     await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}`, { method: "DELETE" });
     setSelectedPlayerUid("");
     setPlayerDetail(emptyResult);
