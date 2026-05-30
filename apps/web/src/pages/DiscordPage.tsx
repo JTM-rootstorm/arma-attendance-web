@@ -84,6 +84,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
   const guildData = guilds.status === "ready" ? guilds.data.guilds : [];
   const authPolicyGuilds = authPolicy.status === "ready" ? authPolicy.data.guilds : [];
   const roleData = roles.status === "ready" ? roles.data.roles : [];
+  const activeRoleData = roleData.filter((role) => !role.is_deleted);
   const linkData = links.status === "ready" ? links.data.links : [];
   const mappingData = mappings.status === "ready" ? mappings.data.mappings : [];
   const unitMappingData = mappingData.filter((mapping) => mapping.mapping_type === "unit_primary");
@@ -235,6 +236,42 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
   }
 
+  async function deleteRole(roleId: string) {
+    if (!hasToken || !selectedGuild) {
+      setMessage("Guild selection required.");
+      return;
+    }
+
+    try {
+      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/roles/${encodeURIComponent(roleId)}`, {
+        method: "DELETE",
+        token
+      });
+      setMessage("Discord role deleted.");
+      void loadGuildDetail(selectedGuild.guild_id);
+    } catch (error) {
+      setMessage(resultError(error, "Discord role delete failed.").message);
+    }
+  }
+
+  async function unlinkMapping(mappingId: string) {
+    if (!hasToken || !selectedGuild) {
+      setMessage("Guild selection required.");
+      return;
+    }
+
+    try {
+      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/role-mappings/${encodeURIComponent(mappingId)}`, {
+        method: "DELETE",
+        token
+      });
+      setMessage("Unit mapping unlinked.");
+      void loadGuildDetail(selectedGuild.guild_id);
+    } catch (error) {
+      setMessage(resultError(error, "Unit mapping unlink failed.").message);
+    }
+  }
+
   async function runReconcile(dryRun: boolean) {
     if (!hasToken) {
       setMessage("Token required.");
@@ -308,7 +345,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
             </div>
             <div className="metric-grid compact">
               <MetricTile label="Guilds" value={guildData.length} />
-              <MetricTile label="Roles" value={roleData.length} />
+              <MetricTile label="Roles" value={activeRoleData.length} />
               <MetricTile label="Links" value={selectedGuild?.linked_player_count ?? linkData.length} />
             </div>
             {selectedGuild ? (
@@ -377,15 +414,21 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
                     <th>Friendly Name</th>
                     <th>Role ID</th>
                     <th>State</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {roleData.map((role) => (
+                  {activeRoleData.map((role) => (
                     <tr key={role.role_id}>
                       <td>{role.name}</td>
                       <td>{role.role_id}</td>
                       <td>
                         <StatusChip label={role.assignable && !role.is_deleted ? "usable" : "blocked"} tone={role.assignable && !role.is_deleted ? "ready" : "muted"} />
+                      </td>
+                      <td>
+                        <button type="button" className="secondary" onClick={() => void deleteRole(role.role_id)}>
+                          Delete
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -397,6 +440,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
                     <th>Role</th>
                     <th>Unit</th>
                     <th>Priority</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -407,6 +451,11 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
                       </td>
                       <td>{displayValue(mapping.unit_name ?? mapping.unit_id)}</td>
                       <td>{mapping.priority}</td>
+                      <td>
+                        <button type="button" className="secondary" onClick={() => void unlinkMapping(mapping.id)}>
+                          Unlink
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

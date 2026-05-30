@@ -60,6 +60,10 @@ const roleBodySchema = z.object({
   assignable: z.boolean().default(true)
 });
 
+const roleParamsSchema = guildParamsSchema.extend({
+  role_id: z.string().min(1).max(64)
+});
+
 const ruleParamsSchema = guildParamsSchema.extend({
   rule_id: z.string().uuid()
 });
@@ -720,6 +724,55 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
       });
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to attach Discord role");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.delete("/v1/discord/guilds/:guild_id/roles/:role_id", async (request, reply) => {
+    const auth = await requireAnyDiscordAdmin(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsedParams = roleParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const { guild_id: guildId, role_id: roleId } = parsedParams.data;
+
+    try {
+      return await getDrizzleDb().transaction(async (tx) => {
+        const [role] = await tx
+          .select({ role_id: discordRoles.roleId })
+          .from(discordRoles)
+          .where(and(eq(discordRoles.guildId, guildId), eq(discordRoles.roleId, roleId)))
+          .limit(1);
+
+        if (!role) {
+          return reply.code(404).send({ ok: false, error: { code: "role_not_found", message: "Discord role was not found." } });
+        }
+
+        const removedMappings = await tx
+          .delete(discordRoleMappings)
+          .where(and(eq(discordRoleMappings.guildId, guildId), eq(discordRoleMappings.roleId, roleId)))
+          .returning({ id: discordRoleMappings.id });
+
+        await tx
+          .update(discordRoles)
+          .set({
+            assignable: false,
+            isDeleted: true,
+            updatedAt: sql`now()`
+          })
+          .where(and(eq(discordRoles.guildId, guildId), eq(discordRoles.roleId, roleId)));
+
+        return { ok: true, role_id: roleId, removed_mapping_count: removedMappings.length };
+      });
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to delete Discord role");
       return sendDatabaseUnavailable(reply);
     }
   });
