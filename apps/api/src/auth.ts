@@ -4,6 +4,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 
 import { config } from "./config.js";
+import { isLikelyJwt, verifyAccessJwt } from "./auth/jwt.js";
 import { getDrizzleDb } from "./db/drizzle.js";
 import { appUsers, userIdentities, userRoles, userSessions } from "./db/schema/auth.js";
 import { machineTokens } from "./db/schema/machineTokens.js";
@@ -280,8 +281,24 @@ export async function getCurrentUserFromCookie(request: FastifyRequest): Promise
   return loadCurrentUserById(row.user_id, row.session_id);
 }
 
+export async function getCurrentUserFromJwt(request: FastifyRequest): Promise<CurrentUser | null> {
+  const token = getBearerToken(request);
+
+  if (!token || !isLikelyJwt(token)) {
+    return null;
+  }
+
+  const verified = await verifyAccessJwt(token);
+
+  if (!verified) {
+    return null;
+  }
+
+  return loadCurrentUserById(verified.user_id);
+}
+
 export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {
-  return getCurrentUserFromCookie(request);
+  return (await getCurrentUserFromJwt(request)) ?? getCurrentUserFromCookie(request);
 }
 
 async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {

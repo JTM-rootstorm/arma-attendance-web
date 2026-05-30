@@ -1041,6 +1041,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return;
     }
 
+    if (user.session_id === "jwt") {
+      return {
+        ok: true,
+        csrf_required: false
+      };
+    }
+
     try {
       const csrf = await createCsrfToken(user);
       return {

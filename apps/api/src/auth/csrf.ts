@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import { getAcceptedMachineTokenKind, getCurrentUser, type CurrentUser } from "../auth.js";
+import { getAcceptedMachineTokenKind, getCurrentUserFromCookie, type CurrentUser } from "../auth.js";
 import { config } from "../config.js";
 import { queryDb } from "../db/pool.js";
 
@@ -107,7 +107,7 @@ export async function requireCsrfForUnsafeSessionRequest(
     return true;
   }
 
-  const user = await getCurrentUser(request);
+  const user = await getCurrentUserFromCookie(request);
 
   if (!user) {
     return true;
