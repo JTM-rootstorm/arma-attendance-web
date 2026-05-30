@@ -56,6 +56,7 @@ const guildParamsSchema = z.object({
 const roleBodySchema = z.object({
   role_id: z.string().min(1).max(64),
   name: z.string().min(1).max(200),
+  unit_id: z.string().uuid().nullable().optional(),
   priority: z.number().int().default(0),
   assignable: z.boolean().default(true)
 });
@@ -666,16 +667,28 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
             updated_at: discordRoles.updatedAt
           });
 
-        const linkedUnits = await tx
-          .selectDistinct({
-            unit_id: units.id
-          })
-          .from(units)
-          .leftJoin(unitDiscordGuilds, eq(unitDiscordGuilds.unitId, units.id))
-          .where(and(sql`${units.deletedAt} IS NULL`, sql`(${units.primaryDiscordGuildId} = ${guildId} OR ${unitDiscordGuilds.guildId} = ${guildId})`))
-          .limit(2);
+        const linkedUnits = body.unit_id
+          ? await tx
+              .select({
+                unit_id: units.id
+              })
+              .from(units)
+              .where(and(eq(units.id, body.unit_id), sql`${units.deletedAt} IS NULL`))
+              .limit(1)
+          : await tx
+              .selectDistinct({
+                unit_id: units.id
+              })
+              .from(units)
+              .leftJoin(unitDiscordGuilds, eq(unitDiscordGuilds.unitId, units.id))
+              .where(and(sql`${units.deletedAt} IS NULL`, sql`(${units.primaryDiscordGuildId} = ${guildId} OR ${unitDiscordGuilds.guildId} = ${guildId})`))
+              .limit(2);
 
-        if (linkedUnits.length !== 1) {
+        if (body.unit_id && linkedUnits.length === 0) {
+          return reply.code(404).send({ ok: false, error: { code: "unit_not_found", message: "Battalion was not found." } });
+        }
+
+        if (!body.unit_id && linkedUnits.length !== 1) {
           return { ok: true, role, mapping: null, linked_unit_count: linkedUnits.length };
         }
 
