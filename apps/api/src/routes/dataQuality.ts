@@ -130,8 +130,8 @@ export async function registerDataQualityRoutes(app: FastifyInstance) {
         `
         SELECT player_uid, first_seen_at, last_seen_at
         FROM players
-        WHERE last_name IS NULL
-          OR btrim(last_name) = ''
+        WHERE deleted_at IS NULL
+          AND (last_name IS NULL OR btrim(last_name) = '')
         ORDER BY last_seen_at DESC
         LIMIT 25
         `

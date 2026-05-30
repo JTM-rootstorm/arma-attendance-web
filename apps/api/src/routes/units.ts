@@ -905,7 +905,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
               eq(unitRosterAssignments.isPrimary, true)
             )
           )
-          .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive")))
+          .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"), isNull(players.deletedAt)))
           .orderBy(
             asc(unitPlayers.rankSort),
             sql`COALESCE(${unitRosterAssignments.sortOrder}, 0)`,
@@ -957,6 +957,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
     }
 
     const where = [
+      isNull(players.deletedAt),
       sql`NOT EXISTS (
         SELECT 1
         FROM unit_players up_existing
@@ -1037,6 +1038,7 @@ export async function registerUnitRoutes(app: FastifyInstance) {
             target: players.playerUid,
             set: {
               lastName: sql`COALESCE(${players.lastName}, excluded.last_name)`,
+              deletedAt: null,
               updatedAt: sql`now()`
             }
           });

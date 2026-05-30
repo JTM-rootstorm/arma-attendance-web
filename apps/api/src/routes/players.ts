@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
@@ -120,7 +120,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     }
 
     const query = parsedQuery.data;
-    const where: string[] = [];
+    const where: string[] = ["p.deleted_at IS NULL"];
     const values: unknown[] = [];
     const unitFilter = await getReadableUnitFilter(auth.user);
     const revealOperationalDetails = canSeeRosterOperationalDetails(auth.user, auth.machineTokenKind);
@@ -213,7 +213,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
           updated_at: players.updatedAt
         })
         .from(players)
-        .where(eq(players.playerUid, playerUid))
+        .where(and(eq(players.playerUid, playerUid), isNull(players.deletedAt)))
         .limit(1);
 
       if (!player) {

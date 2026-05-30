@@ -29,7 +29,9 @@ export function PlayersPage({
   onSelectPlayer,
   canExport,
   canResetPlayerNames,
+  canDeletePlayers,
   onResetPlayerName,
+  onDeletePlayer,
   onExportPlayers
 }: {
   players: ApiResult<PlayersResponse>;
@@ -43,7 +45,9 @@ export function PlayersPage({
   onSelectPlayer: (playerUid: string) => void;
   canExport: boolean;
   canResetPlayerNames: boolean;
+  canDeletePlayers: boolean;
   onResetPlayerName: (playerUid: string) => Promise<void>;
+  onDeletePlayer: (playerUid: string) => Promise<void>;
   onExportPlayers: () => void;
 }) {
   const detail = playerDetail.status === "ready" ? playerDetail.data : null;
@@ -127,6 +131,11 @@ export function PlayersPage({
                   {canResetPlayerNames ? (
                     <button type="button" className="secondary" onClick={() => void onResetPlayerName(selectedPlayerUid)}>
                       Reset name
+                    </button>
+                  ) : null}
+                  {canDeletePlayers ? (
+                    <button type="button" className="danger" onClick={() => void onDeletePlayer(selectedPlayerUid)}>
+                      Delete player
                     </button>
                   ) : null}
                   <button type="button" className="secondary" onClick={() => onSelectPlayer("")}>

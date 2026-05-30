@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, eq, notInArray, sql } from "drizzle-orm";
+import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { hasRole, requireAdminOrBotToken } from "../auth.js";
@@ -293,7 +293,11 @@ async function roleExists(guildId: string, roleId: string): Promise<boolean> {
 }
 
 async function playerExists(playerUid: string): Promise<boolean> {
-  const rows = await getDrizzleDb().select({ player_uid: players.playerUid }).from(players).where(eq(players.playerUid, playerUid)).limit(1);
+  const rows = await getDrizzleDb()
+    .select({ player_uid: players.playerUid })
+    .from(players)
+    .where(and(eq(players.playerUid, playerUid), isNull(players.deletedAt)))
+    .limit(1);
   return Boolean(rows[0]);
 }
 

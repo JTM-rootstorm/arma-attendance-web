@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiClientError, apiFetch, fetchCsv } from "./api";
 import {
   canDeleteOperations,
+  canDeletePlayers,
   canExport,
   canOpenBattalion,
   canOpenComms,
@@ -111,6 +112,7 @@ export function App() {
   const canViewComms = canOpenComms(sessionUser);
   const canExportViews = canExport(sessionUser);
   const canResetRosterNames = canResetPlayerNames(sessionUser);
+  const canDeleteRosterPlayers = canDeletePlayers(sessionUser);
   const canDeleteOperationRows = canDeleteOperations(sessionUser);
   const canInspectSignals = canViewSignalDetail(sessionUser);
 
@@ -513,6 +515,19 @@ export function App() {
     await loadPlayerDetail(playerUid);
   }
 
+  async function deletePlayer(playerUid: string) {
+    if (!window.confirm("Delete this player login link and remove them from active unit rosters? Past operation records will be retained.")) {
+      return;
+    }
+
+    await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}`, { method: "DELETE" });
+    setSelectedPlayerUid("");
+    setPlayerDetail(emptyResult);
+    setPlayerSummary(emptyResult);
+    await loadMe();
+    await loadPlayers();
+  }
+
   async function deleteOperation(operationId: string) {
     try {
       await apiFetch(`/v1/operations/${encodeURIComponent(operationId)}`, { method: "DELETE" });
@@ -598,7 +613,9 @@ export function App() {
         onSelectPlayer={setSelectedPlayerUid}
         canExport={canExportViews}
         canResetPlayerNames={canResetRosterNames}
+        canDeletePlayers={canDeleteRosterPlayers}
         onResetPlayerName={resetPlayerName}
+        onDeletePlayer={deletePlayer}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
     ) : view === "discord" && canViewComms ? (

@@ -55,6 +55,19 @@ type PlayerUnitRow = {
   unit_id: string;
 };
 
+type PlayerDeleteImpact = {
+  player_uid: string;
+  player_record_deleted: boolean;
+  unit_rows_deactivated: number;
+  roster_assignments_ended: number;
+  discord_links_deleted: number;
+  discord_identities_deleted: number;
+  unit_memberships_deleted: number;
+  unit_roles_deleted: number;
+  sessions_revoked: number;
+  refresh_tokens_revoked: number;
+};
+
 function sendValidationFailed(reply: FastifyReply) {
   return reply.code(400).send({
     ok: false,
@@ -220,6 +233,224 @@ async function resetPlayerName(tx: DbTransaction, actor: CurrentUser, playerUid:
   });
 
   return player;
+}
+
+async function playerExists(tx: DbTransaction, playerUid: string): Promise<boolean> {
+  const result = await tx.query<{ exists: boolean }>("SELECT EXISTS (SELECT 1 FROM players WHERE player_uid = $1) AS exists", [
+    playerUid
+  ]);
+  return result.rows[0]?.exists ?? false;
+}
+
+function getDiscordIdFromPlayerUid(playerUid: string): string | null {
+  return playerUid.startsWith("discord:") ? playerUid.slice("discord:".length) : null;
+}
+
+async function deletePlayerAuthAndRoster(tx: DbTransaction, actor: CurrentUser, playerUid: string): Promise<PlayerDeleteImpact> {
+  if (!(await playerExists(tx, playerUid))) {
+    throw new Error("player_not_found");
+  }
+
+  const linkedDiscordIdsResult = await tx.query<{ discord_user_id: string }>(
+    "SELECT discord_user_id FROM player_discord_links WHERE player_uid = $1",
+    [playerUid]
+  );
+  const discordIds = Array.from(
+    new Set([
+      ...linkedDiscordIdsResult.rows.map((row) => row.discord_user_id),
+      getDiscordIdFromPlayerUid(playerUid)
+    ].filter((value): value is string => Boolean(value)))
+  );
+
+  const linkedUsersResult = await tx.query<{ user_id: string }>(
+    `
+    SELECT DISTINCT user_id
+    FROM user_identities
+    WHERE (provider = 'steam' AND provider_user_id = $1)
+       OR (provider = 'discord' AND provider_user_id = ANY($2::text[]))
+    `,
+    [playerUid, discordIds]
+  );
+  const linkedUserIds = linkedUsersResult.rows.map((row) => row.user_id);
+
+  const unitRowsResult = await tx.query<{ player_uid: string }>(
+    `
+    UPDATE unit_players
+    SET is_active = false,
+        roster_status = 'inactive',
+        left_unit_at = COALESCE(left_unit_at, now()),
+        updated_at = now()
+    WHERE player_uid = $1
+      AND (is_active = true OR roster_status <> 'inactive' OR left_unit_at IS NULL)
+    RETURNING player_uid
+    `,
+    [playerUid]
+  );
+
+  const playerDeleteResult = await tx.query<{ player_uid: string }>(
+    `
+    UPDATE players
+    SET deleted_at = COALESCE(deleted_at, now()),
+        updated_at = now()
+    WHERE player_uid = $1
+    RETURNING player_uid
+    `,
+    [playerUid]
+  );
+
+  const rosterAssignmentsResult = await tx.query<{ id: string }>(
+    `
+    UPDATE unit_roster_assignments
+    SET ended_at = COALESCE(ended_at, now()),
+        updated_at = now()
+    WHERE player_uid = $1
+      AND ended_at IS NULL
+    RETURNING id
+    `,
+    [playerUid]
+  );
+
+  const playerUnitIdsResult = await tx.query<{ unit_id: string }>("SELECT unit_id FROM unit_players WHERE player_uid = $1", [
+    playerUid
+  ]);
+  const playerUnitIds = playerUnitIdsResult.rows.map((row) => row.unit_id);
+
+  let discordLinksDeleted = 0;
+  if (discordIds.length > 0) {
+    const discordLinksResult = await tx.query<{ discord_user_id: string }>(
+      `
+      DELETE FROM player_discord_links
+      WHERE player_uid = $1
+         OR discord_user_id = ANY($2::text[])
+      RETURNING discord_user_id
+      `,
+      [playerUid, discordIds]
+    );
+    discordLinksDeleted = discordLinksResult.rowCount ?? discordLinksResult.rows.length;
+  } else {
+    const discordLinksResult = await tx.query<{ discord_user_id: string }>(
+      `
+      DELETE FROM player_discord_links
+      WHERE player_uid = $1
+      RETURNING discord_user_id
+      `,
+      [playerUid]
+    );
+    discordLinksDeleted = discordLinksResult.rowCount ?? discordLinksResult.rows.length;
+  }
+
+  const discordIdentityClauses: string[] = [];
+  const discordIdentityValues: unknown[] = [];
+
+  if (linkedUserIds.length > 0) {
+    discordIdentityValues.push(linkedUserIds);
+    discordIdentityClauses.push(`user_id = ANY($${discordIdentityValues.length}::uuid[])`);
+  }
+
+  if (discordIds.length > 0) {
+    discordIdentityValues.push(discordIds);
+    discordIdentityClauses.push(`provider_user_id = ANY($${discordIdentityValues.length}::text[])`);
+  }
+
+  let discordIdentitiesDeleted = 0;
+  if (discordIdentityClauses.length > 0) {
+    const discordIdentitiesResult = await tx.query<{ user_id: string }>(
+      `
+      DELETE FROM user_identities
+      WHERE provider = 'discord'
+        AND (${discordIdentityClauses.join(" OR ")})
+      RETURNING user_id
+      `,
+      discordIdentityValues
+    );
+    discordIdentitiesDeleted = discordIdentitiesResult.rowCount ?? discordIdentitiesResult.rows.length;
+  }
+
+  let sessionsRevoked = 0;
+  let refreshTokensRevoked = 0;
+  let unitMembershipsDeleted = 0;
+  let unitRolesDeleted = 0;
+  if (linkedUserIds.length > 0) {
+    if (playerUnitIds.length > 0) {
+      const unitMembershipsResult = await tx.query<{ user_id: string }>(
+        `
+        DELETE FROM unit_memberships
+        WHERE user_id = ANY($1::uuid[])
+          AND unit_id = ANY($2::uuid[])
+          AND (role = 'member' OR grant_source IN ('discord', 'auth-default'))
+        RETURNING user_id
+        `,
+        [linkedUserIds, playerUnitIds]
+      );
+      unitMembershipsDeleted = unitMembershipsResult.rowCount ?? unitMembershipsResult.rows.length;
+
+      const unitRolesResult = await tx.query<{ user_id: string }>(
+        `
+        DELETE FROM unit_user_roles
+        WHERE user_id = ANY($1::uuid[])
+          AND unit_id = ANY($2::uuid[])
+          AND (role = 'member' OR grant_source IN ('discord', 'auth-default'))
+        RETURNING user_id
+        `,
+        [linkedUserIds, playerUnitIds]
+      );
+      unitRolesDeleted = unitRolesResult.rowCount ?? unitRolesResult.rows.length;
+    }
+
+    const sessionsResult = await tx.query<{ id: string }>(
+      `
+      UPDATE user_sessions
+      SET revoked_at = COALESCE(revoked_at, now())
+      WHERE user_id = ANY($1::uuid[])
+        AND revoked_at IS NULL
+      RETURNING id
+      `,
+      [linkedUserIds]
+    );
+    sessionsRevoked = sessionsResult.rowCount ?? sessionsResult.rows.length;
+
+    const refreshTokensResult = await tx.query<{ id: string }>(
+      `
+      UPDATE auth_refresh_tokens
+      SET revoked_at = COALESCE(revoked_at, now())
+      WHERE user_id = ANY($1::uuid[])
+        AND revoked_at IS NULL
+      RETURNING id
+      `,
+      [linkedUserIds]
+    );
+    refreshTokensRevoked = refreshTokensResult.rowCount ?? refreshTokensResult.rows.length;
+  }
+
+  await insertAudit(tx, actor, "delete_player", actor.id, {
+    player_uid: playerUid,
+    retained_player_record: true,
+    retained_operation_records: true,
+    linked_user_ids: linkedUserIds,
+    discord_user_ids: discordIds,
+    unit_rows_deactivated: unitRowsResult.rowCount ?? unitRowsResult.rows.length,
+    player_record_deleted: (playerDeleteResult.rowCount ?? playerDeleteResult.rows.length) > 0,
+    roster_assignments_ended: rosterAssignmentsResult.rowCount ?? rosterAssignmentsResult.rows.length,
+    discord_links_deleted: discordLinksDeleted,
+    discord_identities_deleted: discordIdentitiesDeleted,
+    unit_memberships_deleted: unitMembershipsDeleted,
+    unit_roles_deleted: unitRolesDeleted,
+    sessions_revoked: sessionsRevoked,
+    refresh_tokens_revoked: refreshTokensRevoked
+  });
+
+  return {
+    player_uid: playerUid,
+    player_record_deleted: (playerDeleteResult.rowCount ?? playerDeleteResult.rows.length) > 0,
+    unit_rows_deactivated: unitRowsResult.rowCount ?? unitRowsResult.rows.length,
+    roster_assignments_ended: rosterAssignmentsResult.rowCount ?? rosterAssignmentsResult.rows.length,
+    discord_links_deleted: discordLinksDeleted,
+    discord_identities_deleted: discordIdentitiesDeleted,
+    unit_memberships_deleted: unitMembershipsDeleted,
+    unit_roles_deleted: unitRolesDeleted,
+    sessions_revoked: sessionsRevoked,
+    refresh_tokens_revoked: refreshTokensRevoked
+  };
 }
 
 export async function registerAdminRoutes(app: FastifyInstance) {
@@ -554,6 +785,43 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
 
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to reset player name");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.delete("/v1/admin/players/:player_uid", async (request, reply) => {
+    const parsedParams = playerParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const actor = await getCurrentUser(request);
+
+    if (!actor || !hasRole(actor, ["admin"])) {
+      return sendForbidden(reply, "Only admins and owners may delete players.");
+    }
+
+    try {
+      const impact = await withDbTransaction((tx) => deletePlayerAuthAndRoster(tx, actor, parsedParams.data.player_uid));
+      return {
+        ok: true,
+        deleted: true,
+        player_uid: impact.player_uid,
+        impact
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === "player_not_found") {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "player_not_found",
+            message: "Player was not found."
+          }
+        });
+      }
+
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to delete player");
       return sendDatabaseUnavailable(reply);
     }
   });

@@ -219,7 +219,7 @@ export async function registerExportRoutes(app: FastifyInstance) {
 
     const query = parsedQuery.data;
     const values: unknown[] = [];
-    const where: string[] = [];
+    const where: string[] = ["p.deleted_at IS NULL"];
     const unitFilter = await getReadableUnitFilter(auth.user);
 
     if (!unitFilter.all) {

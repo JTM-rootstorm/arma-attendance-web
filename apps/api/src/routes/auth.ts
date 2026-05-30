@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
@@ -294,8 +294,11 @@ async function getSelfPlayerUids(user: CurrentUser): Promise<string[]> {
     SELECT DISTINCT p.player_uid
     FROM players p
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
-    WHERE (${steamId}::text IS NOT NULL AND p.player_uid = ${steamId})
-       OR (${discordId}::text IS NOT NULL AND pdl.discord_user_id = ${discordId})
+    WHERE p.deleted_at IS NULL
+      AND (
+        (${steamId}::text IS NOT NULL AND p.player_uid = ${steamId})
+        OR (${discordId}::text IS NOT NULL AND pdl.discord_user_id = ${discordId})
+      )
     ORDER BY p.player_uid
   `);
 
@@ -322,9 +325,12 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
     .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
     .leftJoin(playerDiscordLinks, eq(playerDiscordLinks.playerUid, players.playerUid))
     .where(
-      or(
-        and(sql`${steamId}::text IS NOT NULL`, eq(players.playerUid, steamId ?? "")),
-        and(sql`${discordId}::text IS NOT NULL`, eq(playerDiscordLinks.discordUserId, discordId ?? ""))
+      and(
+        isNull(players.deletedAt),
+        or(
+          and(sql`${steamId}::text IS NOT NULL`, eq(players.playerUid, steamId ?? "")),
+          and(sql`${discordId}::text IS NOT NULL`, eq(playerDiscordLinks.discordUserId, discordId ?? ""))
+        )
       )
     )
     .orderBy(desc(players.lastSeenAt))
@@ -353,8 +359,11 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
       AND up.roster_status <> 'inactive'
     LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
-    WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
-       OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+    WHERE p.deleted_at IS NULL
+      AND (
+        ($1::text IS NOT NULL AND p.player_uid = $1)
+        OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+      )
     ORDER BY p.last_seen_at DESC
     LIMIT 1
     `,
@@ -648,6 +657,7 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     ON CONFLICT (player_uid) DO UPDATE
     SET
       last_name = COALESCE(players.last_name, EXCLUDED.last_name),
+      deleted_at = NULL,
       updated_at = now()
     `,
     [

@@ -67,6 +67,10 @@ export function canResetPlayerNames(user: AuthUser | null): boolean {
   return isTcwAdmin(user) || hasGlobalRole(user, "admin") || hasUnitRole(user, "admin");
 }
 
+export function canDeletePlayers(user: AuthUser | null): boolean {
+  return isTcwAdmin(user) || hasGlobalRole(user, "admin");
+}
+
 export function canDeleteOperations(user: AuthUser | null): boolean {
   return isTcwAdmin(user) || hasGlobalRole(user, "admin");
 }

@@ -19,8 +19,11 @@ export async function getLinkedPlayerUid(user: CurrentUser): Promise<string | nu
     SELECT p.player_uid
     FROM players p
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
-    WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
-       OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+    WHERE p.deleted_at IS NULL
+      AND (
+        ($1::text IS NOT NULL AND p.player_uid = $1)
+        OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+      )
     ORDER BY p.last_seen_at DESC
     LIMIT 1
     `,

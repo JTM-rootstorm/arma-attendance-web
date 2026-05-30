@@ -221,7 +221,7 @@ async function listPublicMembers(unitId: string): Promise<StrictSquadMember[]> {
       )
     )
     .leftJoin(unitSquads, eq(unitSquads.id, unitRosterAssignments.squadId))
-    .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive")))
+    .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"), isNull(players.deletedAt)))
     .orderBy(
       asc(unitPlayers.rankSort),
       asc(unitRanks.sortOrder),

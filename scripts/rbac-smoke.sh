@@ -12,9 +12,10 @@ ADMIN_COOKIE_JAR="$(mktemp)"
 OFFICER_COOKIE_JAR="$(mktemp)"
 USER_COOKIE_JAR="$(mktemp)"
 DEFAULT_COOKIE_JAR="$(mktemp)"
+DELETE_COOKIE_JAR="$(mktemp)"
 
 cleanup() {
-  rm -f "$OWNER_COOKIE_JAR" "$TCW_COOKIE_JAR" "$ADMIN_COOKIE_JAR" "$OFFICER_COOKIE_JAR" "$USER_COOKIE_JAR" "$DEFAULT_COOKIE_JAR"
+  rm -f "$OWNER_COOKIE_JAR" "$TCW_COOKIE_JAR" "$ADMIN_COOKIE_JAR" "$OFFICER_COOKIE_JAR" "$USER_COOKIE_JAR" "$DEFAULT_COOKIE_JAR" "$DELETE_COOKIE_JAR"
 }
 
 trap cleanup EXIT
@@ -63,6 +64,19 @@ assert_status() {
   fi
 }
 
+assert_sql_value() {
+  local expected="$1"
+  local sql="$2"
+  local label="$3"
+  local actual
+
+  actual="$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "$sql")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "[smoke:rbac] Expected $label to be $expected, got $actual" >&2
+    exit 1
+  fi
+}
+
 login_user() {
   local cookie_jar="$1"
   local discord_id="$2"
@@ -94,9 +108,12 @@ admin_discord="rbac-admin-$STAMP"
 officer_discord="rbac-officer-$STAMP"
 user_discord="rbac-user-$STAMP"
 default_discord="rbac-default-$STAMP"
+delete_discord="rbac-delete-$STAMP"
 steam_id="7656119$STAMP"
 default_steam_id="7656118$STAMP"
+delete_steam_id="7656117$STAMP"
 server_key="rbac-smoke-$STAMP"
+delete_server_key="rbac-delete-$STAMP"
 
 echo "[smoke:rbac] Creating test sessions..."
 owner_id="$(login_user "$OWNER_COOKIE_JAR" "$owner_discord" "RBAC Smoke Owner")"
@@ -105,6 +122,7 @@ admin_id="$(login_user "$ADMIN_COOKIE_JAR" "$admin_discord" "RBAC Smoke Unit Adm
 officer_id="$(login_user "$OFFICER_COOKIE_JAR" "$officer_discord" "RBAC Smoke Officer")"
 user_id="$(login_user "$USER_COOKIE_JAR" "$user_discord" "RBAC Smoke Player")"
 login_user "$DEFAULT_COOKIE_JAR" "$default_discord" "RBAC Steam Default" >/dev/null
+delete_id="$(login_user "$DELETE_COOKIE_JAR" "$delete_discord" "RBAC Delete Player")"
 
 echo "[smoke:rbac] Seeding roles, memberships, player, and operation..."
 pnpm admin:grant -- --provider discord --provider-user-id "$owner_discord" --role owner >/dev/null
@@ -117,7 +135,10 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v admin_id="$admin_id" \
   -v officer_id="$officer_id" \
   -v user_id="$user_id" \
+  -v delete_id="$delete_id" \
   -v steam_id="$steam_id" \
+  -v delete_steam_id="$delete_steam_id" \
+  -v delete_server_key="$delete_server_key" \
   -v server_key="$server_key" <<'SQL'
 WITH unit AS (
   INSERT INTO units (unit_key, name, description)
@@ -131,9 +152,21 @@ players_upsert AS (
   ON CONFLICT (player_uid) DO UPDATE SET last_name = EXCLUDED.last_name, updated_at = now()
   RETURNING player_uid
 ),
+delete_player_upsert AS (
+  INSERT INTO players (player_uid, last_name, raw_last_player)
+  VALUES (:'delete_steam_id', 'RBAC Delete Player', '{}'::jsonb)
+  ON CONFLICT (player_uid) DO UPDATE SET last_name = EXCLUDED.last_name, deleted_at = NULL, updated_at = now()
+  RETURNING player_uid
+),
 operation AS (
   INSERT INTO operations (unit_id, server_key, status, mission_uid, mission_name, world_name)
   SELECT id, :'server_key', 'finished', 'rbac-secret-mission', 'RBAC Smoke Operation', 'Altis'
+  FROM unit
+  RETURNING id
+),
+delete_operation AS (
+  INSERT INTO operations (unit_id, server_key, status, mission_uid, mission_name, world_name)
+  SELECT id, :'delete_server_key', 'finished', 'rbac-delete-mission', 'RBAC Delete Operation', 'Altis'
   FROM unit
   RETURNING id
 )
@@ -165,10 +198,41 @@ INSERT INTO unit_players (unit_id, player_uid, rank, roster_name)
 SELECT id, :'steam_id', 'PVT', 'RBAC Player' FROM units WHERE unit_key = 'rbac_smoke'
 ON CONFLICT (unit_id, player_uid) DO UPDATE SET rank = EXCLUDED.rank, roster_name = EXCLUDED.roster_name;
 
+INSERT INTO unit_players (unit_id, player_uid, rank, roster_name)
+SELECT id, :'delete_steam_id', 'PVT', 'RBAC Delete Player' FROM units WHERE unit_key = 'rbac_smoke'
+ON CONFLICT (unit_id, player_uid) DO UPDATE SET
+  rank = EXCLUDED.rank,
+  roster_name = EXCLUDED.roster_name,
+  is_active = true,
+  roster_status = 'active',
+  left_unit_at = NULL,
+  updated_at = now();
+
+INSERT INTO unit_memberships (unit_id, user_id, role, grant_source)
+SELECT id, :'delete_id'::uuid, 'member', 'smoke' FROM units WHERE unit_key = 'rbac_smoke'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO unit_roster_assignments (unit_id, player_uid, billet, sort_order, is_primary, assignment_source, assigned_by_user_id)
+SELECT id, :'delete_steam_id', 'trooper', 10, true, 'manual', :'owner_id'::uuid FROM units WHERE unit_key = 'rbac_smoke'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM unit_roster_assignments ura
+    WHERE ura.unit_id = units.id
+      AND ura.player_uid = :'delete_steam_id'
+      AND ura.ended_at IS NULL
+      AND ura.is_primary = true
+  );
+
 INSERT INTO operation_players (operation_id, player_uid, name_at_start, name_at_end, present_at_start, present_at_end)
 SELECT o.id, :'steam_id', 'RBAC Player', 'RBAC Player', true, true
 FROM operations o
 WHERE o.server_key = :'server_key'
+ON CONFLICT (operation_id, player_uid) DO UPDATE SET present_at_end = true;
+
+INSERT INTO operation_players (operation_id, player_uid, name_at_start, name_at_end, present_at_start, present_at_end)
+SELECT o.id, :'delete_steam_id', 'RBAC Delete Player', 'RBAC Delete Player', true, true
+FROM operations o
+WHERE o.server_key = :'delete_server_key'
 ON CONFLICT (operation_id, player_uid) DO UPDATE SET present_at_end = true;
 
 INSERT INTO operation_player_stats (
@@ -191,6 +255,24 @@ ON CONFLICT (operation_id, player_uid) DO UPDATE SET
   air_kills = 3,
   ai_kills = 3,
   deaths = 1;
+
+INSERT INTO operation_player_stats (
+  operation_id,
+  player_uid,
+  infantry_kills,
+  soft_vehicle_kills,
+  armor_kills,
+  air_kills,
+  ai_kills,
+  deaths
+)
+SELECT o.id, :'delete_steam_id', 2, 0, 0, 0, 2, 0
+FROM operations o
+WHERE o.server_key = :'delete_server_key'
+ON CONFLICT (operation_id, player_uid) DO UPDATE SET
+  infantry_kills = 2,
+  ai_kills = 2,
+  deaths = 0;
 SQL
 
 curl -fsS -b "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
@@ -203,6 +285,11 @@ curl -fsS -b "$DEFAULT_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
   -H "X-CSRF-Token: $(csrf_token "$DEFAULT_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"$default_steam_id\"}" >/dev/null
+curl -fsS -b "$DELETE_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$DELETE_COOKIE_JAR")" \
+  -H "Content-Type: application/json" \
+  -d "{\"provider_user_id\":\"$delete_steam_id\"}" >/dev/null
 
 echo "[smoke:rbac] Checking unauthenticated session rejection..."
 assert_status "401" "$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/v1/me")" "/v1/me without cookie"
@@ -244,6 +331,24 @@ curl -fsS -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendan
   && data.attendance.some((row) => row.player_uid === null && row.scoreboard_stats.infantry_kills === 5)'
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")")" "normal user operation delete"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")")" "unit admin operation delete"
+
+echo "[smoke:rbac] Checking player delete keeps operation history and removes auth/unit links..."
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/admin/players/$delete_steam_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")")" "normal user player delete"
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/admin/players/$delete_steam_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")")" "unit admin player delete"
+curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/admin/players/$delete_steam_id" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.deleted === true && data.impact.discord_identities_deleted >= 1 && data.impact.discord_links_deleted >= 1'
+assert_status "404" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$delete_steam_id")" "deleted player detail"
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players?q=$delete_steam_id" | assert_json 'data.ok === true && data.players.length === 0'
+assert_status "401" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$DELETE_COOKIE_JAR" "$BASE_URL/v1/me")" "deleted player revoked session"
+assert_sql_value "yes" "SELECT CASE WHEN deleted_at IS NOT NULL THEN 'yes' ELSE 'no' END FROM players WHERE player_uid = '$delete_steam_id'" "deleted player soft-delete flag"
+assert_sql_value "1" "SELECT COUNT(*)::int FROM operation_players WHERE player_uid = '$delete_steam_id'" "deleted player operation history count"
+assert_sql_value "1" "SELECT COUNT(*)::int FROM user_identities WHERE user_id = '$delete_id'::uuid AND provider = 'steam' AND provider_user_id = '$delete_steam_id'" "deleted player retained Steam identity"
+assert_sql_value "0" "SELECT COUNT(*)::int FROM user_identities WHERE user_id = '$delete_id'::uuid AND provider = 'discord'" "deleted player Discord identity"
+assert_sql_value "0" "SELECT COUNT(*)::int FROM player_discord_links WHERE player_uid = '$delete_steam_id'" "deleted player Discord link"
+assert_sql_value "0" "SELECT COUNT(*)::int FROM unit_players WHERE player_uid = '$delete_steam_id' AND is_active = true AND roster_status <> 'inactive'" "deleted player active unit rows"
+assert_sql_value "0" "SELECT COUNT(*)::int FROM unit_roster_assignments WHERE player_uid = '$delete_steam_id' AND ended_at IS NULL" "deleted player active roster assignments"
+
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" \
   -H "Origin: $BASE_URL" \
   -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.operation_id'
