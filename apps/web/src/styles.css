@@ -208,6 +208,10 @@ h3 {
   overflow: clip;
 }
 
+.console-shell.no-inspector {
+  grid-template-columns: 7.75rem minmax(0, 1fr);
+}
+
 .console-shell::before {
   position: fixed;
   inset: 0;

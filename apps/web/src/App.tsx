@@ -14,6 +14,7 @@ import {
   canManageMachineTokens,
   canResetPlayerNames,
   canSeeSensitiveIds,
+  canViewSignalDetail,
   isOwner
 } from "./authz";
 import { CommandShell } from "./components/CommandShell";
@@ -111,6 +112,7 @@ export function App() {
   const canExportViews = canExport(sessionUser);
   const canResetRosterNames = canResetPlayerNames(sessionUser);
   const canDeleteOperationRows = canDeleteOperations(sessionUser);
+  const canInspectSignals = canViewSignalDetail(sessionUser);
 
   const selectedOperationDetail = useMemo(
     () => (operationDetail.status === "ready" ? operationDetail.data : null),
@@ -668,7 +670,11 @@ export function App() {
       sessionUser={sessionUser}
       onViewChange={setView}
       onLogout={() => void logout()}
-      inspector={<PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />}
+      inspector={
+        canInspectSignals ? (
+          <PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />
+        ) : null
+      }
     >
       {content}
     </CommandShell>
