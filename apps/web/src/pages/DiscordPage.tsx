@@ -102,8 +102,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
         role_id: mapping.role_id,
         friendly_name: role?.name ?? mapping.role_name ?? mapping.role_id,
         linked_unit: mapping.unit_name ?? mapping.unit_id,
-        priority: String(mapping.priority),
-        mapping_id: mapping.id
+        priority: String(mapping.priority)
       };
     }),
     ...activeRoleData
@@ -113,8 +112,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
         role_id: role.role_id,
         friendly_name: role.name,
         linked_unit: null,
-        priority: "n/a",
-        mapping_id: null
+        priority: "n/a"
       }))
   ];
   const selectedGuild = useMemo(() => selectedGuildFrom(guildData, selectedGuildId), [guildData, selectedGuildId]);
@@ -302,24 +300,6 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
     }
   }
 
-  async function unlinkMapping(mappingId: string) {
-    if (!hasToken || !selectedGuild) {
-      setMessage("Guild selection required.");
-      return;
-    }
-
-    try {
-      await apiFetch(`/v1/discord/guilds/${encodeURIComponent(selectedGuild.guild_id)}/role-mappings/${encodeURIComponent(mappingId)}`, {
-        method: "DELETE",
-        token
-      });
-      setMessage("Unit mapping unlinked.");
-      void loadGuildDetail(selectedGuild.guild_id);
-    } catch (error) {
-      setMessage(resultError(error, "Unit mapping unlink failed.").message);
-    }
-  }
-
   async function runReconcile(dryRun: boolean) {
     if (!hasToken) {
       setMessage("Token required.");
@@ -471,6 +451,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
                   <th>Friendly Name</th>
                   <th>Linked Unit</th>
                   <th>Priority</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -478,20 +459,15 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
                   <tr key={row.key}>
                     <td>
                       <p className="mono">{row.role_id}</p>
+                    </td>
+                    <td>{row.friendly_name}</td>
+                    <td>{displayValue(row.linked_unit)}</td>
+                    <td>{row.priority}</td>
+                    <td>
                       <button type="button" className="secondary" onClick={() => void deleteRole(row.role_id)}>
                         Delete
                       </button>
                     </td>
-                    <td>{row.friendly_name}</td>
-                    <td>
-                      {displayValue(row.linked_unit)}
-                      {row.mapping_id ? (
-                        <button type="button" className="secondary" onClick={() => void unlinkMapping(row.mapping_id)}>
-                          Unlink
-                        </button>
-                      ) : null}
-                    </td>
-                    <td>{row.priority}</td>
                   </tr>
                 ))}
               </tbody>
