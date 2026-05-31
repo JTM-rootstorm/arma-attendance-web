@@ -126,6 +126,7 @@ POST /v1/admin/users/:user_id/disable
 POST /v1/admin/users/:user_id/enable
 GET  /v1/system/machine-tokens
 POST /v1/system/machine-tokens
+POST /v1/system/machine-tokens/:token_id/secret
 DELETE /v1/system/machine-tokens/:token_id
 ```
 

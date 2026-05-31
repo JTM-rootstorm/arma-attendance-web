@@ -383,7 +383,7 @@ machine_token_id="$(printf "%s" "$machine_token_response" | json_value ".token_r
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $machine_token" | assert_json 'data.ok === true'
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$machine_token_id" \
   -H "Origin: $BASE_URL" \
-  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.token_record.is_active === false'
+  -H "X-CSRF-Token: $(csrf_token "$OWNER_COOKIE_JAR")" | assert_json 'data.ok === true && data.token_record.id === "'"$machine_token_id"'"'
 curl -fsS "$BASE_URL/health/db" -H "Authorization: Bearer $API_TOKEN" | assert_json 'data.ok === true'
 owner_delete_response="$(curl -fsS -X POST "$BASE_URL/v1/operations/start" \
   -H "Authorization: Bearer $API_TOKEN" \

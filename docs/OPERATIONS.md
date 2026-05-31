@@ -124,7 +124,7 @@ Authorization: Bearer <API_TOKEN>
 Content-Type: application/json
 ```
 
-Owners can create DB-backed machine tokens from the System page. Full token values are shown only once.
+Owners can create DB-backed machine tokens from the System page. New tokens can be downloaded as `tcwa3_stats_tracker.toml`, with a token view action available as a fallback. Deleting a token removes the DB-backed token row.
 
 Discord bot-facing endpoints accept `API_TOKEN`; if `BOT_API_TOKEN` is set, they also accept that token:
 

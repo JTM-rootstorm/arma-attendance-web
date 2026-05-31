@@ -117,16 +117,16 @@ owner_denied_status="$(
 )"
 assert_status_one_of "$owner_denied_status" "Base44 token owner endpoint" 401 403
 
-echo "[smoke:base44] Revoking Base44 integration token..."
+echo "[smoke:base44] Deleting Base44 integration token..."
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/system/machine-tokens/$base44_token_id" \
   -H "Origin: $BASE_URL" \
   -H "X-CSRF-Token: $(csrf_token)" |
-  assert_json 'data.ok === true && data.token_record.is_active === false'
+  assert_json 'data.ok === true && data.token_record.id === "'"$base44_token_id"'"'
 
-echo "[smoke:base44] Checking revoked token no longer works on protected Base44 read surface..."
+echo "[smoke:base44] Checking deleted token no longer works on protected Base44 read surface..."
 revoked_status="$(
   curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $base44_token" "$BASE_URL/v1/dashboard/summary"
 )"
-assert_status_one_of "$revoked_status" "revoked Base44 token dashboard summary" 401 403
+assert_status_one_of "$revoked_status" "deleted Base44 token dashboard summary" 401 403
 
 echo "[smoke:base44] OK token_id=$base44_token_id"

@@ -190,6 +190,7 @@ Owner-only machine token endpoints:
 
 - `GET /v1/system/machine-tokens`
 - `POST /v1/system/machine-tokens`
+- `POST /v1/system/machine-tokens/:token_id/secret`
 - `DELETE /v1/system/machine-tokens/:token_id`
 
 Sensitive identifiers and fields may be `null` or redacted depending on the current user's roles. Build UI states that tolerate missing IDs and hidden operational detail.

@@ -31,7 +31,7 @@ Indexes, check constraints, partial unique indexes, and migration-runner impleme
 | `unit_user_roles` | `0007_rbac_session_machine_tokens.sql` | `units.ts` | OK | columns/defaults/nullability represented; role check documented only |
 | `operation_units` | `0007_rbac_session_machine_tokens.sql` | `units.ts` | OK | columns/defaults/nullability represented; source check documented only |
 | `unit_server_keys` | `0007_rbac_session_machine_tokens.sql` | `units.ts` | OK | columns/defaults/nullability represented; composite primary key modeled |
-| `machine_tokens` | `0007_rbac_session_machine_tokens.sql`, `0012_base44_machine_token_kind_and_cors_sessions.sql` | `machineTokens.ts` | OK | base columns plus Base44 metadata fields represented; token-kind check documented only |
+| `machine_tokens` | `0007_rbac_session_machine_tokens.sql`, `0012_base44_machine_token_kind_and_cors_sessions.sql`, `0020_machine_token_download_secrets.sql` | `machineTokens.ts` | OK | base columns plus Base44 metadata and encrypted token download field represented; token-kind check documented only |
 | `unit_ranks` | `0011_battalion_roster_and_leaderboard.sql` | `units.ts` | OK | columns/defaults/nullability represented; unit/rank-key uniqueness documented only |
 | `unit_squads` | `0011_battalion_roster_and_leaderboard.sql` | `units.ts` | OK | columns/defaults/nullability represented; hierarchy checks documented only |
 | `unit_roster_assignments` | `0011_battalion_roster_and_leaderboard.sql` | `units.ts` | OK | columns/defaults/nullability represented; partial unique active-primary index documented only |

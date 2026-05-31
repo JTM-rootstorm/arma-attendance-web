@@ -586,6 +586,7 @@ export type MachineTokenRecord = {
   name: string;
   token_kind: MachineTokenKind;
   token_prefix: string;
+  token_available: boolean;
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -603,6 +604,12 @@ export type MachineTokensResponse = {
 };
 
 export type CreateMachineTokenResponse = {
+  ok: true;
+  token: string;
+  token_record: MachineTokenRecord;
+};
+
+export type MachineTokenSecretResponse = {
   ok: true;
   token: string;
   token_record: MachineTokenRecord;

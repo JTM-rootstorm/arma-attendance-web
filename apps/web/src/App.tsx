@@ -39,6 +39,7 @@ import type {
   DataQualityResponse,
   DbHealthResponse,
   HealthResponse,
+  MachineTokenSecretResponse,
   MachineTokensResponse,
   MachineTokenKind,
   MeResponse,
@@ -500,6 +501,10 @@ export function App() {
     await loadMachineTokens();
   }
 
+  async function revealMachineToken(tokenId: string) {
+    return apiFetch<MachineTokenSecretResponse>(`/v1/system/machine-tokens/${tokenId}/secret`, { method: "POST" });
+  }
+
   async function updatePlayerName(displayName: string) {
     await apiFetch<MyPlayerResponse>("/v1/me/player", {
       method: "PATCH",
@@ -631,6 +636,7 @@ export function App() {
         createdToken={createdMachineToken}
         onCreateToken={createMachineToken}
         onRevokeToken={revokeMachineToken}
+        onRevealToken={revealMachineToken}
         onRefresh={() => void loadMachineTokens()}
       />
     ) : sessionUser ? (
