@@ -101,9 +101,12 @@ function simplePaaFilename(value: string | null | undefined, fallback: string): 
   return /^[A-Za-z0-9._-]+\.paa$/.test(candidate) ? candidate : fallback;
 }
 
-function memberRemark(row: StrictSquadMember): string {
+function memberRemark(unit: StrictSquadUnit, row: StrictSquadMember): string {
+  const callsign = fallbackText(unit.callsign);
   const rank = fallbackText(row.rank_short_name ?? row.rank_name ?? row.rank);
-  return `${rank},${row.specialization}`;
+  const specialization = Number.isInteger(row.specialization) ? row.specialization : 0;
+
+  return `${callsign},${rank},${specialization}`;
 }
 
 function buildStrictSquadXml(input: { unit: StrictSquadUnit; members: StrictSquadMember[] }): string {
@@ -132,7 +135,7 @@ function buildStrictSquadXml(input: { unit: StrictSquadUnit; members: StrictSqua
       `    <name>N/A</name>`,
       `    <email>N/A</email>`,
       `    <icq>N/A</icq>`,
-      `    <remark>${xmlEscapeText(memberRemark(member))}</remark>`,
+      `    <remark>${xmlEscapeText(memberRemark(input.unit, member))}</remark>`,
       `  </member>`
     );
   }

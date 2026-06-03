@@ -227,8 +227,8 @@ for member in members:
         raise SystemExit("member/icq must be N/A")
     if not (member.find("remark").text or "").strip():
         raise SystemExit("member/remark must not be empty")
-    if member.find("remark").text != "CPL,3":
-        raise SystemExit(f"member/remark must be RANK,SPECIALIZATION, got {member.find('remark').text!r}")
+    if member.find("remark").text != "SXML,CPL,3":
+        raise SystemExit(f"member/remark must be BATTALION_CALLSIGN,RANK,SPECIALIZATION, got {member.find('remark').text!r}")
 
 print("[squad-xml-smoke] strict XML shape OK")
 PY
