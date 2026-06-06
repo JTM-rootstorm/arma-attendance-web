@@ -115,6 +115,13 @@ export async function getOptionalAuthContext(
   return { kind: "anonymous", user: null, machineTokenKind: null };
 }
 
+export async function requireDiscordBotAssignmentWriter(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<AuthContext | null> {
+  return getAuthContext(request, reply, { machineTokenKinds: ["api", "bot"] });
+}
+
 export function canSeeSensitiveIds(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
   return user === null ? Boolean(machineTokenKind && machineTokenKind !== "base44_integration") : hasRole(user, ["tcw_admin"]);
 }

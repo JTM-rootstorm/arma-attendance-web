@@ -3,7 +3,12 @@ import { and, eq, isNull, not, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { hasRole, requireAdminOrBotToken } from "../auth.js";
-import { deny, getAuthContext, type AuthContext } from "../auth/authorization.js";
+import {
+  deny,
+  getAuthContext,
+  requireDiscordBotAssignmentWriter,
+  type AuthContext
+} from "../auth/authorization.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { getDiscordAuthPolicy } from "../config/discordAuth.js";
 import {
@@ -11,6 +16,11 @@ import {
   syncDiscordAuthPolicyToDb,
   upsertDiscordMemberSnapshot
 } from "../discord/membershipResolver.js";
+import {
+  applyDiscordBotUnitAssignment,
+  DiscordPlayerAssignmentError,
+  type DiscordBotUnitAssignmentInput
+} from "../discord/playerAssignment.js";
 import { evaluateDiscordRoleActions } from "../discord/scoring.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
@@ -184,6 +194,34 @@ const memberSnapshotBodySchema = z.object({
   ),
   reconcile: z.boolean().default(false)
 });
+
+const discordBotAssignmentBodySchema = z
+  .object({
+    discord_user_id: z.string().min(1).max(64).optional(),
+    player_uid: z.string().min(1).max(200).optional(),
+    guild_id: z.string().min(1).max(64).optional(),
+    role_id: z.string().min(1).max(64).optional(),
+    unit_id: z.string().uuid().optional(),
+    unit_key: z.string().trim().min(1).max(120).optional(),
+    rank_id: z.string().uuid().nullable().optional(),
+    rank: z.string().trim().max(120).nullable().optional(),
+    roster_name: z.string().trim().max(200).nullable().optional(),
+    roster_status: z.enum(["active", "reserve", "loa", "inactive"]).default("active"),
+    discord_username: z.string().max(200).nullable().optional(),
+    discord_display_name: z.string().max(200).nullable().optional(),
+    nick: z.string().max(200).nullable().optional(),
+    is_active: z.boolean().default(true),
+    assignment_priority: z.number().int().default(0),
+    create_player_if_missing: z.boolean().default(true),
+    dry_run: z.boolean().default(false),
+    raw_member: z.record(z.string(), z.unknown()).optional()
+  })
+  .refine((body) => body.discord_user_id || body.player_uid, {
+    message: "discord_user_id or player_uid is required."
+  })
+  .refine((body) => body.unit_id || body.unit_key, {
+    message: "unit_id or unit_key is required."
+  });
 
 const memberSnapshotQuerySchema = z.object({
   discord_user_id: z.string().min(1).max(64).optional(),
@@ -1310,6 +1348,74 @@ export async function registerDiscordRoutes(app: FastifyInstance) {
 
       return { ok: true, deleted: result.length };
     } catch (error) {
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/discord/player-assignments", async (request, reply) => {
+    const auth = await requireDiscordBotAssignmentWriter(request, reply);
+
+    if (!auth) {
+      return;
+    }
+
+    const parsed = discordBotAssignmentBodySchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const body = parsed.data;
+    const input: DiscordBotUnitAssignmentInput = {
+      discordUserId: body.discord_user_id,
+      playerUid: body.player_uid,
+      guildId: body.guild_id,
+      roleId: body.role_id,
+      unitId: body.unit_id,
+      unitKey: body.unit_key,
+      rankId: body.rank_id,
+      rank: body.rank,
+      rosterName: body.roster_name,
+      rosterStatus: body.roster_status,
+      discordUsername: body.discord_username,
+      discordDisplayName: body.discord_display_name,
+      nick: body.nick,
+      isActive: body.is_active,
+      assignmentPriority: body.assignment_priority,
+      createPlayerIfMissing: body.create_player_if_missing,
+      dryRun: body.dry_run,
+      rawMember: body.raw_member
+    };
+
+    try {
+      const result = await applyDiscordBotUnitAssignment(input);
+
+      if (!result.ok) {
+        return reply.code(409).send({
+          ok: false,
+          error: {
+            code: result.code,
+            message: result.message
+          },
+          player_uid: result.player_uid,
+          locked_assignment: result.locked_assignment,
+          audits_written: result.audits_written
+        });
+      }
+
+      return result;
+    } catch (error) {
+      if (error instanceof DiscordPlayerAssignmentError) {
+        return reply.code(error.statusCode).send({
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message
+          }
+        });
+      }
+
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to apply Discord bot player assignment");
       return sendDatabaseUnavailable(reply);
     }
   });

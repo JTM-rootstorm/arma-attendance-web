@@ -34,6 +34,7 @@ import {
   reconcileDiscordMembership,
   upsertDiscordMemberSnapshot
 } from "../discord/membershipResolver.js";
+import { resolveDiscordLinkedPlayerUid } from "../discord/playerAssignment.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -603,6 +604,22 @@ function getAuthPlayerUid(identity: AuthIdentityRow): string {
   return `discord:${identity.provider_user_id}`;
 }
 
+async function resolveAuthPlayerUid(tx: DbTransaction, identities: AuthIdentityRow[]): Promise<string | null> {
+  const steamIdentity = identities.find((identity) => identity.provider === "steam");
+
+  if (steamIdentity) {
+    return steamIdentity.provider_user_id;
+  }
+
+  const discordIdentity = identities.find((identity) => identity.provider === "discord");
+
+  if (!discordIdentity) {
+    return null;
+  }
+
+  return (await resolveDiscordLinkedPlayerUid(tx, discordIdentity.provider_user_id)) ?? getAuthPlayerUid(discordIdentity);
+}
+
 function getAuthPlayerDisplayName(identities: AuthIdentityRow[], user: AuthUserProfileRow, chosenIdentity: AuthIdentityRow): string {
   const discordIdentity = identities.find((identity) => identity.provider === "discord");
 
@@ -640,7 +657,12 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     return null;
   }
 
-  const playerUid = getAuthPlayerUid(chosenIdentity);
+  const playerUid = await resolveAuthPlayerUid(tx, identities);
+
+  if (!playerUid) {
+    return null;
+  }
+
   const displayName = getAuthPlayerDisplayName(identities, user, chosenIdentity);
   const unitResult = await tx.query<{ id: string }>(
     `
@@ -714,13 +736,18 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
       VALUES ($1, $2, $3, 'auth', now(), $4::jsonb)
       ON CONFLICT (discord_user_id) DO UPDATE
       SET
-        player_uid = EXCLUDED.player_uid,
-        discord_display_name = EXCLUDED.discord_display_name,
-        source = EXCLUDED.source,
+        player_uid = CASE
+          WHEN player_discord_links.source = 'auth' THEN EXCLUDED.player_uid
+          ELSE player_discord_links.player_uid
+        END,
+        discord_display_name = COALESCE(EXCLUDED.discord_display_name, player_discord_links.discord_display_name),
+        source = CASE
+          WHEN player_discord_links.source = 'auth' THEN EXCLUDED.source
+          ELSE player_discord_links.source
+        END,
         verified_at = COALESCE(player_discord_links.verified_at, EXCLUDED.verified_at),
-        raw_link = EXCLUDED.raw_link,
+        raw_link = player_discord_links.raw_link || EXCLUDED.raw_link,
         updated_at = now()
-      WHERE player_discord_links.source = 'auth'
       `,
       [
         playerUid,

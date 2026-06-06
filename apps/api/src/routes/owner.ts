@@ -13,10 +13,19 @@ import { machineTokens } from "../db/schema/machineTokens.js";
 import { tokenPreview } from "../privacy/redaction.js";
 
 const tokenKinds = ["api", "bot", "arma_server", "base44_integration"] as const satisfies readonly MachineTokenKind[];
+const machineTokenScopes = [
+  "discord:guilds:sync",
+  "discord:members:sync",
+  "discord:assignments:write",
+  "discord:role-actions:write",
+  "arma:ingest",
+  "base44:sync"
+] as const;
 
 const createMachineTokenSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  token_kind: z.enum(tokenKinds)
+  token_kind: z.enum(tokenKinds),
+  scopes: z.array(z.enum(machineTokenScopes)).optional()
 });
 
 const tokenParamsSchema = z.object({
@@ -30,6 +39,7 @@ type MachineTokenRow = {
   token_prefix: string;
   token_ciphertext: string | null;
   is_active: boolean;
+  scopes: string[];
   created_at: Date;
   last_used_at: Date | null;
   revoked_at: Date | null;
@@ -61,6 +71,19 @@ function generateMachineToken(kind: (typeof tokenKinds)[number]): string {
 
 function tokenPrefix(token: string): string {
   return token.slice(0, 18);
+}
+
+function defaultScopesForKind(kind: MachineTokenKind): string[] {
+  switch (kind) {
+    case "api":
+      return [...machineTokenScopes];
+    case "bot":
+      return ["discord:guilds:sync", "discord:members:sync", "discord:assignments:write", "discord:role-actions:write"];
+    case "arma_server":
+      return ["arma:ingest"];
+    case "base44_integration":
+      return ["base44:sync"];
+  }
 }
 
 function getMachineTokenSecretKey(): Buffer {
@@ -101,6 +124,7 @@ function serializeMachineToken(row: MachineTokenRow) {
     token_prefix: row.token_prefix,
     token_available: Boolean(row.token_ciphertext),
     is_active: row.is_active,
+    scopes: row.scopes,
     created_at: row.created_at,
     last_used_at: row.last_used_at,
     revoked_at: row.revoked_at
@@ -152,6 +176,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             token_prefix: machineTokens.tokenPrefix,
             token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt
@@ -211,6 +236,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             tokenCiphertext: encryptMachineTokenSecret(token),
             tokenPrefix: tokenPrefix(token),
             tokenKind: parsedBody.data.token_kind,
+            scopes: parsedBody.data.scopes ?? defaultScopesForKind(parsedBody.data.token_kind),
             createdByUserId: actor.id
           })
           .returning({
@@ -220,6 +246,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             token_prefix: machineTokens.tokenPrefix,
             token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt
@@ -236,6 +263,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
           details: {
             token_id: row.id,
             token_kind: row.token_kind,
+            scopes: row.scopes,
             token_prefix: row.token_prefix
           }
         });
@@ -278,6 +306,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             token_prefix: machineTokens.tokenPrefix,
             token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt
@@ -363,6 +392,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             token_prefix: machineTokens.tokenPrefix,
             token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt

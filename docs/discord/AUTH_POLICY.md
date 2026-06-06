@@ -16,7 +16,10 @@ Role mappings are managed through the Discord admin API:
 - `PATCH /v1/discord/guilds/:guild_id/role-mappings/:mapping_id`
 - `DELETE /v1/discord/guilds/:guild_id/role-mappings/:mapping_id`
 - `POST /v1/discord/guilds/:guild_id/member-snapshots`
+- `POST /v1/discord/player-assignments`
 - `POST /v1/discord/reconcile`
 - `GET /v1/discord/assignment-audits`
 
 Partner guild unit and rank mappings should use higher unit/rank priorities than the TCWA3 fallback guild. Manual roster assignments with `assignment_locked=true` are preserved by reconciliation.
+
+Bot assignment writes are documented in [`BOT_ASSIGNMENTS.md`](BOT_ASSIGNMENTS.md). Member snapshot reconciliation can now resolve Discord IDs through `player_discord_links` before the user has logged in, falling back to the same deterministic `discord:<discord_user_id>` player UID used by Discord-only auth.

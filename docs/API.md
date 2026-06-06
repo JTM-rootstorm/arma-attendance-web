@@ -150,6 +150,7 @@ PATCH /v1/discord/guilds/:guild_id/role-mappings/:mapping_id
 DELETE /v1/discord/guilds/:guild_id/role-mappings/:mapping_id
 GET  /v1/discord/player-links
 POST /v1/discord/player-links
+POST /v1/discord/player-assignments
 DELETE /v1/discord/player-links/:discord_user_id
 GET  /v1/discord/guilds/:guild_id/rules
 POST /v1/discord/guilds/:guild_id/rules
@@ -162,4 +163,8 @@ POST /v1/discord/reconcile
 GET  /v1/discord/assignment-audits
 ```
 
-See [`docs/discord/AUTH_POLICY.md`](discord/AUTH_POLICY.md) for auth policy and reconciliation notes.
+`POST /v1/discord/player-assignments` is the Discord-bot write path for unit assignment. It accepts `discord_user_id` as the preferred identifier, `player_uid` as an optional override, and `unit_id` or `unit_key` as the target unit. Bot-created placeholder players use `player_uid = discord:<discord_user_id>` and are linked through `player_discord_links` so later Discord OAuth login attaches to the same player object. The endpoint accepts `api` and `bot` machine tokens, not `arma_server` ingest tokens.
+
+Machine tokens created through `POST /v1/system/machine-tokens` may include optional `scopes`. When omitted, the API assigns defaults for the token kind. Bot tokens default to Discord guild/member sync, assignment writes, and role-action reporting scopes.
+
+See [`docs/discord/AUTH_POLICY.md`](discord/AUTH_POLICY.md) for auth policy and reconciliation notes. See [`docs/discord/BOT_ASSIGNMENTS.md`](discord/BOT_ASSIGNMENTS.md) for the bot assignment contract.

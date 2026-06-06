@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { getDiscordAuthPolicy } from "../config/discordAuth.js";
 import { queryDb } from "../db/pool.js";
+import { ensureDiscordPlaceholderPlayerForReconcile } from "./playerAssignment.js";
 
 export type DiscordRoleClaimType =
   | "unit_primary"
@@ -291,16 +292,24 @@ function filterAppRoleClaims(claims: DiscordRoleClaim[]): DiscordRoleClaim[] {
 async function findIdentity(options: ReconcileDiscordMembershipOptions): Promise<PlayerIdentityRow> {
   const result = await queryDb<PlayerIdentityRow>(
     `
-    WITH selected_identity AS (
+    WITH supplied AS (
+      SELECT $1::uuid AS user_id, $2::text AS discord_user_id
+    ),
+    selected_identity AS (
       SELECT
-        COALESCE($2::text, provider_user_id) AS discord_user_id,
-        COALESCE($1::uuid, user_id) AS user_id
-      FROM user_identities
-      WHERE provider = 'discord'
-        AND ($1::uuid IS NULL OR user_id = $1::uuid)
-        AND ($2::text IS NULL OR provider_user_id = $2::text)
-      ORDER BY last_seen_at DESC
-      LIMIT 1
+        COALESCE(s.discord_user_id, ui.provider_user_id) AS discord_user_id,
+        COALESCE(s.user_id, ui.user_id) AS user_id
+      FROM supplied s
+      LEFT JOIN LATERAL (
+        SELECT user_id, provider_user_id
+        FROM user_identities
+        WHERE provider = 'discord'
+          AND (s.user_id IS NULL OR user_id = s.user_id)
+          AND (s.discord_user_id IS NULL OR provider_user_id = s.discord_user_id)
+        ORDER BY last_seen_at DESC
+        LIMIT 1
+      ) ui ON true
+      WHERE s.user_id IS NOT NULL OR s.discord_user_id IS NOT NULL OR ui.user_id IS NOT NULL
     ),
     chosen_player AS (
       SELECT ui.provider_user_id AS player_uid, 0 AS priority
@@ -313,6 +322,7 @@ async function findIdentity(options: ReconcileDiscordMembershipOptions): Promise
       UNION ALL
       SELECT 'discord:' || si.discord_user_id, 2 AS priority
       FROM selected_identity si
+      WHERE si.discord_user_id IS NOT NULL
     )
     SELECT
       (SELECT user_id::text FROM selected_identity LIMIT 1) AS user_id,
@@ -492,7 +502,17 @@ export async function reconcileDiscordMembership(
     };
   }
 
-  if (!dryRun && identity.player_uid) {
+  if (!dryRun && identity.player_uid && identity.discord_user_id && identity.player_uid === `discord:${identity.discord_user_id}`) {
+    await ensureDiscordPlaceholderPlayerForReconcile({
+      playerUid: identity.player_uid,
+      discordUserId: identity.discord_user_id,
+      createPlayerIfMissing: true,
+      rawMember: {
+        source: "discord_reconcile",
+        discord_user_id: identity.discord_user_id
+      }
+    });
+
     const currentRows = await currentUnitRows(identity.player_uid);
     manualLocked = currentRows.some((row) => row.assignment_locked);
 
