@@ -93,6 +93,21 @@ export const authRefreshTokens = pgTable("auth_refresh_tokens", {
   userAgent: text("user_agent")
 });
 
+export const authLinkTickets = pgTable("auth_link_tickets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ticketHash: text("ticket_hash").notNull().unique(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => appUsers.id, { onDelete: "cascade" }),
+  purpose: text("purpose").notNull(),
+  returnTo: text("return_to").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent")
+});
+
 export const sessionCsrfTokens = pgTable("session_csrf_tokens", {
   id: uuid("id").defaultRandom().primaryKey(),
   sessionId: uuid("session_id")

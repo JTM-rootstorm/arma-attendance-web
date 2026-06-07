@@ -102,6 +102,8 @@ GET  /auth/discord/callback
 POST /auth/logout
 GET  /auth/csrf
 GET  /auth/steam/start
+POST /auth/steam/link-ticket
+GET  /auth/steam/start-ticket
 GET  /auth/steam/callback
 POST /auth/jwt/exchange
 POST /auth/jwt/refresh

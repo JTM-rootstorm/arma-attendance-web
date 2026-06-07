@@ -116,7 +116,7 @@ systemd/           Production service unit
 
 - Browser/admin workflows use Discord OAuth and an HttpOnly session cookie.
 - Steam OpenID is a linked identity, not a permission source by itself.
-- External frontends can use backend-owned Discord OAuth with JWT handoff mode.
+- External frontends can use backend-owned Discord OAuth with JWT handoff mode, and should use `POST /auth/steam/link-ticket` before redirecting JWT users to Steam linking.
 - Arma ingest, smoke scripts, and bot automation use machine/bearer-token auth.
 - Sensitive IDs are redacted unless the caller has the right app or unit-scoped role.
 

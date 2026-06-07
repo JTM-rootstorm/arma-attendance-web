@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
@@ -74,6 +74,15 @@ const steamStartQuerySchema = z.object({
   redirect_after: z.string().max(500).optional()
 });
 
+const steamLinkTicketBodySchema = z.object({
+  return_to: z.string().max(1000).optional(),
+  redirect_after: z.string().max(500).optional()
+});
+
+const steamStartTicketQuerySchema = z.object({
+  ticket: z.string().min(32).max(256)
+});
+
 const steamCallbackQuerySchema = z.record(z.string(), z.string());
 
 const testLoginBodySchema = z.object({
@@ -116,6 +125,11 @@ type OAuthStateRow = {
   flow_mode: "cookie" | "jwt";
   expires_at: Date;
   consumed_at: Date | null;
+};
+
+type AuthLinkTicketRow = {
+  user_id: string;
+  return_to: string;
 };
 
 type DiscordTokenResponse = DiscordOAuthToken;
@@ -170,6 +184,21 @@ type LinkedPlayerRow = {
   roster_name: string | null;
   first_seen_at: Date;
   last_seen_at: Date;
+};
+
+type LinkedPlayerReason =
+  | "no_steam_or_discord_identity"
+  | "steam_identity_linked_but_player_missing"
+  | "discord_identity_linked_but_player_missing"
+  | "linked_player_found";
+
+type LinkedPlayerState = {
+  steam_linked: boolean;
+  steam_id: string | null;
+  discord_linked: boolean;
+  discord_id: string | null;
+  has_discord_player_link: boolean;
+  reason: LinkedPlayerReason;
 };
 
 type SelfUnitMembershipRow = {
@@ -344,11 +373,30 @@ function getHandoffCode(body: unknown, query: unknown): string | null {
   return null;
 }
 
+function linkedIdentities(user: CurrentUser) {
+  const discord = user.identities.find((identity) => identity.provider === "discord") ?? null;
+  const steam = user.identities.find((identity) => identity.provider === "steam") ?? null;
+
+  return {
+    discord: {
+      linked: Boolean(discord),
+      id: discord?.provider_user_id ?? null,
+      display_name: discord?.display_name ?? null
+    },
+    steam: {
+      linked: Boolean(steam),
+      steam_id: steam?.provider_user_id ?? null,
+      display_name: steam?.display_name ?? null
+    }
+  };
+}
+
 async function serializeUser(user: CurrentUser) {
   const unitMemberships = await getUserUnitRoles(user.id);
   const selfPlayerUids = await getSelfPlayerUids(user);
   const unitAdmin = unitMemberships.some((membership) => membership.role === "admin" || membership.role === "tcw_admin");
   const canViewSensitiveIdentifiers = hasRole(user, ["tcw_admin"]);
+  const linked = linkedIdentities(user);
 
   return {
     id: user.id,
@@ -363,6 +411,9 @@ async function serializeUser(user: CurrentUser) {
       roles: [membership.role]
     })),
     self_player_uids: selfPlayerUids,
+    linked_identities: linked,
+    steam_linked: linked.steam.linked,
+    discord_linked: linked.discord.linked,
     is_owner: user.roles.includes("owner"),
     is_tcw_admin: user.roles.includes("tcw_admin"),
     capabilities: {
@@ -377,6 +428,13 @@ async function serializeUser(user: CurrentUser) {
       display_name: identity.display_name,
       avatar_url: identity.avatar_url
     }))
+  };
+}
+
+function getIdentityIds(user: CurrentUser): { steamId: string | null; discordId: string | null } {
+  return {
+    steamId: user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null,
+    discordId: user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null
   };
 }
 
@@ -467,6 +525,55 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
   return result.rows[0] ?? null;
 }
 
+async function hasDiscordPlayerLink(discordId: string | null): Promise<boolean> {
+  if (!discordId) {
+    return false;
+  }
+
+  const result = await queryDb<{ exists: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM player_discord_links WHERE discord_user_id = $1) AS exists",
+    [discordId]
+  );
+
+  return result.rows[0]?.exists ?? false;
+}
+
+async function getLinkedPlayerState(user: CurrentUser, player: LinkedPlayerRow | null): Promise<LinkedPlayerState> {
+  const { steamId, discordId } = getIdentityIds(user);
+  const hasDiscordLink = await hasDiscordPlayerLink(discordId);
+  const reason: LinkedPlayerReason = player
+    ? "linked_player_found"
+    : steamId
+      ? "steam_identity_linked_but_player_missing"
+      : discordId
+        ? "discord_identity_linked_but_player_missing"
+        : "no_steam_or_discord_identity";
+
+  return {
+    steam_linked: Boolean(steamId),
+    steam_id: steamId,
+    discord_linked: Boolean(discordId),
+    discord_id: discordId,
+    has_discord_player_link: hasDiscordLink,
+    reason
+  };
+}
+
+async function findLinkedPlayerWithRepair(user: CurrentUser): Promise<{ player: LinkedPlayerRow | null; linkState: LinkedPlayerState }> {
+  let player = await findLinkedPlayer(user);
+  const { steamId } = getIdentityIds(user);
+
+  if (!player && steamId) {
+    await withDbTransaction((tx) => ensureAuthenticatedUserRosterEntry(tx, user.id));
+    player = await findLinkedPlayer(user);
+  }
+
+  return {
+    player,
+    linkState: await getLinkedPlayerState(user, player)
+  };
+}
+
 async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displayName: string): Promise<LinkedPlayerRow | null> {
   await ensureAuthenticatedUserRosterEntry(tx, user.id);
   const player = await findLinkedPlayerWithClient(tx, user);
@@ -508,6 +615,83 @@ async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displa
   };
 }
 
+function requestUserAgent(request: FastifyRequest): string | null {
+  const userAgent = request.headers["user-agent"];
+  return Array.isArray(userAgent) ? (userAgent[0] ?? null) : (userAgent ?? null);
+}
+
+function hashOpaqueToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function generateLinkTicket(): string {
+  return `aat_link_${randomBytes(32).toString("base64url")}`;
+}
+
+async function createSteamLinkTicket(userId: string, returnTo: string, request: FastifyRequest): Promise<{ ticket: string; expires_at: Date }> {
+  const ticket = generateLinkTicket();
+  const result = await queryDb<{ expires_at: Date }>(
+    `
+    INSERT INTO auth_link_tickets (ticket_hash, user_id, purpose, return_to, expires_at, ip_address, user_agent)
+    VALUES ($1, $2, 'steam_link', $3, now() + ($4::int * interval '1 second'), $5, $6)
+    RETURNING expires_at
+    `,
+    [hashOpaqueToken(ticket), userId, returnTo, config.jwtHandoffTtlSeconds, request.ip, requestUserAgent(request)]
+  );
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new Error("Steam link ticket insert returned no row.");
+  }
+
+  return { ticket, expires_at: row.expires_at };
+}
+
+async function consumeSteamLinkTicket(tx: DbTransaction, ticket: string): Promise<AuthLinkTicketRow | null> {
+  const result = await tx.query<AuthLinkTicketRow>(
+    `
+    UPDATE auth_link_tickets
+    SET consumed_at = now()
+    WHERE ticket_hash = $1
+      AND purpose = 'steam_link'
+      AND consumed_at IS NULL
+      AND expires_at > now()
+    RETURNING user_id, return_to
+    `,
+    [hashOpaqueToken(ticket)]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+function steamStartTicketUrl(ticket: string): string {
+  const url = new URL("/auth/steam/start-ticket", config.publicBaseUrl);
+  url.searchParams.set("ticket", ticket);
+  return url.toString();
+}
+
+function steamLinkedReturnTo(returnTo: string | null): string {
+  const url = new URL(getSafeReturnTo(returnTo), config.publicBaseUrl);
+  url.searchParams.set("steam_linked", "1");
+  return url.toString();
+}
+
+function steamOpenIdUrl(state: string): string {
+  if (!config.steamReturnUrl || !config.steamRealm) {
+    throw new Error("steam_openid_not_configured");
+  }
+
+  const steamUrl = new URL("https://steamcommunity.com/openid/login");
+  steamUrl.searchParams.set("openid.ns", "http://specs.openid.net/auth/2.0");
+  steamUrl.searchParams.set("openid.mode", "checkid_setup");
+  steamUrl.searchParams.set("openid.return_to", `${config.steamReturnUrl}?state=${encodeURIComponent(state)}`);
+  steamUrl.searchParams.set("openid.realm", config.steamRealm);
+  steamUrl.searchParams.set("openid.identity", "http://specs.openid.net/auth/2.0/identifier_select");
+  steamUrl.searchParams.set("openid.claimed_id", "http://specs.openid.net/auth/2.0/identifier_select");
+
+  return steamUrl.toString();
+}
+
 async function insertOAuthState(
   provider: "discord" | "steam",
   redirectAfter: string | null,
@@ -517,6 +701,26 @@ async function insertOAuthState(
   const state = randomState();
 
   await queryDb(
+    `
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
+    VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
+    `,
+    [state, provider, redirectAfter, codeVerifier, flowMode]
+  );
+
+  return state;
+}
+
+async function insertOAuthStateWithClient(
+  tx: DbTransaction,
+  provider: "discord" | "steam",
+  redirectAfter: string | null,
+  codeVerifier: string | null,
+  flowMode: "cookie" | "jwt" = "cookie"
+) {
+  const state = randomState();
+
+  await tx.query(
     `
     INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
     VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
@@ -1415,13 +1619,21 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     try {
-      const player = await findLinkedPlayer(user);
+      const { player, linkState } = await findLinkedPlayerWithRepair(user);
 
       if (!player) {
+        const message =
+          linkState.reason === "steam_identity_linked_but_player_missing"
+            ? "Steam is linked, but no player stats record exists yet."
+            : linkState.reason === "discord_identity_linked_but_player_missing"
+              ? "Discord is linked, but no player stats record exists yet."
+              : "Link Steam or ask an admin to link your player record.";
+
         return {
           ok: true,
           linked_player: null,
-          message: "Link Steam or ask an admin to link your player record."
+          link_state: linkState,
+          message
         };
       }
 
@@ -1490,6 +1702,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
+        link_state: linkState,
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
           rank: membershipRows[0]?.rank ?? player.rank,
@@ -1803,15 +2016,81 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     const state = await insertOAuthState("steam", getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after), user.id);
-    const steamUrl = new URL("https://steamcommunity.com/openid/login");
-    steamUrl.searchParams.set("openid.ns", "http://specs.openid.net/auth/2.0");
-    steamUrl.searchParams.set("openid.mode", "checkid_setup");
-    steamUrl.searchParams.set("openid.return_to", `${config.steamReturnUrl}?state=${encodeURIComponent(state)}`);
-    steamUrl.searchParams.set("openid.realm", config.steamRealm);
-    steamUrl.searchParams.set("openid.identity", "http://specs.openid.net/auth/2.0/identifier_select");
-    steamUrl.searchParams.set("openid.claimed_id", "http://specs.openid.net/auth/2.0/identifier_select");
+    return reply.redirect(steamOpenIdUrl(state));
+  });
 
-    return reply.redirect(steamUrl.toString());
+  app.post("/auth/steam/link-ticket", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = steamLinkTicketBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    if (!config.steamReturnUrl || !config.steamRealm) {
+      return sendAuthUnavailable(reply, "Steam OpenID is not configured.");
+    }
+
+    try {
+      const returnTo = getSafeReturnTo(parsedBody.data.return_to ?? parsedBody.data.redirect_after);
+      const ticket = await createSteamLinkTicket(user.id, returnTo, request);
+
+      return {
+        ok: true,
+        steam_start_url: steamStartTicketUrl(ticket.ticket),
+        expires_at: ticket.expires_at
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create Steam link ticket");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.get("/auth/steam/start-ticket", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const parsedQuery = steamStartTicketQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    if (!config.steamReturnUrl || !config.steamRealm) {
+      return sendAuthUnavailable(reply, "Steam OpenID is not configured.");
+    }
+
+    try {
+      const state = await withDbTransaction(async (tx) => {
+        const ticket = await consumeSteamLinkTicket(tx, parsedQuery.data.ticket);
+
+        if (!ticket) {
+          return null;
+        }
+
+        return insertOAuthStateWithClient(tx, "steam", ticket.return_to, ticket.user_id);
+      });
+
+      if (!state) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: "invalid_link_ticket", message: "Steam link ticket is invalid, expired, or already used." }
+        });
+      }
+
+      return reply.redirect(steamOpenIdUrl(state));
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Steam ticket link");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
   });
 
   app.get("/auth/steam/callback", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -1842,7 +2121,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       await withDbTransaction(async (tx) => {
         await upsertSteamIdentity(tx, state.code_verifier ?? "", steamId);
       });
-      return reply.redirect(getSafeReturnTo(state.redirect_after));
+      return reply.redirect(steamLinkedReturnTo(state.redirect_after));
     } catch (error) {
       if (error instanceof Error && error.message === "steam_identity_conflict") {
         return sendConflict(reply, "That Steam identity is already linked to another user.");

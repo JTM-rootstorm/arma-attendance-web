@@ -36,6 +36,7 @@
     "smoke:base44": "bash scripts/base44-token-smoke.sh",
     "smoke:base44:oauth": "bash scripts/base44-oauth-smoke.sh",
     "smoke:jwt-auth": "bash scripts/jwt-auth-smoke.sh",
+    "smoke:steam-link-jwt": "bash scripts/steam-link-jwt-smoke.sh",
     "smoke:csrf": "bash scripts/csrf-smoke.sh",
     "smoke:dashboard": "bash scripts/dashboard-smoke.sh",
     "smoke:exports": "bash scripts/exports-smoke.sh",

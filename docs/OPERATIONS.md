@@ -175,6 +175,7 @@ Focused checks:
 | `pnpm smoke:cors` | external frontend CORS allowlist |
 | `pnpm smoke:base44` | Base44 machine-token read boundaries |
 | `pnpm smoke:base44:oauth` | external OAuth/JWT handoff flow |
+| `pnpm smoke:steam-link-jwt` | JWT-compatible Steam link tickets and linked-player repair |
 | `pnpm smoke:csrf` | cookie-session CSRF hardening |
 | `pnpm smoke:discord` | Discord guild/role/rule/evaluation/audit flow |
 | `pnpm smoke:discord-auth-policy` | Discord auth policy, snapshots, reconciliation |
