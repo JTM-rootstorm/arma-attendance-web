@@ -5,6 +5,7 @@ import rateLimit from "@fastify/rate-limit";
 
 import { requireCsrfForUnsafeSessionRequest } from "./auth/csrf.js";
 import { config, loadedEnvFiles } from "./config.js";
+import { getDiscordAuthPolicyDetails } from "./config/discordAuth.js";
 import { closeDbPool } from "./db/pool.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
@@ -30,6 +31,8 @@ const app = Fastify({
   }
 });
 
+const discordAuthPolicyDetails = getDiscordAuthPolicyDetails();
+
 app.log.info(
   {
     nodeEnv: config.nodeEnv,
@@ -44,6 +47,12 @@ app.log.info(
     corsAllowCredentials: config.corsAllowCredentials,
     oauthAllowedReturnOrigins: config.oauthAllowedReturnOrigins,
     jwtAuthEnabled: config.jwtAuthEnabled,
+    discordAuthConfigPath: discordAuthPolicyDetails.configPath,
+    discordAuthConfiguredLoginGuildCount: discordAuthPolicyDetails.configuredLoginGuildIds.length,
+    discordAuthFallbackAllowed: discordAuthPolicyDetails.fallbackAllowed,
+    discordAuthRequireConfigFile: discordAuthPolicyDetails.requireConfigFile,
+    discordAuthFallbackGuildCount: discordAuthPolicyDetails.fallbackGuildIds.length,
+    discordGuildPolicySource: discordAuthPolicyDetails.source,
     csrfEnabled: config.csrfEnabled,
     initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
     testAuthEnabled: config.enableTestAuth,

@@ -33,18 +33,45 @@ const discordAuthPolicySchema = z.object({
 
 export type DiscordAuthGuildConfig = z.infer<typeof discordAuthGuildSchema>;
 export type DiscordAuthPolicy = z.infer<typeof discordAuthPolicySchema>;
+export type DiscordGuildPolicySource = "config-file" | "fallback-env" | "none";
 
-function readPolicyFile(): Partial<DiscordAuthPolicy> {
+export type DiscordAuthPolicyResolutionOptions = {
+  authEnabled: boolean;
+  configPath?: string | undefined;
+  configFileLoaded: boolean;
+  defaultFallbackGuildIds: string[];
+  allowFallbackGuildIds: boolean;
+  requireConfigFile: boolean;
+};
+
+export type DiscordAuthPolicyDetails = {
+  policy: DiscordAuthPolicy;
+  source: DiscordGuildPolicySource;
+  configPath?: string | undefined;
+  configuredLoginGuildIds: string[];
+  fallbackGuildIds: string[];
+  fallbackAllowed: boolean;
+  requireConfigFile: boolean;
+};
+
+export class DiscordAuthPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordAuthPolicyError";
+  }
+}
+
+function readPolicyFile(): { loaded: boolean; path?: string | undefined; policy: Partial<DiscordAuthPolicy> } {
   if (!config.discordAuthConfigPath) {
-    return {};
+    return { loaded: false, policy: {} };
   }
 
   const path = resolve(process.cwd(), config.discordAuthConfigPath);
   if (!existsSync(path)) {
-    return {};
+    return { loaded: false, path, policy: {} };
   }
 
-  return JSON.parse(readFileSync(path, "utf8")) as Partial<DiscordAuthPolicy>;
+  return { loaded: true, path, policy: JSON.parse(readFileSync(path, "utf8")) as Partial<DiscordAuthPolicy> };
 }
 
 function normalizeGuild(guild: DiscordAuthGuildConfig): DiscordAuthGuildConfig {
@@ -55,55 +82,151 @@ function normalizeGuild(guild: DiscordAuthGuildConfig): DiscordAuthGuildConfig {
   };
 }
 
-function ensureFallbackGuilds(policy: DiscordAuthPolicy): DiscordAuthPolicy {
-  const fallbackIds = Array.from(
-    new Set([...policy.defaultFallbackGuildIds, ...config.discordAuthDefaultFallbackGuildIds].map((value) => value.trim()).filter(Boolean))
-  );
-  const guilds = new Map<string, DiscordAuthGuildConfig>();
+function normalizeGuilds(inputGuilds: DiscordAuthGuildConfig[]): DiscordAuthGuildConfig[] {
+  const normalizedGuilds = new Map<string, DiscordAuthGuildConfig>();
 
-  for (const guild of policy.guilds.map(normalizeGuild)) {
-    const existing = guilds.get(guild.guildId);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(guild)) {
-      throw new Error(`Discord auth policy has duplicate guild_id with conflicting configuration: ${guild.guildId}`);
-    }
-    guilds.set(guild.guildId, guild);
-  }
-
-  for (const guildId of fallbackIds) {
-    if (!guilds.has(guildId)) {
-      guilds.set(guildId, {
-        guildId,
-        label: guildId,
-        type: "fallback",
-        grantsLogin: true,
-        syncMembers: true,
-        fallback: true,
-        unitPriority: 10,
-        rankPriority: 10,
-        permissionPriority: 50,
-        configOrder: 1000
-      });
+  for (const guild of inputGuilds.map(normalizeGuild)) {
+    if (!normalizedGuilds.has(guild.guildId)) {
+      normalizedGuilds.set(guild.guildId, guild);
     }
   }
 
+  return Array.from(normalizedGuilds.values());
+}
+
+function fallbackGuild(guildId: string, index: number): DiscordAuthGuildConfig {
   return {
-    ...policy,
-    defaultFallbackGuildIds: fallbackIds,
-    guilds: Array.from(guilds.values())
+    guildId,
+    label: guildId,
+    type: "fallback",
+    grantsLogin: true,
+    syncMembers: true,
+    fallback: true,
+    unitPriority: 10,
+    rankPriority: 10,
+    permissionPriority: 50,
+    configOrder: 1000 + index
   };
 }
 
-export function getDiscordAuthPolicy(): DiscordAuthPolicy {
-  const filePolicy = readPolicyFile();
+function uniqueIds(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function compareGuilds(a: DiscordAuthGuildConfig, b: DiscordAuthGuildConfig): number {
+  return (
+    b.unitPriority - a.unitPriority ||
+    b.rankPriority - a.rankPriority ||
+    b.permissionPriority - a.permissionPriority ||
+    a.configOrder - b.configOrder ||
+    (a.label ?? a.guildId).localeCompare(b.label ?? b.guildId)
+  );
+}
+
+export function resolveDiscordAuthPolicy(
+  filePolicy: Partial<DiscordAuthPolicy>,
+  options: DiscordAuthPolicyResolutionOptions
+): DiscordAuthPolicyDetails {
   const parsed = discordAuthPolicySchema.parse({
     version: 1,
     ...filePolicy,
-    defaultFallbackGuildIds: filePolicy.defaultFallbackGuildIds ?? config.discordAuthDefaultFallbackGuildIds
+    defaultFallbackGuildIds: filePolicy.defaultFallbackGuildIds ?? []
   });
+  const fileGuilds = normalizeGuilds(parsed.guilds).sort(compareGuilds);
+  const fileLoginGuildIds = uniqueIds(fileGuilds.filter((guild) => guild.grantsLogin).map((guild) => guild.guildId));
+  const filePolicyWithNormalizedGuilds = {
+    ...parsed,
+    defaultFallbackGuildIds: uniqueIds(parsed.defaultFallbackGuildIds),
+    guilds: fileGuilds
+  };
+  const fallbackGuildIds = uniqueIds([
+    ...filePolicyWithNormalizedGuilds.defaultFallbackGuildIds,
+    ...options.defaultFallbackGuildIds
+  ]);
 
-  return ensureFallbackGuilds(parsed);
+  if (!options.authEnabled) {
+    return {
+      policy: filePolicyWithNormalizedGuilds,
+      source: "none",
+      configPath: options.configPath,
+      configuredLoginGuildIds: [],
+      fallbackGuildIds,
+      fallbackAllowed: options.allowFallbackGuildIds,
+      requireConfigFile: options.requireConfigFile
+    };
+  }
+
+  if (options.configFileLoaded && fileLoginGuildIds.length > 0) {
+    return {
+      policy: filePolicyWithNormalizedGuilds,
+      source: "config-file",
+      configPath: options.configPath,
+      configuredLoginGuildIds: fileLoginGuildIds,
+      fallbackGuildIds,
+      fallbackAllowed: options.allowFallbackGuildIds,
+      requireConfigFile: options.requireConfigFile
+    };
+  }
+
+  if (options.requireConfigFile) {
+    const reason = options.configFileLoaded ? "no login guilds were loaded" : "the config file was not found";
+    throw new DiscordAuthPolicyError(`Discord auth config file is required but ${reason}.`);
+  }
+
+  if (options.allowFallbackGuildIds && fallbackGuildIds.length > 0) {
+    const fileGuildIds = new Set(filePolicyWithNormalizedGuilds.guilds.map((guild) => guild.guildId));
+    const guilds = [
+      ...filePolicyWithNormalizedGuilds.guilds,
+      ...fallbackGuildIds.filter((guildId) => !fileGuildIds.has(guildId)).map(fallbackGuild)
+    ].sort(compareGuilds);
+
+    return {
+      policy: {
+        ...filePolicyWithNormalizedGuilds,
+        defaultFallbackGuildIds: fallbackGuildIds,
+        guilds
+      },
+      source: "fallback-env",
+      configPath: options.configPath,
+      configuredLoginGuildIds: fallbackGuildIds,
+      fallbackGuildIds,
+      fallbackAllowed: options.allowFallbackGuildIds,
+      requireConfigFile: options.requireConfigFile
+    };
+  }
+
+  return {
+    policy: filePolicyWithNormalizedGuilds,
+    source: "none",
+    configPath: options.configPath,
+    configuredLoginGuildIds: [],
+    fallbackGuildIds,
+    fallbackAllowed: options.allowFallbackGuildIds,
+    requireConfigFile: options.requireConfigFile
+  };
+}
+
+export function getDiscordAuthPolicyDetails(): DiscordAuthPolicyDetails {
+  const file = readPolicyFile();
+
+  return resolveDiscordAuthPolicy(file.policy, {
+    authEnabled: config.discordAuthEnabled,
+    configPath: file.path ?? config.discordAuthConfigPath,
+    configFileLoaded: file.loaded,
+    defaultFallbackGuildIds: config.discordAuthDefaultFallbackGuildIds,
+    allowFallbackGuildIds: config.discordAuthAllowFallbackGuildIds,
+    requireConfigFile: config.discordAuthRequireConfigFile
+  });
+}
+
+export function getDiscordAuthPolicy(): DiscordAuthPolicy {
+  return getDiscordAuthPolicyDetails().policy;
 }
 
 export function getAuthGuilds(): DiscordAuthGuildConfig[] {
   return getDiscordAuthPolicy().guilds;
+}
+
+export function getLoginGrantGuildIds(): string[] {
+  return getDiscordAuthPolicyDetails().configuredLoginGuildIds;
 }

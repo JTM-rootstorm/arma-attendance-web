@@ -30,6 +30,16 @@ const envSchema = z.object({
     .default(false),
   DISCORD_AUTH_CONFIG_PATH: z.string().optional(),
   DISCORD_AUTH_DEFAULT_FALLBACK_GUILD_IDS: z.string().default("1478100812818550845"),
+  DISCORD_AUTH_ALLOW_FALLBACK_GUILD_IDS: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(false),
+  DISCORD_AUTH_REQUIRE_CONFIG_FILE: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .or(z.boolean())
+    .default(true),
   DISCORD_AUTH_RECONCILE_ON_LOGIN: z
     .enum(["true", "false"])
     .transform((value) => value === "true")
@@ -141,6 +151,8 @@ export const config = {
   discordAuthDefaultFallbackGuildIds: env.DISCORD_AUTH_DEFAULT_FALLBACK_GUILD_IDS.split(",")
     .map((value) => value.trim())
     .filter((value) => value.length > 0),
+  discordAuthAllowFallbackGuildIds: env.DISCORD_AUTH_ALLOW_FALLBACK_GUILD_IDS,
+  discordAuthRequireConfigFile: env.DISCORD_AUTH_REQUIRE_CONFIG_FILE,
   discordAuthReconcileOnLogin: env.DISCORD_AUTH_RECONCILE_ON_LOGIN,
   discordAuthReconcileStaleAfterMinutes: env.DISCORD_AUTH_RECONCILE_STALE_AFTER_MINUTES,
   discordAuthAllowOAuthRefreshStorage: env.DISCORD_AUTH_ALLOW_OAUTH_REFRESH_STORAGE,

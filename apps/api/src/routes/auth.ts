@@ -28,6 +28,7 @@ import {
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
+import { DiscordAuthPolicyError, getLoginGrantGuildIds } from "../config/discordAuth.js";
 import {
   DiscordRateLimitError,
   fetchCurrentUserGuildMember,
@@ -35,7 +36,6 @@ import {
   type DiscordOAuthToken
 } from "../discord/client.js";
 import {
-  getLoginGrantGuildIdsFromDb,
   reconcileDiscordMembership,
   upsertDiscordMemberSnapshot
 } from "../discord/membershipResolver.js";
@@ -664,7 +664,16 @@ async function fetchDiscordLoginGuildMemberships(
     return [];
   }
 
-  const guildIds = await getLoginGrantGuildIdsFromDb();
+  const guildIds = getLoginGrantGuildIds();
+
+  if (guildIds.length === 0) {
+    if (config.discordAuthRequireGuild) {
+      throw new DiscordAuthPolicyError("No Discord login guilds are configured.");
+    }
+
+    return [];
+  }
+
   const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
 
   for (const guildId of guildIds) {
@@ -1156,6 +1165,16 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           error: {
             code: "discord_profile_fetch_failed",
             message: "Discord profile fetch failed."
+          }
+        });
+      }
+
+      if (error instanceof DiscordAuthPolicyError) {
+        return reply.code(503).send({
+          ok: false,
+          error: {
+            code: "discord_auth_policy_unavailable",
+            message: "Discord auth policy is not configured."
           }
         });
       }

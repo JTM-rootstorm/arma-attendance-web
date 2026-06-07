@@ -43,6 +43,7 @@
     "smoke:discord": "bash scripts/discord-smoke.sh",
     "smoke:discord-bot-assignment": "node scripts/smoke-discord-bot-assignment.mjs",
     "smoke:discord-auth-policy": "bash scripts/discord-auth-policy-smoke.sh",
+    "smoke:discord-auth-policy-loader": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/discord-auth-policy-loader-smoke.ts",
     "smoke:auth": "bash scripts/auth-smoke.sh",
     "smoke:rbac": "bash scripts/rbac-smoke.sh",
     "release:check": "bash scripts/release-check.sh"

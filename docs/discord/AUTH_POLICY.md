@@ -1,10 +1,20 @@
 # Discord Auth Policy
 
-Discord login can be gated by membership in one or more approved guilds. Set `DISCORD_AUTH_ENABLED=true` and manage runtime policy in `discord_guilds`; rows with `grants_login = true` are the login source of truth.
+Discord login can be gated by membership in one or more approved guilds. Set `DISCORD_AUTH_ENABLED=true` and point `DISCORD_AUTH_CONFIG_PATH` at a JSON policy file based on `config/discord-guild-auth.example.json`; guilds with `grantsLogin = true` in that file are the login source of truth.
 
-`DISCORD_AUTH_CONFIG_PATH` can point at a JSON seed file based on `config/discord-guild-auth.example.json`. Run `POST /v1/discord/auth-policy/sync` to seed the database from that file. GET policy reads do not mutate the database, and OAuth login does not merge file policy with DB policy.
+Production should use explicit config only:
 
-The login OAuth scope is `identify guilds.members.read`. At callback time the API checks each DB guild with `grants_login = true` sequentially and stores a member-role snapshot for any guild the user belongs to. Short Discord `429` responses are retried once; if Discord still rate-limits the lookup and a recent member snapshot exists, the API uses that cached snapshot and defers live refresh until a later login or sync.
+```env
+DISCORD_AUTH_CONFIG_PATH=/opt/arma-attendance/discord-guild-auth.json
+DISCORD_AUTH_ALLOW_FALLBACK_GUILD_IDS=false
+DISCORD_AUTH_REQUIRE_CONFIG_FILE=true
+```
+
+Fallback guild IDs from `DISCORD_AUTH_DEFAULT_FALLBACK_GUILD_IDS` are used only when `DISCORD_AUTH_REQUIRE_CONFIG_FILE=false` and `DISCORD_AUTH_ALLOW_FALLBACK_GUILD_IDS=true`. If a config file is present but has no login-enabled guilds, production startup/login fails clearly instead of silently expanding to fallback guilds.
+
+Run `POST /v1/discord/auth-policy/sync` to seed the database from the active file policy for admin views, role mappings, and reconciliation. GET policy reads do not mutate the database, and OAuth login does not merge file policy with DB policy or stale DB rows.
+
+The login OAuth scope is `identify guilds.members.read`. At callback time the API checks each configured login guild sequentially and stores a member-role snapshot for any guild the user belongs to. Short Discord `429` responses are retried once; if Discord still rate-limits the lookup and a recent member snapshot exists, the API uses that cached snapshot and defers live refresh until a later login or sync.
 
 Role mappings are managed through the Discord admin API:
 
