@@ -9,6 +9,7 @@
       "grantsLogin": true,
       "syncMembers": true,
       "fallback": true,
+      "displayNamePriority": 10,
       "unitPriority": 10,
       "rankPriority": 10,
       "permissionPriority": 50,
@@ -21,12 +22,18 @@
       "grantsLogin": true,
       "syncMembers": true,
       "fallback": false,
+      "displayNamePriority": 20,
       "unitPriority": 100,
       "rankPriority": 100,
       "permissionPriority": 20,
       "configOrder": 100
     }
   ],
+  "displayName": {
+    "preferGuildNick": true,
+    "guildOrder": "priority_then_file_order",
+    "fallback": ["global_name", "username", "discord_id"]
+  },
   "tieBreakers": ["guildPriority", "mappingPriority", "rolePosition", "configOrder"],
   "denyRoleBehavior": "deny_login_overrides_all",
   "permissions": {

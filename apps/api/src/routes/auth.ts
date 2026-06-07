@@ -28,13 +28,22 @@ import {
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
-import { DiscordAuthPolicyError, getLoginGrantGuildIds } from "../config/discordAuth.js";
+import {
+  DiscordAuthPolicyError,
+  getDiscordDisplayNamePolicy,
+  getLoginGrantGuildIds,
+  getLoginGuildDisplayNameOrder
+} from "../config/discordAuth.js";
 import {
   DiscordRateLimitError,
   fetchCurrentUserGuildMember,
   type DiscordCurrentGuildMember,
   type DiscordOAuthToken
 } from "../discord/client.js";
+import {
+  choosePreferredDiscordDisplayName,
+  type PreferredDiscordDisplayName
+} from "../discord/displayName.js";
 import {
   reconcileDiscordMembership,
   upsertDiscordMemberSnapshot
@@ -718,9 +727,25 @@ function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
   });
 }
 
-async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Promise<string> {
-  const displayName = profile.global_name ?? profile.username ?? `Discord ${profile.id}`;
+async function upsertDiscordUser(
+  tx: DbTransaction,
+  profile: DiscordProfile,
+  preferredName?: PreferredDiscordDisplayName
+): Promise<string> {
+  const displayName = preferredName?.displayName ?? profile.global_name ?? profile.username ?? `Discord ${profile.id}`;
   const avatarUrl = discordAvatarUrl(profile);
+  const rawProfile = {
+    ...profile,
+    ...(preferredName
+      ? {
+          preferred_display_name: {
+            display_name: preferredName.displayName,
+            source: preferredName.source,
+            guild_id: preferredName.guildId
+          }
+        }
+      : {})
+  };
   const existingIdentity = await tx.query<UserIdentityRow>(
     "SELECT user_id FROM user_identities WHERE provider = 'discord' AND provider_user_id = $1",
     [profile.id]
@@ -742,7 +767,7 @@ async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Pr
       SET display_name = $3, avatar_url = $4, raw_profile = $5::jsonb, last_seen_at = now()
       WHERE provider = 'discord' AND provider_user_id = $1 AND user_id = $2
       `,
-      [profile.id, existingUserId, displayName, avatarUrl, JSON.stringify(profile)]
+      [profile.id, existingUserId, displayName, avatarUrl, JSON.stringify(rawProfile)]
     );
     await ensureAuthenticatedUserRosterEntry(tx, existingUserId);
     return existingUserId;
@@ -767,7 +792,7 @@ async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Pr
     INSERT INTO user_identities (user_id, provider, provider_user_id, display_name, avatar_url, raw_profile)
     VALUES ($1, 'discord', $2, $3, $4, $5::jsonb)
     `,
-    [userId, profile.id, displayName, avatarUrl, JSON.stringify(profile)]
+    [userId, profile.id, displayName, avatarUrl, JSON.stringify(rawProfile)]
   );
 
   await ensureAuthenticatedUserRosterEntry(tx, userId);
@@ -862,7 +887,13 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     VALUES ($1, $2, $3::jsonb)
     ON CONFLICT (player_uid) DO UPDATE
     SET
-      last_name = COALESCE(players.last_name, EXCLUDED.last_name),
+      last_name = CASE
+        WHEN players.raw_last_player->>'source' = 'auth'
+          OR players.last_name IS NULL
+          OR btrim(players.last_name) = ''
+        THEN EXCLUDED.last_name
+        ELSE players.last_name
+      END,
       deleted_at = NULL,
       updated_at = now()
     `,
@@ -892,7 +923,13 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     VALUES ($1, $2, $3, 'auth-default')
     ON CONFLICT (unit_id, player_uid) DO UPDATE
     SET
-      roster_name = COALESCE(unit_players.roster_name, EXCLUDED.roster_name),
+      roster_name = CASE
+        WHEN unit_players.roster_name IS NULL
+          OR btrim(unit_players.roster_name) = ''
+          OR unit_players.assignment_source IN ('auth', 'auth-default')
+        THEN EXCLUDED.roster_name
+        ELSE unit_players.roster_name
+      END,
       is_active = true,
       assignment_source = CASE
         WHEN unit_players.assignment_source = 'manual' THEN unit_players.assignment_source
@@ -918,7 +955,13 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
           WHEN player_discord_links.source = 'auth' THEN EXCLUDED.player_uid
           ELSE player_discord_links.player_uid
         END,
-        discord_display_name = COALESCE(EXCLUDED.discord_display_name, player_discord_links.discord_display_name),
+        discord_display_name = CASE
+          WHEN player_discord_links.source = 'auth'
+            OR player_discord_links.discord_display_name IS NULL
+            OR btrim(player_discord_links.discord_display_name) = ''
+          THEN EXCLUDED.discord_display_name
+          ELSE player_discord_links.discord_display_name
+        END,
         source = CASE
           WHEN player_discord_links.source = 'auth' THEN EXCLUDED.source
           ELSE player_discord_links.source
@@ -1092,13 +1135,28 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const token = await exchangeDiscordCode(parsedQuery.data.code);
       const profile = await fetchDiscordProfile(token);
       const memberships = await fetchDiscordLoginGuildMemberships(token, profile.id, request);
+      const preferredName = choosePreferredDiscordDisplayName({
+        profile,
+        memberships,
+        policy: getDiscordDisplayNamePolicy(),
+        guildOrder: getLoginGuildDisplayNameOrder()
+      });
 
       if (config.discordAuthEnabled && config.discordAuthRequireGuild && memberships.length === 0) {
         return sendDiscordGuildMembershipRequired(reply);
       }
 
+      request.log.info(
+        {
+          discordUserId: profile.id,
+          preferredDisplayNameSource: preferredName.source,
+          preferredDisplayNameGuildId: preferredName.guildId
+        },
+        "Selected Discord display name"
+      );
+
       const userId = await withDbTransaction(async (tx) => {
-        const nextUserId = await upsertDiscordUser(tx, profile);
+        const nextUserId = await upsertDiscordUser(tx, profile, preferredName);
         await applyInitialAdminFallback(tx, nextUserId, profile.id, request);
         return nextUserId;
       });

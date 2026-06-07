@@ -12,6 +12,8 @@ DISCORD_AUTH_REQUIRE_CONFIG_FILE=true
 
 Fallback guild IDs from `DISCORD_AUTH_DEFAULT_FALLBACK_GUILD_IDS` are used only when `DISCORD_AUTH_REQUIRE_CONFIG_FILE=false` and `DISCORD_AUTH_ALLOW_FALLBACK_GUILD_IDS=true`. If a config file is present but has no login-enabled guilds, production startup/login fails clearly instead of silently expanding to fallback guilds.
 
+Discord display names are also selected from the active login guild policy. Set `displayName.preferGuildNick=true` and use each guild's `displayNamePriority` to prefer one configured guild nickname over another; if no configured guild nickname is available, the API falls back to the global Discord name, username, then Discord ID. This selected name updates auth-managed user/player/link display fields, but manually curated roster names are preserved.
+
 Run `POST /v1/discord/auth-policy/sync` to seed the database from the active file policy for admin views, role mappings, and reconciliation. GET policy reads do not mutate the database, and OAuth login does not merge file policy with DB policy or stale DB rows.
 
 The login OAuth scope is `identify guilds.members.read`. At callback time the API checks each configured login guild sequentially and stores a member-role snapshot for any guild the user belongs to. Short Discord `429` responses are retried once; if Discord still rate-limits the lookup and a recent member snapshot exists, the API uses that cached snapshot and defers live refresh until a later login or sync.
