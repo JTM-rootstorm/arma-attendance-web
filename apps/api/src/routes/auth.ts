@@ -48,7 +48,6 @@ import {
   reconcileDiscordMembership,
   upsertDiscordMemberSnapshot
 } from "../discord/membershipResolver.js";
-import { resolveDiscordLinkedPlayerUid } from "../discord/playerAssignment.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
@@ -1011,7 +1010,7 @@ function getAuthPlayerUid(identity: AuthIdentityRow): string {
   return `discord:${identity.provider_user_id}`;
 }
 
-async function resolveAuthPlayerUid(tx: DbTransaction, identities: AuthIdentityRow[]): Promise<string | null> {
+async function resolveAuthPlayerUid(identities: AuthIdentityRow[]): Promise<string | null> {
   const steamIdentity = identities.find((identity) => identity.provider === "steam");
 
   if (steamIdentity) {
@@ -1024,7 +1023,13 @@ async function resolveAuthPlayerUid(tx: DbTransaction, identities: AuthIdentityR
     return null;
   }
 
-  return (await resolveDiscordLinkedPlayerUid(tx, discordIdentity.provider_user_id)) ?? getAuthPlayerUid(discordIdentity);
+  const rows = await getDrizzleDb()
+    .select({ player_uid: playerDiscordLinks.playerUid })
+    .from(playerDiscordLinks)
+    .where(eq(playerDiscordLinks.discordUserId, discordIdentity.provider_user_id))
+    .limit(1);
+
+  return rows[0]?.player_uid ?? getAuthPlayerUid(discordIdentity);
 }
 
 function getAuthPlayerDisplayName(identities: AuthIdentityRow[], user: AuthUserProfileRow, chosenIdentity: AuthIdentityRow): string {
@@ -1064,7 +1069,7 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     return null;
   }
 
-  const playerUid = await resolveAuthPlayerUid(tx, identities);
+  const playerUid = await resolveAuthPlayerUid(identities);
 
   if (!playerUid) {
     return null;

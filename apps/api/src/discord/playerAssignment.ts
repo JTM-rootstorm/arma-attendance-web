@@ -1,4 +1,12 @@
-import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+
+import { getDrizzleDb } from "../db/drizzle.js";
+import { discordAssignmentAudits, playerDiscordLinks } from "../db/schema/discord.js";
+import { players } from "../db/schema/players.js";
+import { unitPlayers, units } from "../db/schema/units.js";
+
+type DrizzleDb = ReturnType<typeof getDrizzleDb>;
+type DrizzleTransaction = Parameters<Parameters<DrizzleDb["transaction"]>[0]>[0];
 
 type RosterStatus = "active" | "reserve" | "loa" | "inactive";
 type IdentifierUsed = "player_uid" | "discord_user_id";
@@ -133,102 +141,116 @@ function placeholderUid(discordUserId: string): string {
   return `discord:${discordUserId}`;
 }
 
-async function findPlayer(tx: DbTransaction, playerUid: string): Promise<PlayerRow | null> {
-  const result = await tx.query<PlayerRow>(
-    "SELECT player_uid, last_name FROM players WHERE player_uid = $1 AND deleted_at IS NULL",
-    [playerUid]
-  );
-  return result.rows[0] ?? null;
+const assignmentReturning = {
+  unit_id: sql<string>`${unitPlayers.unitId}::text`,
+  player_uid: unitPlayers.playerUid,
+  rank: unitPlayers.rank,
+  roster_name: unitPlayers.rosterName,
+  is_active: unitPlayers.isActive,
+  roster_status: unitPlayers.rosterStatus,
+  assignment_source: unitPlayers.assignmentSource,
+  assignment_priority: unitPlayers.assignmentPriority,
+  rank_id: sql<string | null>`${unitPlayers.rankId}::text`,
+  source_guild_id: unitPlayers.sourceGuildId,
+  source_role_id: unitPlayers.sourceRoleId
+};
+
+const linkReturning = {
+  player_uid: playerDiscordLinks.playerUid,
+  discord_user_id: playerDiscordLinks.discordUserId,
+  discord_username: playerDiscordLinks.discordUsername,
+  discord_display_name: playerDiscordLinks.discordDisplayName,
+  source: playerDiscordLinks.source,
+  verified_at: playerDiscordLinks.verifiedAt
+};
+
+async function findPlayer(tx: DrizzleTransaction, playerUid: string): Promise<PlayerRow | null> {
+  const rows = await tx
+    .select({
+      player_uid: players.playerUid,
+      last_name: players.lastName
+    })
+    .from(players)
+    .where(and(eq(players.playerUid, playerUid), isNull(players.deletedAt)))
+    .limit(1);
+
+  return rows[0] ?? null;
 }
 
-async function findLink(tx: DbTransaction, discordUserId: string): Promise<LinkRow | null> {
-  const result = await tx.query<LinkRow>(
-    `
-    SELECT player_uid, discord_user_id, discord_username, discord_display_name, source, verified_at
-    FROM player_discord_links
-    WHERE discord_user_id = $1
-    LIMIT 1
-    `,
-    [discordUserId]
-  );
-  return result.rows[0] ?? null;
+async function findLink(tx: DrizzleTransaction, discordUserId: string): Promise<LinkRow | null> {
+  const rows = await tx
+    .select(linkReturning)
+    .from(playerDiscordLinks)
+    .where(eq(playerDiscordLinks.discordUserId, discordUserId))
+    .limit(1);
+
+  return rows[0] ?? null;
 }
 
-async function upsertPlayer(tx: DbTransaction, playerUid: string, displayName: string, input: ResolveDiscordPlayerInput): Promise<void> {
-  await tx.query(
-    `
-    INSERT INTO players (player_uid, last_name, raw_last_player)
-    VALUES ($1, $2, $3::jsonb)
-    ON CONFLICT (player_uid) DO UPDATE
-    SET
-      last_name = COALESCE(players.last_name, EXCLUDED.last_name),
-      deleted_at = NULL,
-      updated_at = now()
-    `,
-    [
+async function upsertPlayer(tx: DrizzleTransaction, playerUid: string, displayName: string, input: ResolveDiscordPlayerInput): Promise<void> {
+  await tx
+    .insert(players)
+    .values({
       playerUid,
-      displayName,
-      JSON.stringify({
+      lastName: displayName,
+      rawLastPlayer: {
         source: "discord_bot",
         discord_user_id: input.discordUserId ?? null,
         guild_id: input.guildId ?? null,
         role_id: input.roleId ?? null,
         raw_member: input.rawMember ?? {},
         created_by: "bot_assignment"
-      })
-    ]
-  );
+      }
+    })
+    .onConflictDoUpdate({
+      target: players.playerUid,
+      set: {
+        lastName: sql`COALESCE(${players.lastName}, excluded.last_name)`,
+        deletedAt: null,
+        updatedAt: sql`now()`
+      }
+    });
 }
 
-async function upsertLink(tx: DbTransaction, playerUid: string, input: ResolveDiscordPlayerInput): Promise<LinkRow | null> {
+async function upsertLink(tx: DrizzleTransaction, playerUid: string, input: ResolveDiscordPlayerInput): Promise<LinkRow | null> {
   if (!input.discordUserId) {
     return null;
   }
 
-  const result = await tx.query<LinkRow>(
-    `
-    INSERT INTO player_discord_links (
-      player_uid,
-      discord_user_id,
-      discord_username,
-      discord_display_name,
-      source,
-      verified_at,
-      raw_link
-    )
-    VALUES ($1, $2, $3, $4, 'bot', NULL, $5::jsonb)
-    ON CONFLICT (discord_user_id) DO UPDATE
-    SET
-      player_uid = EXCLUDED.player_uid,
-      discord_username = COALESCE(EXCLUDED.discord_username, player_discord_links.discord_username),
-      discord_display_name = COALESCE(EXCLUDED.discord_display_name, player_discord_links.discord_display_name),
-      source = CASE
-        WHEN player_discord_links.source = 'manual' THEN player_discord_links.source
-        ELSE EXCLUDED.source
-      END,
-      raw_link = EXCLUDED.raw_link,
-      updated_at = now()
-    RETURNING player_uid, discord_user_id, discord_username, discord_display_name, source, verified_at
-    `,
-    [
+  const rows = await tx
+    .insert(playerDiscordLinks)
+    .values({
       playerUid,
-      input.discordUserId,
-      input.discordUsername ?? null,
-      input.discordDisplayName ?? input.nick ?? null,
-      JSON.stringify({
+      discordUserId: input.discordUserId,
+      discordUsername: input.discordUsername ?? null,
+      discordDisplayName: input.discordDisplayName ?? input.nick ?? null,
+      source: "bot",
+      verifiedAt: null,
+      rawLink: {
         source: "discord_bot",
         guild_id: input.guildId ?? null,
         role_id: input.roleId ?? null,
         raw_member: input.rawMember ?? {}
-      })
-    ]
-  );
+      }
+    })
+    .onConflictDoUpdate({
+      target: playerDiscordLinks.discordUserId,
+      set: {
+        playerUid: sql`excluded.player_uid`,
+        discordUsername: sql`COALESCE(excluded.discord_username, ${playerDiscordLinks.discordUsername})`,
+        discordDisplayName: sql`COALESCE(excluded.discord_display_name, ${playerDiscordLinks.discordDisplayName})`,
+        source: sql`CASE WHEN ${playerDiscordLinks.source} = 'manual' THEN ${playerDiscordLinks.source} ELSE excluded.source END`,
+        rawLink: sql`excluded.raw_link`,
+        updatedAt: sql`now()`
+      }
+    })
+    .returning(linkReturning);
 
-  return result.rows[0] ?? null;
+  return rows[0] ?? null;
 }
 
 async function resolveOrCreateDiscordLinkedPlayerInTransaction(
-  tx: DbTransaction,
+  tx: DrizzleTransaction,
   input: ResolveDiscordPlayerInput,
   dryRun: boolean
 ): Promise<ResolvedDiscordPlayer> {
@@ -274,37 +296,41 @@ async function resolveOrCreateDiscordLinkedPlayerInTransaction(
 }
 
 export async function resolveOrCreateDiscordLinkedPlayer(input: ResolveDiscordPlayerInput): Promise<ResolvedDiscordPlayer> {
-  return withDbTransaction((tx) => resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, false));
-}
-
-export async function resolveDiscordLinkedPlayerUid(tx: DbTransaction, discordUserId: string): Promise<string | null> {
-  const link = await findLink(tx, discordUserId);
-  return link?.player_uid ?? null;
+  return getDrizzleDb().transaction((tx) => resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, false));
 }
 
 export async function ensureDiscordLinkedPlayerForTransaction(
-  tx: DbTransaction,
+  tx: DrizzleTransaction,
   input: ResolveDiscordPlayerInput
 ): Promise<ResolvedDiscordPlayer> {
   return resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, false);
 }
 
-async function resolveUnit(tx: DbTransaction, input: DiscordBotUnitAssignmentInput): Promise<UnitRow> {
-  const result = await tx.query<UnitRow>(
-    `
-    SELECT id::text, unit_key
-    FROM units
-    WHERE deleted_at IS NULL
-      AND (
-        ($1::uuid IS NOT NULL AND id = $1::uuid)
-        OR ($2::text IS NOT NULL AND unit_key = $2::text)
-      )
-    ORDER BY CASE WHEN $1::uuid IS NOT NULL AND id = $1::uuid THEN 0 ELSE 1 END
-    LIMIT 1
-    `,
-    [input.unitId ?? null, input.unitKey ?? null]
-  );
-  const unit = result.rows[0];
+async function resolveUnit(tx: DrizzleTransaction, input: DiscordBotUnitAssignmentInput): Promise<UnitRow> {
+  const lookupCondition =
+    input.unitId && input.unitKey
+      ? or(eq(units.id, input.unitId), eq(units.unitKey, input.unitKey))
+      : input.unitId
+        ? eq(units.id, input.unitId)
+        : input.unitKey
+          ? eq(units.unitKey, input.unitKey)
+          : null;
+
+  if (!lookupCondition) {
+    throw new DiscordPlayerAssignmentError("unit_not_found", "Unit was not found.", 404);
+  }
+
+  const rows = await tx
+    .select({
+      id: sql<string>`${units.id}::text`,
+      unit_key: units.unitKey
+    })
+    .from(units)
+    .where(and(isNull(units.deletedAt), lookupCondition))
+    .orderBy(input.unitId ? sql`CASE WHEN ${units.id} = ${input.unitId}::uuid THEN 0 ELSE 1 END` : asc(units.unitKey))
+    .limit(1);
+
+  const unit = rows[0];
 
   if (!unit) {
     throw new DiscordPlayerAssignmentError("unit_not_found", "Unit was not found.", 404);
@@ -313,200 +339,122 @@ async function resolveUnit(tx: DbTransaction, input: DiscordBotUnitAssignmentInp
   return unit;
 }
 
-async function findLockedAssignment(tx: DbTransaction, playerUid: string): Promise<LockedAssignmentRow | null> {
-  const result = await tx.query<LockedAssignmentRow>(
-    `
-    SELECT unit_id::text, roster_status, assignment_source
-    FROM unit_players
-    WHERE player_uid = $1
-      AND assignment_locked = true
-      AND is_active = true
-      AND roster_status <> 'inactive'
-    LIMIT 1
-    `,
-    [playerUid]
-  );
+async function findLockedAssignment(tx: DrizzleTransaction, playerUid: string): Promise<LockedAssignmentRow | null> {
+  const rows = await tx
+    .select({
+      unit_id: sql<string>`${unitPlayers.unitId}::text`,
+      roster_status: unitPlayers.rosterStatus,
+      assignment_source: unitPlayers.assignmentSource
+    })
+    .from(unitPlayers)
+    .where(
+      and(
+        eq(unitPlayers.playerUid, playerUid),
+        eq(unitPlayers.assignmentLocked, true),
+        eq(unitPlayers.isActive, true),
+        ne(unitPlayers.rosterStatus, "inactive")
+      )
+    )
+    .limit(1);
 
-  return result.rows[0] ?? null;
+  return rows[0] ?? null;
 }
 
-async function findCurrentAssignment(tx: DbTransaction, playerUid: string): Promise<AssignmentRow | null> {
-  const result = await tx.query<AssignmentRow>(
-    `
-    SELECT
-      unit_id::text,
-      player_uid,
-      rank,
-      roster_name,
-      is_active,
-      roster_status,
-      assignment_source,
-      assignment_priority,
-      rank_id::text,
-      source_guild_id,
-      source_role_id
-    FROM unit_players
-    WHERE player_uid = $1
-      AND is_active = true
-      AND roster_status <> 'inactive'
-    ORDER BY CASE WHEN assignment_source = 'discord' THEN 0 ELSE 1 END, updated_at DESC
-    LIMIT 1
-    `,
-    [playerUid]
-  );
+async function findCurrentAssignment(tx: DrizzleTransaction, playerUid: string): Promise<AssignmentRow | null> {
+  const rows = await tx
+    .select(assignmentReturning)
+    .from(unitPlayers)
+    .where(and(eq(unitPlayers.playerUid, playerUid), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive")))
+    .orderBy(sql`CASE WHEN ${unitPlayers.assignmentSource} = 'discord' THEN 0 ELSE 1 END`, desc(unitPlayers.updatedAt))
+    .limit(1);
 
-  return result.rows[0] ?? null;
+  return rows[0] ?? null;
 }
 
 async function auditAssignment(
-  tx: DbTransaction,
+  tx: DrizzleTransaction,
   input: DiscordBotUnitAssignmentInput,
   playerUid: string,
   action: "apply" | "skip",
   previousValue: unknown,
   nextValue: unknown
 ): Promise<void> {
-  await tx.query(
-    `
-    INSERT INTO discord_assignment_audits (
-      user_id,
-      player_uid,
-      discord_user_id,
-      action,
-      field,
-      previous_value,
-      next_value,
-      winning_claim,
-      ignored_claims,
-      source
-    )
-    VALUES (NULL, $1, $2, $3, 'unit_primary', $4::jsonb, $5::jsonb, $6::jsonb, '[]'::jsonb, 'bot_assignment')
-    `,
-    [
-      playerUid,
-      input.discordUserId ?? null,
-      action,
-      JSON.stringify(previousValue ?? null),
-      JSON.stringify(nextValue ?? null),
-      JSON.stringify({
-        source: "direct_bot_assignment",
-        guild_id: input.guildId ?? null,
-        role_id: input.roleId ?? null,
-        assignment_priority: input.assignmentPriority ?? 0,
-        input_identifier: input.playerUid ? "player_uid" : "discord_user_id"
-      })
-    ]
-  );
+  await tx.insert(discordAssignmentAudits).values({
+    userId: null,
+    playerUid,
+    discordUserId: input.discordUserId ?? null,
+    action,
+    field: "unit_primary",
+    previousValue: (previousValue ?? null) as Record<string, unknown> | null,
+    nextValue: (nextValue ?? null) as Record<string, unknown> | null,
+    winningClaim: {
+      source: "direct_bot_assignment",
+      guild_id: input.guildId ?? null,
+      role_id: input.roleId ?? null,
+      assignment_priority: input.assignmentPriority ?? 0,
+      input_identifier: input.playerUid ? "player_uid" : "discord_user_id"
+    },
+    ignoredClaims: [],
+    source: "bot_assignment"
+  });
 }
 
 async function upsertAssignment(
-  tx: DbTransaction,
+  tx: DrizzleTransaction,
   input: DiscordBotUnitAssignmentInput,
   unitId: string,
   playerUid: string
 ): Promise<AssignmentRow> {
   const rank = input.rankId ? null : input.rank ?? null;
   const rosterName = input.rosterName ?? input.nick ?? input.discordDisplayName ?? null;
-  const result = await tx.query<AssignmentRow>(
-    `
-    INSERT INTO unit_players (
-      unit_id,
-      player_uid,
-      rank,
-      roster_name,
-      is_active,
-      roster_status,
-      joined_unit_at,
-      assignment_source,
-      assignment_priority,
-      rank_id,
-      source_guild_id,
-      source_role_id
-    )
-    VALUES (
-      $1::uuid,
-      $2,
-      $3,
-      $4,
-      $5,
-      $6,
-      now(),
-      'discord',
-      $7,
-      $8::uuid,
-      $9,
-      $10
-    )
-    ON CONFLICT (unit_id, player_uid) DO UPDATE
-    SET
-      rank = COALESCE(EXCLUDED.rank, unit_players.rank),
-      roster_name = COALESCE(EXCLUDED.roster_name, unit_players.roster_name),
-      is_active = EXCLUDED.is_active,
-      roster_status = EXCLUDED.roster_status,
-      assignment_source = 'discord',
-      assignment_priority = EXCLUDED.assignment_priority,
-      rank_id = COALESCE(EXCLUDED.rank_id, unit_players.rank_id),
-      source_guild_id = EXCLUDED.source_guild_id,
-      source_role_id = EXCLUDED.source_role_id,
-      left_unit_at = CASE WHEN EXCLUDED.is_active THEN NULL ELSE unit_players.left_unit_at END,
-      updated_at = now()
-    WHERE unit_players.assignment_locked = false
-      AND unit_players.assignment_source <> 'manual'
-    RETURNING
-      unit_id::text,
-      player_uid,
-      rank,
-      roster_name,
-      is_active,
-      roster_status,
-      assignment_source,
-      assignment_priority,
-      rank_id::text,
-      source_guild_id,
-      source_role_id
-    `,
-    [
+  const rows = await tx
+    .insert(unitPlayers)
+    .values({
       unitId,
       playerUid,
       rank,
       rosterName,
-      input.isActive ?? true,
-      input.rosterStatus ?? "active",
-      input.assignmentPriority ?? 0,
-      input.rankId ?? null,
-      input.guildId ?? null,
-      input.roleId ?? null
-    ]
-  );
+      isActive: input.isActive ?? true,
+      rosterStatus: input.rosterStatus ?? "active",
+      joinedUnitAt: sql`now()`,
+      assignmentSource: "discord",
+      assignmentPriority: input.assignmentPriority ?? 0,
+      rankId: input.rankId ?? null,
+      sourceGuildId: input.guildId ?? null,
+      sourceRoleId: input.roleId ?? null
+    })
+    .onConflictDoUpdate({
+      target: [unitPlayers.unitId, unitPlayers.playerUid],
+      set: {
+        rank: sql`COALESCE(excluded.rank, ${unitPlayers.rank})`,
+        rosterName: sql`COALESCE(excluded.roster_name, ${unitPlayers.rosterName})`,
+        isActive: sql`excluded.is_active`,
+        rosterStatus: sql`excluded.roster_status`,
+        assignmentSource: "discord",
+        assignmentPriority: sql`excluded.assignment_priority`,
+        rankId: sql`COALESCE(excluded.rank_id, ${unitPlayers.rankId})`,
+        sourceGuildId: sql`excluded.source_guild_id`,
+        sourceRoleId: sql`excluded.source_role_id`,
+        leftUnitAt: sql`CASE WHEN excluded.is_active THEN NULL ELSE ${unitPlayers.leftUnitAt} END`,
+        updatedAt: sql`now()`
+      },
+      setWhere: sql`${unitPlayers.assignmentLocked} = false AND ${unitPlayers.assignmentSource} <> 'manual'`
+    })
+    .returning(assignmentReturning);
 
-  const assignment = result.rows[0];
+  const assignment = rows[0];
 
   if (assignment) {
     return assignment;
   }
 
-  const existing = await tx.query<AssignmentRow>(
-    `
-    SELECT
-      unit_id::text,
-      player_uid,
-      rank,
-      roster_name,
-      is_active,
-      roster_status,
-      assignment_source,
-      assignment_priority,
-      rank_id::text,
-      source_guild_id,
-      source_role_id
-    FROM unit_players
-    WHERE unit_id = $1::uuid AND player_uid = $2
-    LIMIT 1
-    `,
-    [unitId, playerUid]
-  );
+  const existingRows = await tx
+    .select(assignmentReturning)
+    .from(unitPlayers)
+    .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.playerUid, playerUid)))
+    .limit(1);
 
-  const existingAssignment = existing.rows[0];
+  const existingAssignment = existingRows[0];
 
   if (!existingAssignment) {
     throw new Error("Discord assignment upsert returned no row.");
@@ -516,7 +464,7 @@ async function upsertAssignment(
 }
 
 export async function applyDiscordBotUnitAssignment(input: DiscordBotUnitAssignmentInput): Promise<DiscordBotUnitAssignmentResult> {
-  return withDbTransaction(async (tx) => {
+  return getDrizzleDb().transaction(async (tx) => {
     const dryRun = input.dryRun ?? false;
     const unit = await resolveUnit(tx, input);
     const player = await resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, dryRun);
@@ -551,21 +499,23 @@ export async function applyDiscordBotUnitAssignment(input: DiscordBotUnitAssignm
     }
 
     const previousAssignment = await findCurrentAssignment(tx, player.player_uid);
-    await tx.query(
-      `
-      UPDATE unit_players
-      SET is_active = false,
-          roster_status = 'inactive',
-          left_unit_at = COALESCE(left_unit_at, now()),
-          updated_at = now()
-      WHERE player_uid = $1
-        AND unit_id <> $2::uuid
-        AND assignment_source IN ('discord', 'auth-default')
-        AND assignment_locked = false
-        AND is_active = true
-      `,
-      [player.player_uid, unit.id]
-    );
+    await tx
+      .update(unitPlayers)
+      .set({
+        isActive: false,
+        rosterStatus: "inactive",
+        leftUnitAt: sql`COALESCE(${unitPlayers.leftUnitAt}, now())`,
+        updatedAt: sql`now()`
+      })
+      .where(
+        and(
+          eq(unitPlayers.playerUid, player.player_uid),
+          ne(unitPlayers.unitId, unit.id),
+          inArray(unitPlayers.assignmentSource, ["discord", "auth-default"]),
+          eq(unitPlayers.assignmentLocked, false),
+          eq(unitPlayers.isActive, true)
+        )
+      );
     const assignment = await upsertAssignment(tx, input, unit.id, player.player_uid);
 
     await auditAssignment(tx, input, player.player_uid, "apply", previousAssignment, assignment);
@@ -588,5 +538,5 @@ export async function applyDiscordBotUnitAssignment(input: DiscordBotUnitAssignm
 }
 
 export async function ensureDiscordPlaceholderPlayerForReconcile(input: ResolveDiscordPlayerInput): Promise<ResolvedDiscordPlayer> {
-  return withDbTransaction((tx) => resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, false));
+  return getDrizzleDb().transaction((tx) => resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, false));
 }
