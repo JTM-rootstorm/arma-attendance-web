@@ -4,7 +4,7 @@ Discord login can be gated by membership in one or more approved guilds. Set `DI
 
 `DISCORD_AUTH_CONFIG_PATH` can point at a JSON seed file based on `config/discord-guild-auth.example.json`. Run `POST /v1/discord/auth-policy/sync` to seed the database from that file. GET policy reads do not mutate the database, and OAuth login does not merge file policy with DB policy.
 
-The login OAuth scope is `identify guilds.members.read`. At callback time the API checks each DB guild with `grants_login = true` and stores a member-role snapshot for any guild the user belongs to.
+The login OAuth scope is `identify guilds.members.read`. At callback time the API checks each DB guild with `grants_login = true` sequentially and stores a member-role snapshot for any guild the user belongs to. Short Discord `429` responses are retried once; if Discord still rate-limits the lookup and a recent member snapshot exists, the API uses that cached snapshot and defers live refresh until a later login or sync.
 
 Role mappings are managed through the Discord admin API:
 

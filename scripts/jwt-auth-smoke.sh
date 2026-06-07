@@ -47,8 +47,58 @@ if (data.ok !== true) {
 '
 }
 
+assert_error_code() {
+  local expected_status="$1"
+  local expected_code="$2"
+  local label="$3"
+  local body_file
+  body_file="$(mktemp)"
+  local status
+
+  status="$(cat | curl -sS -o "$body_file" -w "%{http_code}" -X POST "$BASE_URL/auth/jwt/exchange" \
+    -H "Content-Type: application/json" \
+    -d @-)"
+
+  if [[ "$status" != "$expected_status" ]]; then
+    echo "[smoke:jwt-auth] Expected $label to return $expected_status, got $status" >&2
+    cat "$body_file" >&2
+    rm -f "$body_file"
+    exit 1
+  fi
+
+  node -e '
+const fs = require("fs");
+const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (data.error?.code !== process.argv[2]) {
+  console.error(JSON.stringify(data));
+  process.exit(1);
+}
+' "$body_file" "$expected_code"
+  rm -f "$body_file"
+}
+
 csrf_token() {
   curl -fsS -b "$COOKIE_JAR" "$BASE_URL/auth/csrf" | json_value ".csrf_token"
+}
+
+create_handoff_code() {
+  local handoff_response
+  handoff_response="$(
+  curl -fsS -b "$COOKIE_JAR" -X POST "$BASE_URL/auth/test/jwt-handoff" \
+    -H "Origin: $BASE_URL" \
+    -H "X-CSRF-Token: $(csrf_token)" \
+    -H "Content-Type: application/json" \
+    -d "{\"return_to\":\"$RETURN_TO\"}"
+  )"
+  printf "%s\n" "$handoff_response" | assert_ok_json
+  printf "%s\n" "$handoff_response" | json_value ".handoff_code"
+}
+
+exchange_handoff_json() {
+  local json="$1"
+  curl -fsS -X POST "$BASE_URL/auth/jwt/exchange" \
+    -H "Content-Type: application/json" \
+    -d "$json"
 }
 
 echo "[smoke:jwt-auth] Creating test login session..."
@@ -59,16 +109,24 @@ login_response="$(
 )"
 printf "%s\n" "$login_response" | assert_ok_json
 
+echo "[smoke:jwt-auth] Checking handoff exchange aliases..."
+alias_auth_handoff_code="$(create_handoff_code)"
+alias_auth_handoff_response="$(exchange_handoff_json "{\"auth_handoff\":\"$alias_auth_handoff_code\"}")"
+printf "%s\n" "$alias_auth_handoff_response" | assert_ok_json
+
+alias_code_code="$(create_handoff_code)"
+alias_code_response="$(exchange_handoff_json "{\"code\":\"$alias_code_code\"}")"
+printf "%s\n" "$alias_code_response" | assert_ok_json
+
+alias_query_code="$(create_handoff_code)"
+alias_query_response="$(curl -fsS -X POST "$BASE_URL/auth/jwt/exchange?auth_handoff=$alias_query_code")"
+printf "%s\n" "$alias_query_response" | assert_ok_json
+
+echo "[smoke:jwt-auth] Checking bad handoff shape returns a clear error..."
+printf "%s\n" "{\"wrong\":\"$STAMP\"}" | assert_error_code "400" "invalid_handoff_request" "bad handoff shape"
+
 echo "[smoke:jwt-auth] Creating one-time handoff code..."
-handoff_response="$(
-  curl -fsS -b "$COOKIE_JAR" -X POST "$BASE_URL/auth/test/jwt-handoff" \
-    -H "Origin: $BASE_URL" \
-    -H "X-CSRF-Token: $(csrf_token)" \
-    -H "Content-Type: application/json" \
-    -d "{\"return_to\":\"$RETURN_TO\"}"
-)"
-printf "%s\n" "$handoff_response" | assert_ok_json
-handoff_code="$(printf "%s\n" "$handoff_response" | json_value ".handoff_code")"
+handoff_code="$(create_handoff_code)"
 
 if [[ -z "$handoff_code" ]]; then
   echo "[smoke:jwt-auth] Missing handoff_code." >&2
@@ -76,11 +134,7 @@ if [[ -z "$handoff_code" ]]; then
 fi
 
 echo "[smoke:jwt-auth] Exchanging handoff code..."
-exchange_response="$(
-  curl -fsS -X POST "$BASE_URL/auth/jwt/exchange" \
-    -H "Content-Type: application/json" \
-    -d "{\"handoff_code\":\"$handoff_code\"}"
-)"
+exchange_response="$(exchange_handoff_json "{\"handoff_code\":\"$handoff_code\"}")"
 printf "%s\n" "$exchange_response" | assert_ok_json
 access_token="$(printf "%s\n" "$exchange_response" | json_value ".access_token")"
 refresh_token="$(printf "%s\n" "$exchange_response" | json_value ".refresh_token")"
@@ -94,13 +148,8 @@ echo "[smoke:jwt-auth] Calling /v1/me with bearer JWT..."
 me_response="$(curl -fsS "$BASE_URL/v1/me" -H "Authorization: Bearer $access_token")"
 printf "%s\n" "$me_response" | assert_ok_json
 
-echo "[smoke:jwt-auth] Checking one-time handoff reuse fails..."
-reuse_status="$(
-  curl -sS -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/auth/jwt/exchange" \
-    -H "Content-Type: application/json" \
-    -d "{\"handoff_code\":\"$handoff_code\"}"
-)"
-assert_status "401" "$reuse_status" "handoff reuse"
+echo "[smoke:jwt-auth] Checking one-time handoff reuse fails clearly..."
+printf "%s\n" "{\"handoff_code\":\"$handoff_code\"}" | assert_error_code "401" "handoff_code_expired_or_consumed" "handoff reuse"
 
 echo "[smoke:jwt-auth] Refreshing token pair..."
 refresh_response="$(

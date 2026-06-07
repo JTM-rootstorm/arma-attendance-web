@@ -18,6 +18,43 @@ export type DiscordCurrentGuildMember = {
   joined_at?: string | null;
 };
 
+export class DiscordRateLimitError extends Error {
+  readonly retryAfterSeconds: number;
+  readonly statusCode = 429;
+
+  constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.name = "DiscordRateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+async function getRetryAfterSeconds(response: Response): Promise<number> {
+  const retryAfter = response.headers.get("retry-after");
+
+  if (retryAfter && Number.isFinite(Number(retryAfter))) {
+    return Number(retryAfter);
+  }
+
+  const resetAfter = response.headers.get("x-ratelimit-reset-after");
+
+  if (resetAfter && Number.isFinite(Number(resetAfter))) {
+    return Number(resetAfter);
+  }
+
+  try {
+    const body = (await response.clone().json()) as { retry_after?: unknown };
+
+    if (typeof body.retry_after === "number" && Number.isFinite(body.retry_after)) {
+      return body.retry_after;
+    }
+  } catch {
+    // Discord may send an empty or non-JSON rate-limit response.
+  }
+
+  return 5;
+}
+
 export async function fetchCurrentUserGuildMember(
   token: DiscordOAuthToken,
   guildId: string
@@ -28,6 +65,13 @@ export async function fetchCurrentUserGuildMember(
 
   if (response.status === 403 || response.status === 404) {
     return null;
+  }
+
+  if (response.status === 429) {
+    throw new DiscordRateLimitError(
+      `Discord rate limited guild member fetch for ${guildId}.`,
+      await getRetryAfterSeconds(response)
+    );
   }
 
   if (!response.ok) {

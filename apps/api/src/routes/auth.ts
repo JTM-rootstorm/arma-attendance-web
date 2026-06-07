@@ -28,7 +28,12 @@ import {
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
-import { fetchCurrentUserGuildMember, type DiscordCurrentGuildMember, type DiscordOAuthToken } from "../discord/client.js";
+import {
+  DiscordRateLimitError,
+  fetchCurrentUserGuildMember,
+  type DiscordCurrentGuildMember,
+  type DiscordOAuthToken
+} from "../discord/client.js";
 import {
   getLoginGrantGuildIdsFromDb,
   reconcileDiscordMembership,
@@ -73,9 +78,14 @@ const testSteamLinkBodySchema = z.object({
   provider_user_id: z.string().min(1).max(64)
 });
 
-const jwtExchangeBodySchema = z.object({
-  handoff_code: z.string().min(16).max(256)
+const jwtExchangeCodeFieldsSchema = z.object({
+  handoff_code: z.string().min(1).max(256).optional(),
+  auth_handoff: z.string().min(1).max(256).optional(),
+  code: z.string().min(1).max(256).optional()
 });
+
+const jwtExchangeBodySchema = jwtExchangeCodeFieldsSchema;
+const jwtExchangeQuerySchema = jwtExchangeCodeFieldsSchema;
 
 const jwtRefreshBodySchema = z.object({
   refresh_token: z.string().min(32).max(512)
@@ -107,6 +117,27 @@ type DiscordProfile = {
   global_name?: string | null;
   avatar?: string | null;
 };
+
+class DiscordTokenExchangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordTokenExchangeError";
+  }
+}
+
+class DiscordProfileFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordProfileFetchError";
+  }
+}
+
+class DiscordMembershipFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordMembershipFetchError";
+  }
+}
 
 type UserIdentityRow = {
   user_id: string;
@@ -237,6 +268,37 @@ function sendJwtUnauthorized(reply: FastifyReply, message = "JWT credentials are
   });
 }
 
+function sendInvalidHandoffRequest(reply: FastifyReply) {
+  return reply.code(400).send({
+    ok: false,
+    error: {
+      code: "invalid_handoff_request",
+      message: "Expected JSON body containing handoff_code, auth_handoff, or code."
+    }
+  });
+}
+
+function sendExpiredOrConsumedHandoff(reply: FastifyReply) {
+  return reply.code(401).send({
+    ok: false,
+    error: {
+      code: "handoff_code_expired_or_consumed",
+      message: "The authentication handoff code is expired, invalid, or already used."
+    }
+  });
+}
+
+function sendDiscordRateLimited(reply: FastifyReply, retryAfterSeconds: number) {
+  return reply.code(429).send({
+    ok: false,
+    error: {
+      code: "discord_rate_limited",
+      message: "Discord is rate-limiting login verification. Please try again shortly.",
+      retry_after_seconds: retryAfterSeconds
+    }
+  });
+}
+
 function randomState(): string {
   return randomBytes(24).toString("base64url");
 }
@@ -247,6 +309,30 @@ function discordAvatarUrl(profile: DiscordProfile): string | null {
   }
 
   return `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`;
+}
+
+function objectKeys(value: unknown): string[] {
+  return typeof value === "object" && value !== null ? Object.keys(value as Record<string, unknown>) : [];
+}
+
+function getHandoffCode(body: unknown, query: unknown): string | null {
+  const parsedBody = jwtExchangeBodySchema.safeParse(body);
+
+  if (parsedBody.success) {
+    const bodyCode = parsedBody.data.handoff_code ?? parsedBody.data.auth_handoff ?? parsedBody.data.code ?? null;
+
+    if (bodyCode) {
+      return bodyCode;
+    }
+  }
+
+  const parsedQuery = jwtExchangeQuerySchema.safeParse(query);
+
+  if (parsedQuery.success) {
+    return parsedQuery.data.handoff_code ?? parsedQuery.data.auth_handoff ?? parsedQuery.data.code ?? null;
+  }
+
+  return null;
 }
 
 async function serializeUser(user: CurrentUser) {
@@ -483,7 +569,7 @@ async function exchangeDiscordCode(code: string): Promise<DiscordTokenResponse> 
   });
 
   if (!response.ok) {
-    throw new Error(`Discord token exchange failed with HTTP ${response.status}.`);
+    throw new DiscordTokenExchangeError(`Discord token exchange failed with HTTP ${response.status}.`);
   }
 
   return (await response.json()) as DiscordTokenResponse;
@@ -497,37 +583,120 @@ async function fetchDiscordProfile(token: DiscordTokenResponse): Promise<Discord
   });
 
   if (!response.ok) {
-    throw new Error(`Discord profile fetch failed with HTTP ${response.status}.`);
+    throw new DiscordProfileFetchError(`Discord profile fetch failed with HTTP ${response.status}.`);
   }
 
   return (await response.json()) as DiscordProfile;
 }
 
-async function fetchDiscordLoginGuildMemberships(token: DiscordTokenResponse): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchCurrentUserGuildMemberWithRetry(
+  token: DiscordTokenResponse,
+  guildId: string
+): Promise<DiscordCurrentGuildMember | null> {
+  try {
+    return await fetchCurrentUserGuildMember(token, guildId);
+  } catch (error) {
+    if (error instanceof DiscordRateLimitError && error.retryAfterSeconds <= 3) {
+      await sleep(error.retryAfterSeconds * 1000);
+      return fetchCurrentUserGuildMember(token, guildId);
+    }
+
+    throw error;
+  }
+}
+
+function cachedMemberFromRow(row: {
+  role_ids: unknown;
+  nick: string | null;
+  joined_at: Date | string | null;
+  member_payload: unknown;
+}): DiscordCurrentGuildMember {
+  const payload =
+    typeof row.member_payload === "object" && row.member_payload !== null
+      ? (row.member_payload as Partial<DiscordCurrentGuildMember>)
+      : {};
+  const roles = Array.isArray(row.role_ids) ? row.role_ids.filter((role): role is string => typeof role === "string") : [];
+
+  return {
+    ...payload,
+    roles: Array.isArray(payload.roles) ? payload.roles : roles,
+    nick: payload.nick ?? row.nick,
+    joined_at: payload.joined_at ?? (row.joined_at instanceof Date ? row.joined_at.toISOString() : row.joined_at)
+  };
+}
+
+async function getCachedDiscordGuildMember(
+  discordUserId: string,
+  guildId: string
+): Promise<DiscordCurrentGuildMember | null> {
+  const result = await queryDb<{
+    role_ids: unknown;
+    nick: string | null;
+    joined_at: Date | null;
+    member_payload: unknown;
+  }>(
+    `
+    SELECT role_ids, nick, joined_at, member_payload
+    FROM discord_member_snapshots
+    WHERE discord_user_id = $1
+      AND guild_id = $2
+      AND last_seen_at >= now() - ($3::int * interval '1 minute')
+    ORDER BY last_seen_at DESC
+    LIMIT 1
+    `,
+    [discordUserId, guildId, config.discordAuthReconcileStaleAfterMinutes]
+  );
+  const row = result.rows[0];
+
+  return row ? cachedMemberFromRow(row) : null;
+}
+
+async function fetchDiscordLoginGuildMemberships(
+  token: DiscordTokenResponse,
+  discordUserId: string,
+  request: FastifyRequest
+): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
   if (!config.discordAuthEnabled) {
     return [];
   }
 
   const guildIds = await getLoginGrantGuildIdsFromDb();
-  const checks = await Promise.allSettled(
-    guildIds.map(async (guildId) => ({
-      guildId,
-      member: await fetchCurrentUserGuildMember(token, guildId)
-    }))
-  );
-  const failedCheck = checks.find((result) => result.status === "rejected");
+  const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
 
-  if (failedCheck?.status === "rejected") {
-    throw failedCheck.reason;
+  for (const guildId of guildIds) {
+    try {
+      const member = await fetchCurrentUserGuildMemberWithRetry(token, guildId);
+
+      if (member) {
+        memberships.push({ guildId, member });
+      }
+    } catch (error) {
+      if (error instanceof DiscordRateLimitError) {
+        const cachedMember = await getCachedDiscordGuildMember(discordUserId, guildId);
+
+        if (cachedMember) {
+          request.log.warn(
+            { guildId, retryAfterSeconds: error.retryAfterSeconds },
+            "Using cached Discord membership snapshot after rate limit"
+          );
+          memberships.push({ guildId, member: cachedMember });
+          continue;
+        }
+      }
+
+      if (error instanceof DiscordRateLimitError || error instanceof DiscordMembershipFetchError) {
+        throw error;
+      }
+
+      throw new DiscordMembershipFetchError(error instanceof Error ? error.message : "Discord membership fetch failed.");
+    }
   }
 
-  return checks.flatMap((result) => {
-    if (result.status === "rejected" || !result.value.member) {
-      return [];
-    }
-
-    return [{ guildId: result.value.guildId, member: result.value.member }];
-  });
+  return memberships;
 }
 
 function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
@@ -913,7 +1082,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const token = await exchangeDiscordCode(parsedQuery.data.code);
       const profile = await fetchDiscordProfile(token);
-      const memberships = await fetchDiscordLoginGuildMemberships(token);
+      const memberships = await fetchDiscordLoginGuildMemberships(token, profile.id, request);
 
       if (config.discordAuthEnabled && config.discordAuthRequireGuild && memberships.length === 0) {
         return sendDiscordGuildMembershipRequired(reply);
@@ -966,6 +1135,41 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return reply.redirect(getSafeReturnTo(state.redirect_after));
     } catch (error) {
       request.log.error({ err: error }, "Discord OAuth callback failed");
+
+      if (error instanceof DiscordRateLimitError) {
+        return sendDiscordRateLimited(reply, error.retryAfterSeconds);
+      }
+
+      if (error instanceof DiscordTokenExchangeError) {
+        return reply.code(502).send({
+          ok: false,
+          error: {
+            code: "discord_token_exchange_failed",
+            message: "Discord token exchange failed."
+          }
+        });
+      }
+
+      if (error instanceof DiscordProfileFetchError) {
+        return reply.code(502).send({
+          ok: false,
+          error: {
+            code: "discord_profile_fetch_failed",
+            message: "Discord profile fetch failed."
+          }
+        });
+      }
+
+      if (error instanceof DiscordMembershipFetchError) {
+        return reply.code(502).send({
+          ok: false,
+          error: {
+            code: "discord_membership_fetch_failed",
+            message: "Discord guild membership verification failed."
+          }
+        });
+      }
+
       return sendProviderFailure(reply);
     }
   });
@@ -981,17 +1185,25 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return sendJwtAuthDisabled(reply);
     }
 
-    const parsedBody = jwtExchangeBodySchema.safeParse(request.body);
+    const handoffCode = getHandoffCode(request.body, request.query);
 
-    if (!parsedBody.success) {
-      return sendValidationFailed(reply);
+    if (!handoffCode) {
+      request.log.warn(
+        {
+          hasBody: Boolean(request.body),
+          bodyKeys: objectKeys(request.body),
+          queryKeys: objectKeys(request.query)
+        },
+        "JWT handoff exchange request missing supported code field"
+      );
+      return sendInvalidHandoffRequest(reply);
     }
 
     try {
-      const handoff = await consumeJwtHandoffCode(parsedBody.data.handoff_code);
+      const handoff = await consumeJwtHandoffCode(handoffCode);
 
       if (!handoff) {
-        return sendJwtUnauthorized(reply, "Handoff code is invalid or expired.");
+        return sendExpiredOrConsumedHandoff(reply);
       }
 
       const user = await loadCurrentUserById(handoff.user_id);
@@ -1015,7 +1227,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to exchange JWT handoff");
-      return sendProviderFailure(reply, "JWT handoff exchange failed.");
+      return reply.code(502).send({
+        ok: false,
+        error: {
+          code: "jwt_handoff_failed",
+          message: "JWT handoff exchange failed."
+        }
+      });
     }
   });
 

@@ -24,9 +24,11 @@ Refresh tokens are opaque `aat_refresh_...` values stored as hashes. They rotate
 
 ## Endpoints
 
-- `POST /auth/jwt/exchange` with `{ "handoff_code": "..." }`
+- `POST /auth/jwt/exchange` with `{ "handoff_code": "..." }`, `{ "auth_handoff": "..." }`, `{ "code": "..." }`, or a query-string alias
 - `POST /auth/jwt/refresh` with `{ "refresh_token": "..." }`
 - `POST /auth/jwt/logout` with `{ "refresh_token": "..." }`
+
+`/auth/jwt/exchange` returns `invalid_handoff_request` when no supported field is present and `handoff_code_expired_or_consumed` when the one-time handoff is invalid, expired, or already used. The API logs only request shape metadata for bad exchange requests, never the handoff value.
 
 JWT-authenticated unsafe requests use the bearer token and do not need cookie-session CSRF. Cookie-session unsafe requests still require `/auth/csrf`, an allowed `Origin`, and `X-CSRF-Token`.
 
