@@ -84,32 +84,45 @@ export async function getAuthContext(
 
 export async function getOptionalAuthContext(
   request: FastifyRequest,
-  options: { allowMachineToken?: boolean; allowBotToken?: boolean; machineTokenKinds?: MachineTokenKind[] } = {}
+  options: {
+    allowMachineToken?: boolean;
+    allowBotToken?: boolean;
+    machineTokenKinds?: MachineTokenKind[];
+    ignoreInvalidCredentials?: boolean;
+  } = {}
 ): Promise<AuthContext | AnonymousAuthContext> {
-  if (options.machineTokenKinds) {
-    const tokenKind = await getAcceptedMachineTokenKind(request, options.machineTokenKinds);
+  try {
+    if (options.machineTokenKinds) {
+      const tokenKind = await getAcceptedMachineTokenKind(request, options.machineTokenKinds);
 
-    if (tokenKind) {
-      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+      if (tokenKind) {
+        return { kind: "machine", user: null, machineTokenKind: tokenKind };
+      }
+    } else if (options.allowBotToken) {
+      const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]);
+
+      if (tokenKind) {
+        return { kind: "machine", user: null, machineTokenKind: tokenKind };
+      }
+    } else if (options.allowMachineToken) {
+      const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "arma_server"]);
+
+      if (tokenKind) {
+        return { kind: "machine", user: null, machineTokenKind: tokenKind };
+      }
     }
-  } else if (options.allowBotToken) {
-    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]);
 
-    if (tokenKind) {
-      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+    const user = await getCurrentUser(request);
+
+    if (user) {
+      return { kind: "user", user, machineTokenKind: null };
     }
-  } else if (options.allowMachineToken) {
-    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "arma_server"]);
-
-    if (tokenKind) {
-      return { kind: "machine", user: null, machineTokenKind: tokenKind };
+  } catch (error) {
+    if (!options.ignoreInvalidCredentials) {
+      throw error;
     }
-  }
 
-  const user = await getCurrentUser(request);
-
-  if (user) {
-    return { kind: "user", user, machineTokenKind: null };
+    request.log.debug({ authError: error }, "Ignoring invalid optional credentials.");
   }
 
   return { kind: "anonymous", user: null, machineTokenKind: null };
