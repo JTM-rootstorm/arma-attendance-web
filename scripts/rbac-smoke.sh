@@ -110,6 +110,7 @@ user_discord="rbac-user-$STAMP"
 default_discord="rbac-default-$STAMP"
 delete_discord="rbac-delete-$STAMP"
 steam_id="7656119$STAMP"
+officer_steam_id="7656116$STAMP"
 default_steam_id="7656118$STAMP"
 delete_steam_id="7656117$STAMP"
 server_key="rbac-smoke-$STAMP"
@@ -137,6 +138,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v user_id="$user_id" \
   -v delete_id="$delete_id" \
   -v steam_id="$steam_id" \
+  -v officer_steam_id="$officer_steam_id" \
   -v delete_steam_id="$delete_steam_id" \
   -v delete_server_key="$delete_server_key" \
   -v server_key="$server_key" <<'SQL'
@@ -149,6 +151,12 @@ WITH unit AS (
 players_upsert AS (
   INSERT INTO players (player_uid, last_name, raw_last_player)
   VALUES (:'steam_id', 'RBAC Player', '{}'::jsonb)
+  ON CONFLICT (player_uid) DO UPDATE SET last_name = EXCLUDED.last_name, updated_at = now()
+  RETURNING player_uid
+),
+officer_player_upsert AS (
+  INSERT INTO players (player_uid, last_name, raw_last_player)
+  VALUES (:'officer_steam_id', 'RBAC Absent Officer', '{}'::jsonb)
   ON CONFLICT (player_uid) DO UPDATE SET last_name = EXCLUDED.last_name, updated_at = now()
   RETURNING player_uid
 ),
@@ -196,6 +204,10 @@ ON CONFLICT DO NOTHING;
 
 INSERT INTO unit_players (unit_id, player_uid, rank, roster_name)
 SELECT id, :'steam_id', 'PVT', 'RBAC Player' FROM units WHERE unit_key = 'rbac_smoke'
+ON CONFLICT (unit_id, player_uid) DO UPDATE SET rank = EXCLUDED.rank, roster_name = EXCLUDED.roster_name;
+
+INSERT INTO unit_players (unit_id, player_uid, rank, roster_name)
+SELECT id, :'officer_steam_id', 'LT', 'RBAC Absent Officer' FROM units WHERE unit_key = 'rbac_smoke'
 ON CONFLICT (unit_id, player_uid) DO UPDATE SET rank = EXCLUDED.rank, roster_name = EXCLUDED.roster_name;
 
 INSERT INTO unit_players (unit_id, player_uid, rank, roster_name)
@@ -280,6 +292,11 @@ curl -fsS -b "$USER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
   -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")" \
   -H "Content-Type: application/json" \
   -d "{\"provider_user_id\":\"$steam_id\"}" >/dev/null
+curl -fsS -b "$OFFICER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token "$OFFICER_COOKIE_JAR")" \
+  -H "Content-Type: application/json" \
+  -d "{\"provider_user_id\":\"$officer_steam_id\"}" >/dev/null
 curl -fsS -b "$DEFAULT_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
   -H "Origin: $BASE_URL" \
   -H "X-CSRF-Token: $(csrf_token "$DEFAULT_COOKIE_JAR")" \
@@ -325,10 +342,14 @@ curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/summary" 
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true
   && Array.isArray(data.attendance)
   && data.attendance.some((row) => row.player_uid === null && row.scoreboard_stats.infantry_kills === 5 && row.scoreboard_stats.soft_vehicle_kills === 1 && row.scoreboard_stats.armor_kills === 2 && row.scoreboard_stats.air_kills === 3 && row.scoreboard_stats.deaths === 1)'
+curl -fsS -b "$OFFICER_COOKIE_JAR" "$BASE_URL/v1/operations?server_key=$server_key" | assert_json 'data.ok === true && data.operations.length === 0'
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OFFICER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id")" "same-unit absent player operation detail"
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OFFICER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/summary")" "same-unit absent player operation summary"
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$OFFICER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance")" "same-unit absent player operation attendance"
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance.csv")" "same-unit admin absent operation attendance CSV"
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json "data.ok === true
   && data.attendance.some((row) => row.player_uid === '$steam_id' && row.scoreboard_stats.infantry_kills === 5 && row.scoreboard_stats.soft_vehicle_kills === 1 && row.scoreboard_stats.armor_kills === 2 && row.scoreboard_stats.air_kills === 3 && row.scoreboard_stats.deaths === 1)"
-curl -fsS -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance" | assert_json 'data.ok === true
-  && data.attendance.some((row) => row.player_uid === null && row.scoreboard_stats.infantry_kills === 5)'
+assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" "$BASE_URL/v1/operations/$operation_id/attendance")" "same-unit admin absent operation attendance"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$USER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$USER_COOKIE_JAR")")" "normal user operation delete"
 assert_status "403" "$(curl -sS -o /dev/null -w "%{http_code}" -b "$ADMIN_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $(csrf_token "$ADMIN_COOKIE_JAR")")" "unit admin operation delete"
 

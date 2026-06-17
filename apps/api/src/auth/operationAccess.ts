@@ -1,6 +1,5 @@
-import type { CurrentUser } from "../auth.js";
+import { hasRole, type CurrentUser } from "../auth.js";
 import { queryDb } from "../db/pool.js";
-import { hasUnitRole } from "./units.js";
 
 type LinkedPlayerUidRow = {
   player_uid: string;
@@ -55,8 +54,8 @@ export async function hasAttendedOperation(user: CurrentUser, operationId: strin
   return result.rows[0]?.exists ?? false;
 }
 
-export async function canReadOperation(user: CurrentUser, operationId: string, unitId: string | null): Promise<boolean> {
-  if (unitId === null || (await hasUnitRole(user, unitId, "officer"))) {
+export async function canReadOperation(user: CurrentUser, operationId: string, _unitId: string | null): Promise<boolean> {
+  if (hasRole(user, ["admin"])) {
     return true;
   }
 

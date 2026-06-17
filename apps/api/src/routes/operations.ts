@@ -4,7 +4,7 @@ import { z } from "zod";
 import { hasRole, requireBearerToken, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getOptionalAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { canReadOperation, getLinkedPlayerUid } from "../auth/operationAccess.js";
-import { getDefaultUnitId, getUnitIdForServerKey, hasUnitRole } from "../auth/units.js";
+import { getDefaultUnitId, getUnitIdForServerKey } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
@@ -283,16 +283,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     };
     const where: string[] = [];
     const values: unknown[] = [];
-    const unitFilter = await getReadableUnitFilter(auth.user);
-
-    const operationUnitIds =
-      auth.user && !unitFilter.all
-        ? (await Promise.all(
-            unitFilter.unitIds.map(async (unitId) => ((await hasUnitRole(auth.user as CurrentUser, unitId, "officer")) ? unitId : null))
-          )).filter((unitId): unitId is string => unitId !== null)
-        : unitFilter.unitIds;
-
-    if (auth.user && !unitFilter.all && operationUnitIds.length === 0) {
+    if (auth.user && !hasRole(auth.user, ["admin"])) {
       const playerUid = await getLinkedPlayerUid(auth.user);
 
       if (!playerUid) {
@@ -314,9 +305,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         WHERE self_op.operation_id = o.id
           AND self_op.player_uid = $${values.length}
       )`);
-    } else if (!unitFilter.all) {
-      values.push(operationUnitIds);
-      where.push(`o.unit_id = ANY($${values.length}::uuid[])`);
+    } else {
+      const unitFilter = await getReadableUnitFilter(auth.user);
+
+      if (!unitFilter.all) {
+        values.push(unitFilter.unitIds);
+        where.push(`o.unit_id = ANY($${values.length}::uuid[])`);
+      }
     }
 
     if (query.server_key) {
