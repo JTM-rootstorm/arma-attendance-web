@@ -1,9 +1,9 @@
 import type { FastifyReply } from "fastify";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
 import { hasRole, type CurrentUser } from "../auth.js";
 import { getDrizzleDb } from "../db/drizzle.js";
-import { unitMemberships, units, unitUserRoles } from "../db/schema/units.js";
+import { unitMemberships, units, unitServerKeys, unitUserRoles } from "../db/schema/units.js";
 
 export const unitRoles = ["member", "officer", "admin", "tcw_admin"] as const;
 export type UnitRole = (typeof unitRoles)[number];
@@ -43,6 +43,26 @@ export async function getDefaultUnitId(): Promise<string | null> {
     .from(units)
     .where(and(eq(units.unitKey, "tcw"), eq(units.isActive, true)))
     .limit(1);
+  return rows[0]?.id ?? null;
+}
+
+export async function getUnitIdForServerKey(serverKey: string): Promise<string | null> {
+  const db = getDrizzleDb();
+  const rows = await db
+    .select({ id: units.id })
+    .from(unitServerKeys)
+    .innerJoin(units, eq(units.id, unitServerKeys.unitId))
+    .where(
+      and(
+        eq(unitServerKeys.serverKey, serverKey),
+        eq(unitServerKeys.isActive, true),
+        eq(units.isActive, true),
+        isNull(units.deletedAt)
+      )
+    )
+    .orderBy(asc(units.sortOrder), asc(units.unitKey))
+    .limit(1);
+
   return rows[0]?.id ?? null;
 }
 

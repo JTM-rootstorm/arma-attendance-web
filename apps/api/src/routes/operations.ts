@@ -4,11 +4,12 @@ import { z } from "zod";
 import { hasRole, requireBearerToken, type CurrentUser } from "../auth.js";
 import { canSeeSensitiveIds, deny, getAuthContext, getOptionalAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
 import { canReadOperation, getLinkedPlayerUid } from "../auth/operationAccess.js";
-import { getDefaultUnitId, hasUnitRole } from "../auth/units.js";
+import { getDefaultUnitId, getUnitIdForServerKey, hasUnitRole } from "../auth/units.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 import { persistOperationAttendance, type NormalizationSummary } from "../normalization/operationAttendance.js";
+import { insertPrimaryOperationUnit, syncOperationUnitsForParticipants } from "../normalization/operationUnits.js";
 import { redactAttendance, redactOperation, redactOperationListItem } from "../privacy/redaction.js";
 
 const missionSchema = z
@@ -409,7 +410,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           return replayResponse(existingResponse);
         }
 
-        const defaultUnitId = await getDefaultUnitId();
+        const unitId = (await getUnitIdForServerKey(payload.server_key)) ?? (await getDefaultUnitId());
         const operationResult = await tx.query<{
           id: string;
           status: OperationStatus;
@@ -428,7 +429,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           `,
           [
             payload.server_key,
-            defaultUnitId,
+            unitId,
             getMissionField(payload.mission, "mission_uid"),
             getMissionField(payload.mission, "mission_name"),
             getMissionField(payload.mission, "world_name"),
@@ -443,6 +444,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         }
 
         await insertOperationPayload(tx, operation.id, payload.request_id, "start", payload);
+        await insertPrimaryOperationUnit(tx, operation.id, "server_key");
         const normalized = await persistOperationAttendance(tx, operation.id, "start", payload);
 
         const response: OperationIngestResponse = {
@@ -541,6 +543,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
 
         await insertOperationPayload(tx, operationId, payload.request_id, "finish", payload);
         const normalized = await persistOperationAttendance(tx, operationId, "finish", payload);
+        await syncOperationUnitsForParticipants(tx, operationId);
 
         const response: OperationIngestResponse = {
           ok: true,

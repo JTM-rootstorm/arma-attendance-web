@@ -56,6 +56,7 @@ import { operations } from "../db/schema/operations.js";
 import { operationPlayers, players } from "../db/schema/players.js";
 import { unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
+import { canonicalizeDiscordLinkedPlayer, isDiscordPlaceholderUid } from "../identity/playerCanonicalization.js";
 
 const discordStartQuerySchema = z.object({
   mode: z.enum(["cookie", "jwt"]).default("cookie"),
@@ -1161,7 +1162,10 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
       ON CONFLICT (discord_user_id) DO UPDATE
       SET
         player_uid = CASE
+          WHEN player_discord_links.player_uid = EXCLUDED.player_uid THEN player_discord_links.player_uid
+          WHEN player_discord_links.player_uid LIKE 'discord:%' THEN EXCLUDED.player_uid
           WHEN player_discord_links.source = 'auth' THEN EXCLUDED.player_uid
+          WHEN player_discord_links.source = 'bot' THEN EXCLUDED.player_uid
           ELSE player_discord_links.player_uid
         END,
         discord_display_name = CASE
@@ -1172,7 +1176,9 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
           ELSE player_discord_links.discord_display_name
         END,
         source = CASE
-          WHEN player_discord_links.source = 'auth' THEN EXCLUDED.source
+          WHEN player_discord_links.source IN ('auth', 'bot')
+            OR player_discord_links.player_uid LIKE 'discord:%'
+          THEN EXCLUDED.source
           ELSE player_discord_links.source
         END,
         verified_at = COALESCE(player_discord_links.verified_at, EXCLUDED.verified_at),
@@ -1186,6 +1192,16 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
         JSON.stringify({ source: "auth", user_id: userId })
       ]
     );
+
+    if (!isDiscordPlaceholderUid(playerUid)) {
+      await canonicalizeDiscordLinkedPlayer(tx, {
+        discordUserId: discordIdentity.provider_user_id,
+        canonicalPlayerUid: playerUid,
+        displayName,
+        actorUserId: userId,
+        source: "auth_roster_repair"
+      });
+    }
   }
 
   const staleAuthPlayerUids = identities

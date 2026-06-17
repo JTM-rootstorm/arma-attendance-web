@@ -113,23 +113,37 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
       FROM units u
       WHERE ${filters.join(" AND ")}
     ),
-    active_unit_players AS (
+    unit_player_aliases AS (
       SELECT
         au.unit_id,
-        up.player_uid
+        COALESCE(
+          CASE
+            WHEN pdl.player_uid NOT LIKE 'discord:%' THEN pdl.player_uid
+            ELSE NULL
+          END,
+          up.player_uid
+        ) AS player_uid,
+        up.is_active,
+        up.roster_status
       FROM active_units au
       JOIN unit_players up
         ON up.unit_id = au.unit_id
-        AND up.is_active = true
-        AND up.roster_status <> 'inactive'
+      LEFT JOIN player_discord_links pdl
+        ON up.player_uid = ('discord:' || pdl.discord_user_id)
+    ),
+    active_unit_players AS (
+      SELECT DISTINCT
+        unit_id,
+        player_uid
+      FROM unit_player_aliases
+      WHERE is_active = true
+        AND roster_status <> 'inactive'
     ),
     historical_unit_players AS (
-      SELECT
-        au.unit_id,
-        up.player_uid
-      FROM active_units au
-      JOIN unit_players up
-        ON up.unit_id = au.unit_id
+      SELECT DISTINCT
+        unit_id,
+        player_uid
+      FROM unit_player_aliases
     ),
     eligible_unit_operations AS (
       SELECT

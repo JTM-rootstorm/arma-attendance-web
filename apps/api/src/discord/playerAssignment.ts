@@ -4,6 +4,8 @@ import { getDrizzleDb } from "../db/drizzle.js";
 import { discordAssignmentAudits, playerDiscordLinks } from "../db/schema/discord.js";
 import { players } from "../db/schema/players.js";
 import { unitPlayers, units } from "../db/schema/units.js";
+import { withDbTransaction } from "../db/transactions.js";
+import { canonicalizeDiscordLinkedPlayer, isDiscordPlaceholderUid } from "../identity/playerCanonicalization.js";
 
 type DrizzleDb = ReturnType<typeof getDrizzleDb>;
 type DrizzleTransaction = Parameters<Parameters<DrizzleDb["transaction"]>[0]>[0];
@@ -236,11 +238,26 @@ async function upsertLink(tx: DrizzleTransaction, playerUid: string, input: Reso
     .onConflictDoUpdate({
       target: playerDiscordLinks.discordUserId,
       set: {
-        playerUid: sql`excluded.player_uid`,
+        playerUid: sql`
+          CASE
+            WHEN ${playerDiscordLinks.playerUid} = excluded.player_uid THEN ${playerDiscordLinks.playerUid}
+            WHEN ${playerDiscordLinks.playerUid} LIKE 'discord:%' THEN excluded.player_uid
+            WHEN ${playerDiscordLinks.source} IN ('auth', 'bot') THEN excluded.player_uid
+            ELSE ${playerDiscordLinks.playerUid}
+          END
+        `,
         discordUsername: sql`COALESCE(excluded.discord_username, ${playerDiscordLinks.discordUsername})`,
         discordDisplayName: sql`COALESCE(excluded.discord_display_name, ${playerDiscordLinks.discordDisplayName})`,
-        source: sql`CASE WHEN ${playerDiscordLinks.source} = 'manual' THEN ${playerDiscordLinks.source} ELSE excluded.source END`,
-        rawLink: sql`excluded.raw_link`,
+        source: sql`
+          CASE
+            WHEN ${playerDiscordLinks.source} = 'manual'
+              AND ${playerDiscordLinks.playerUid} NOT LIKE 'discord:%'
+              AND ${playerDiscordLinks.playerUid} <> excluded.player_uid
+            THEN ${playerDiscordLinks.source}
+            ELSE excluded.source
+          END
+        `,
+        rawLink: sql`${playerDiscordLinks.rawLink} || excluded.raw_link`,
         updatedAt: sql`now()`
       }
     })
@@ -464,7 +481,7 @@ async function upsertAssignment(
 }
 
 export async function applyDiscordBotUnitAssignment(input: DiscordBotUnitAssignmentInput): Promise<DiscordBotUnitAssignmentResult> {
-  return getDrizzleDb().transaction(async (tx) => {
+  const result: DiscordBotUnitAssignmentResult = await getDrizzleDb().transaction(async (tx) => {
     const dryRun = input.dryRun ?? false;
     const unit = await resolveUnit(tx, input);
     const player = await resolveOrCreateDiscordLinkedPlayerInTransaction(tx, input, dryRun);
@@ -535,6 +552,25 @@ export async function applyDiscordBotUnitAssignment(input: DiscordBotUnitAssignm
       audits_written: 1
     };
   });
+
+  if (
+    result.ok &&
+    !result.dry_run &&
+    input.discordUserId &&
+    input.playerUid &&
+    !isDiscordPlaceholderUid(input.playerUid)
+  ) {
+    await withDbTransaction((tx) =>
+      canonicalizeDiscordLinkedPlayer(tx, {
+        discordUserId: input.discordUserId as string,
+        canonicalPlayerUid: input.playerUid as string,
+        displayName: input.rosterName ?? input.nick ?? input.discordDisplayName ?? input.discordUsername ?? null,
+        source: "discord_bot_assignment"
+      })
+    );
+  }
+
+  return result;
 }
 
 export async function ensureDiscordPlaceholderPlayerForReconcile(input: ResolveDiscordPlayerInput): Promise<ResolvedDiscordPlayer> {

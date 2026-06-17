@@ -34,6 +34,20 @@ type StatsIssueRow = {
   player_uid: string;
 };
 
+type PlaceholderRosterIssueRow = {
+  unit_id: string;
+  placeholder_uid: string;
+  canonical_player_uid: string;
+  discord_user_id: string;
+};
+
+type FinishedOperationUnitIssueRow = {
+  operation_id: string;
+  server_key: string;
+  started_at: Date;
+  ended_at: Date | null;
+};
+
 function sendDatabaseUnavailable(reply: FastifyReply) {
   return reply.code(503).send({
     ok: false,
@@ -150,6 +164,63 @@ export async function registerDataQualityRoutes(app: FastifyInstance) {
         `
       );
 
+      const placeholderRosterRowsWithCanonicalLinks = await queryDb<PlaceholderRosterIssueRow>(
+        `
+        SELECT
+          up.unit_id,
+          up.player_uid AS placeholder_uid,
+          pdl.player_uid AS canonical_player_uid,
+          pdl.discord_user_id
+        FROM unit_players up
+        JOIN player_discord_links pdl
+          ON up.player_uid = ('discord:' || pdl.discord_user_id)
+        WHERE pdl.player_uid <> up.player_uid
+        ORDER BY up.unit_id, up.player_uid
+        LIMIT 25
+        `
+      );
+
+      const statsWithoutCanonicalUnitRoster = await queryDb<StatsIssueRow>(
+        `
+        WITH canonical_unit_players AS (
+          SELECT DISTINCT
+            up.unit_id,
+            COALESCE(
+              CASE
+                WHEN pdl.player_uid NOT LIKE 'discord:%' THEN pdl.player_uid
+                ELSE NULL
+              END,
+              up.player_uid
+            ) AS player_uid
+          FROM unit_players up
+          LEFT JOIN player_discord_links pdl
+            ON up.player_uid = ('discord:' || pdl.discord_user_id)
+        )
+        SELECT ops.operation_id, ops.player_uid
+        FROM operation_player_stats ops
+        LEFT JOIN canonical_unit_players cup ON cup.player_uid = ops.player_uid
+        WHERE cup.player_uid IS NULL
+        ORDER BY ops.operation_id, ops.player_uid
+        LIMIT 25
+        `
+      );
+
+      const finishedOperationsWithStatsWithoutOperationUnits = await queryDb<FinishedOperationUnitIssueRow>(
+        `
+        SELECT o.id AS operation_id, o.server_key, o.started_at, o.ended_at
+        FROM operations o
+        WHERE o.status = 'finished'
+          AND EXISTS (
+            SELECT 1 FROM operation_player_stats ops WHERE ops.operation_id = o.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM operation_units ou WHERE ou.operation_id = o.id
+          )
+        ORDER BY o.started_at DESC
+        LIMIT 25
+        `
+      );
+
       return {
         ok: true,
         checks: {
@@ -158,7 +229,10 @@ export async function registerDataQualityRoutes(app: FastifyInstance) {
           operations_without_normalized_players: operationsWithoutNormalizedPlayers.rows,
           operation_payloads_without_operation: operationPayloadsWithoutOperation.rows,
           players_without_names: playersWithoutNames.rows,
-          stats_without_attendance: statsWithoutAttendance.rows
+          stats_without_attendance: statsWithoutAttendance.rows,
+          placeholder_roster_rows_with_canonical_links: placeholderRosterRowsWithCanonicalLinks.rows,
+          stats_without_canonical_unit_roster: statsWithoutCanonicalUnitRoster.rows,
+          finished_operations_with_stats_without_operation_units: finishedOperationsWithStatsWithoutOperationUnits.rows
         }
       };
     } catch (error) {
