@@ -304,6 +304,7 @@ SELECT
     FROM operation_units
     WHERE operation_id = :'operation_id'::uuid
       AND unit_id = :'unit_id'::uuid
+      AND source IN ('server_key', 'import')
   ) THEN 1 ELSE 0 END,
   (
     SELECT COUNT(*)

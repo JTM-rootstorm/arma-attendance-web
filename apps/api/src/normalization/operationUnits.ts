@@ -3,7 +3,7 @@ import type { DbTransaction } from "../db/transactions.js";
 export async function insertPrimaryOperationUnit(
   tx: DbTransaction,
   operationId: string,
-  source: "server_key" | "operation_primary" = "operation_primary"
+  source: "server_key" | "import" = "server_key"
 ): Promise<{ inserted: number }> {
   const result = await tx.query(
     `
@@ -24,7 +24,7 @@ export async function syncOperationUnitsForParticipants(
   tx: DbTransaction,
   operationId: string
 ): Promise<{ inserted: number }> {
-  const primary = await insertPrimaryOperationUnit(tx, operationId, "operation_primary");
+  const primary = await insertPrimaryOperationUnit(tx, operationId, "server_key");
   const participants = await tx.query(
     `
     WITH canonical_unit_players AS (
@@ -51,7 +51,7 @@ export async function syncOperationUnitsForParticipants(
         AND (op.present_at_start = true OR op.present_at_end = true)
     )
     INSERT INTO operation_units (operation_id, unit_id, source)
-    SELECT $1, unit_id, 'participant_roster'
+    SELECT $1, unit_id, 'import'
     FROM participant_units
     ON CONFLICT (operation_id, unit_id) DO NOTHING
     `,
