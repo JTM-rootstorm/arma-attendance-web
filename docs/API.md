@@ -92,7 +92,18 @@ GET  /v1/units/:unit_id/admins
 PUT  /v1/units/:unit_id/admins/:user_id
 DELETE /v1/units/:unit_id/admins/:user_id
 GET  /v1/leaderboard/units
+GET  /public/leaderboard/units
+GET  /public/leaderboard/players
 ```
+
+## Public leaderboards
+
+```http
+GET /public/leaderboard/units
+GET /public/leaderboard/players
+```
+
+`GET /public/leaderboard/players` returns the public top-20 player leaderboard. It is unauthenticated and redacts internal player identifiers. Rows are ranked by total kills: infantry + soft vehicle + armor + air kills. Public leaderboard responses may be cached for 60 seconds.
 
 ## Auth and current user
 

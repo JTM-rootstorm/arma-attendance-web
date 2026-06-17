@@ -110,7 +110,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   app.get("/*", async (request, reply) => {
     const requestPath = getRequestPath(request);
 
-    if (requestPath.startsWith("/v1/") || requestPath === "/health" || requestPath.startsWith("/health/")) {
+    if (requestPath.startsWith("/v1/") || requestPath.startsWith("/public/") || requestPath === "/health" || requestPath.startsWith("/health/")) {
       return apiNotFound(reply);
     }
 

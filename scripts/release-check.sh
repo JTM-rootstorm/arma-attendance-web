@@ -51,6 +51,7 @@ if [[ "${RUN_DB_SMOKE:-0}" == "1" ]]; then
   run pnpm smoke:scoreboard
   run pnpm smoke:battalions
   run pnpm smoke:leaderboard
+  run pnpm smoke:leaderboard:public
   run pnpm smoke:dashboard
   run pnpm smoke:exports
   run pnpm smoke:data-quality

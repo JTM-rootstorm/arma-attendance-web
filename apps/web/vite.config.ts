@@ -7,6 +7,7 @@ export default defineConfig({
     proxy: {
       "/auth": "http://127.0.0.1:3000",
       "/health": "http://127.0.0.1:3000",
+      "/public": "http://127.0.0.1:3000",
       "/v1": "http://127.0.0.1:3000"
     }
   }

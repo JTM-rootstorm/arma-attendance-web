@@ -734,6 +734,28 @@ export type UnitLeaderboardResponse = {
   };
 };
 
+export type PlayerLeaderboardResponse = {
+  ok: true;
+  leaderboard: Array<{
+    rank: number;
+    player_uid: null;
+    name: string;
+    operation_count: number;
+    total_kills: number;
+    infantry_kills: number;
+    soft_vehicle_kills: number;
+    armor_kills: number;
+    air_kills: number;
+    deaths: number;
+  }>;
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+  empty_reason?: "no_scored_players";
+};
+
 export type ViewName =
   | "me"
   | "battalion"

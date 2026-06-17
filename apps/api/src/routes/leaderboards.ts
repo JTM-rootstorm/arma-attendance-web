@@ -14,6 +14,10 @@ const unitLeaderboardQuerySchema = z.object({
   metric: z.enum(["total_kills"]).default("total_kills")
 });
 
+const publicPlayerLeaderboardQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).default(20)
+});
+
 type UnitLeaderboardRow = {
   rank: number;
   unit_id: string;
@@ -30,6 +34,7 @@ type UnitLeaderboardRow = {
 };
 
 type UnitLeaderboardQuery = z.infer<typeof unitLeaderboardQuerySchema>;
+type PublicPlayerLeaderboardQuery = z.infer<typeof publicPlayerLeaderboardQuerySchema>;
 
 type UnitLeaderboardPayload = {
   ok: true;
@@ -49,6 +54,37 @@ type UnitLeaderboardPayload = {
   }>;
   pagination: { limit: number; offset: number; count: number };
   empty_reason?: "filters_excluded_all_rows" | "no_units_or_no_operations";
+};
+
+type PlayerLeaderboardRow = {
+  rank: number;
+  player_uid: string;
+  name: string | null;
+  operation_count: number;
+  infantry_kills: number;
+  soft_vehicle_kills: number;
+  armor_kills: number;
+  air_kills: number;
+  deaths: number;
+  total_kills: number;
+};
+
+type PublicPlayerLeaderboardPayload = {
+  ok: true;
+  leaderboard: Array<{
+    rank: number;
+    player_uid: null;
+    name: string;
+    operation_count: number;
+    total_kills: number;
+    infantry_kills: number;
+    soft_vehicle_kills: number;
+    armor_kills: number;
+    air_kills: number;
+    deaths: number;
+  }>;
+  pagination: { limit: number; offset: 0; count: number };
+  empty_reason?: "no_scored_players";
 };
 
 function sendValidationFailed(reply: FastifyReply) {
@@ -255,6 +291,101 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
   return payload;
 }
 
+async function getPublicPlayerLeaderboardPayload(query: PublicPlayerLeaderboardQuery): Promise<PublicPlayerLeaderboardPayload> {
+  const result = await queryDb<PlayerLeaderboardRow>(
+    `
+    WITH normalized_stats AS (
+      SELECT
+        COALESCE(
+          CASE
+            WHEN pdl.player_uid IS NOT NULL AND pdl.player_uid NOT LIKE 'discord:%' THEN pdl.player_uid
+            ELSE NULL
+          END,
+          ops.player_uid
+        ) AS canonical_player_uid,
+        ops.operation_id,
+        ops.infantry_kills,
+        ops.soft_vehicle_kills,
+        ops.armor_kills,
+        ops.air_kills,
+        ops.deaths
+      FROM operation_player_stats ops
+      LEFT JOIN player_discord_links pdl
+        ON ops.player_uid = ('discord:' || pdl.discord_user_id)
+    ),
+    per_operation_player AS (
+      SELECT
+        canonical_player_uid,
+        operation_id,
+        SUM(infantry_kills)::int AS infantry_kills,
+        SUM(soft_vehicle_kills)::int AS soft_vehicle_kills,
+        SUM(armor_kills)::int AS armor_kills,
+        SUM(air_kills)::int AS air_kills,
+        SUM(deaths)::int AS deaths
+      FROM normalized_stats
+      GROUP BY canonical_player_uid, operation_id
+    ),
+    player_totals AS (
+      SELECT
+        p.player_uid,
+        p.last_name AS name,
+        COUNT(DISTINCT pop.operation_id)::int AS operation_count,
+        COALESCE(SUM(pop.infantry_kills), 0)::int AS infantry_kills,
+        COALESCE(SUM(pop.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
+        COALESCE(SUM(pop.armor_kills), 0)::int AS armor_kills,
+        COALESCE(SUM(pop.air_kills), 0)::int AS air_kills,
+        COALESCE(SUM(pop.deaths), 0)::int AS deaths
+      FROM per_operation_player pop
+      JOIN players p ON p.player_uid = pop.canonical_player_uid
+      WHERE p.deleted_at IS NULL
+      GROUP BY p.player_uid, p.last_name, p.last_seen_at
+    ),
+    ranked AS (
+      SELECT
+        ROW_NUMBER() OVER (
+          ORDER BY
+            (infantry_kills + soft_vehicle_kills + armor_kills + air_kills) DESC,
+            operation_count DESC,
+            deaths ASC,
+            COALESCE(name, player_uid) ASC,
+            player_uid ASC
+        )::int AS rank,
+        *,
+        (infantry_kills + soft_vehicle_kills + armor_kills + air_kills)::int AS total_kills
+      FROM player_totals
+    )
+    SELECT *
+    FROM ranked
+    ORDER BY rank ASC
+    LIMIT $1
+    `,
+    [query.limit]
+  );
+
+  const payload: PublicPlayerLeaderboardPayload = {
+    ok: true,
+    leaderboard: result.rows.map((row) => ({
+      rank: row.rank,
+      player_uid: null,
+      name: row.name && row.name.trim().length > 0 ? row.name : "Unknown Player",
+      operation_count: row.operation_count,
+      total_kills: row.total_kills,
+      infantry_kills: row.infantry_kills,
+      soft_vehicle_kills: row.soft_vehicle_kills,
+      armor_kills: row.armor_kills,
+      air_kills: row.air_kills,
+      deaths: row.deaths
+    })),
+    pagination: { limit: query.limit, offset: 0, count: result.rows.length }
+  };
+
+  if (payload.leaderboard.length === 0) {
+    payload.empty_reason = "no_scored_players";
+  }
+
+  return payload;
+}
+
 export async function registerLeaderboardRoutes(app: FastifyInstance) {
   app.get("/v1/leaderboard/units", async (request, reply) => {
     const auth = await getOptionalAuthContext(request, {
@@ -291,6 +422,22 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
       return getUnitLeaderboardPayload(parsed.data, false);
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to load unit leaderboard");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.get("/public/leaderboard/players", async (request, reply) => {
+    const parsed = publicPlayerLeaderboardQuerySchema.safeParse(request.query);
+
+    if (!parsed.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      reply.header("Cache-Control", "public, max-age=60");
+      return getPublicPlayerLeaderboardPayload(parsed.data);
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to load public player leaderboard");
       return sendDatabaseUnavailable(reply);
     }
   });
