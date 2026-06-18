@@ -54,6 +54,7 @@ if [[ "${RUN_DB_SMOKE:-0}" == "1" ]]; then
   run pnpm smoke:leaderboard:public
   run pnpm smoke:xp-rewards
   run pnpm smoke:xp-award-on-finish
+  run pnpm smoke:xp-award-delete-reversal
   run pnpm smoke:dashboard
   run pnpm smoke:exports
   run pnpm smoke:data-quality

@@ -9,6 +9,7 @@ export type OperationXpAwardSummary =
     }
   | {
       awarded: true;
+      award_status: "awarded" | "already_awarded";
       mission_name: string;
       tier_id: string;
       mission_name_match: string;
@@ -25,6 +26,11 @@ type XpRewardTierMatchRow = {
 type AwardResultRow = {
   attendee_count: number;
   players_awarded: number;
+};
+
+type RevertResultRow = {
+  players_updated: number;
+  xp_reverted: number;
 };
 
 function normalizeMissionName(missionName: string | null): string | null {
@@ -134,10 +140,48 @@ export async function awardOperationXp(
 
   return {
     awarded: true,
+    award_status: award.players_awarded > 0 ? "awarded" : "already_awarded",
     mission_name: missionName,
     tier_id: tier.id,
     mission_name_match: tier.mission_name_match,
     xp_amount: tier.xp_amount,
     players_awarded: award.players_awarded
   };
+}
+
+export async function revertOperationXpAwards(
+  tx: DbTransaction,
+  operationId: string
+): Promise<{
+  players_updated: number;
+  xp_reverted: number;
+}> {
+  const result = await tx.query<RevertResultRow>(
+    `
+    WITH award_totals AS (
+      SELECT
+        player_uid,
+        SUM(xp_amount)::int AS xp_amount
+      FROM operation_xp_awards
+      WHERE operation_id = $1
+      GROUP BY player_uid
+    ),
+    updated_players AS (
+      UPDATE players p
+      SET
+        xp_total = greatest(0, p.xp_total - award_totals.xp_amount),
+        updated_at = now()
+      FROM award_totals
+      WHERE p.player_uid = award_totals.player_uid
+      RETURNING award_totals.xp_amount
+    )
+    SELECT
+      COUNT(*)::int AS players_updated,
+      COALESCE(SUM(xp_amount), 0)::int AS xp_reverted
+    FROM updated_players
+    `,
+    [operationId]
+  );
+
+  return result.rows[0] ?? { players_updated: 0, xp_reverted: 0 };
 }

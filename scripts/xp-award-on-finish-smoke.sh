@@ -142,7 +142,7 @@ finish_response="$(
     }"
 )"
 printf "%s" "$finish_response" |
-  assert_json "data.ok === true && data.xp_award?.awarded === true && data.xp_award.xp_amount === 25 && data.xp_award.players_awarded === 2 && data.xp_award.mission_name_match === '$specific_match'"
+  assert_json "data.ok === true && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 25 && data.xp_award.players_awarded === 2 && data.xp_award.mission_name_match === '$specific_match'"
 
 player_one_xp="$(sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")"
 player_two_xp="$(sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_two_uid")"
@@ -169,7 +169,7 @@ curl -fsS -X POST "$BASE_URL/v1/operations/$operation_id/finish" \
       {\"player_uid\":\"$player_two_uid\",\"name\":\"XP Award Bravo\"}
     ]
   }" |
-  assert_json "data.ok === true && data.idempotent === true && data.xp_award?.awarded === true && data.xp_award.players_awarded === 2"
+  assert_json "data.ok === true && data.idempotent === true && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.players_awarded === 2"
 
 player_one_xp="$(sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")"
 ledger_count="$(sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"
@@ -194,7 +194,7 @@ curl -fsS -X POST "$BASE_URL/v1/operations/$operation_id/finish" \
       {\"player_uid\":\"$player_two_uid\",\"name\":\"XP Award Bravo\"}
     ]
   }" |
-  assert_json "data.ok === true && data.idempotent === false && data.xp_award?.awarded === true && data.xp_award.players_awarded === 0"
+  assert_json "data.ok === true && data.idempotent === false && data.xp_award?.awarded === true && data.xp_award.award_status === 'already_awarded' && data.xp_award.players_awarded === 0"
 
 player_two_xp="$(sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_two_uid")"
 ledger_count="$(sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"

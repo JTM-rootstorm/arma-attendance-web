@@ -56,11 +56,14 @@ GET  /v1/operations/:operation_id/attendance
 GET  /v1/operations/:operation_id/payloads
 GET  /v1/operations/:operation_id/summary
 GET  /v1/ingest-requests/:request_id
+DELETE /v1/operations/:operation_id
 ```
 
 Operation ingest requests require `request_id` and `server_key`. Extra payload fields are stored as raw JSON. Reusing the same `request_id` returns the saved response with `idempotent: true`.
 
-`POST /v1/operations/:operation_id/finish` awards hidden player XP after finish attendance is normalized. The award is based on the final stored `mission_name`, matched case-insensitively against `xp_reward_tiers.mission_name_match`. Replayed or duplicate finish requests are protected by an `operation_xp_awards` ledger and do not double-award XP.
+`POST /v1/operations/:operation_id/finish` awards hidden player XP after finish attendance is normalized. The award is based on the final stored `mission_name`, matched case-insensitively against `xp_reward_tiers.mission_name_match`. Replayed or duplicate finish requests are protected by an `operation_xp_awards` ledger and do not double-award XP. When a tier matches, `xp_award.award_status` is `awarded` if new XP was added and `already_awarded` if the ledger blocked a duplicate award.
+
+`DELETE /v1/operations/:operation_id` is admin-only. When a deleted operation has hidden XP awards, the API reverses those awards from `players.xp_total` before deleting the operation and cascading the award ledger rows.
 
 ## Players
 

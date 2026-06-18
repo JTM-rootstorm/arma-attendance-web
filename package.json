@@ -35,6 +35,7 @@
     "smoke:leaderboard:public": "bash scripts/public-leaderboard-smoke.sh",
     "smoke:xp-rewards": "bash scripts/xp-reward-tiers-smoke.sh",
     "smoke:xp-award-on-finish": "bash scripts/xp-award-on-finish-smoke.sh",
+    "smoke:xp-award-delete-reversal": "bash scripts/xp-award-delete-reversal-smoke.sh",
     "smoke:unit-stat-totals": "bash scripts/unit-leaderboard-identity-merge-smoke.sh",
     "smoke:cors": "bash scripts/cors-smoke.sh",
     "smoke:base44": "bash scripts/base44-token-smoke.sh",

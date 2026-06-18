@@ -11,7 +11,7 @@ import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 import { persistOperationAttendance, type NormalizationSummary } from "../normalization/operationAttendance.js";
 import { insertPrimaryOperationUnit, syncOperationUnitsForParticipants } from "../normalization/operationUnits.js";
 import { redactAttendance, redactOperation, redactOperationListItem } from "../privacy/redaction.js";
-import { awardOperationXp, type OperationXpAwardSummary } from "../xp/operationXpAwards.js";
+import { awardOperationXp, revertOperationXpAwards, type OperationXpAwardSummary } from "../xp/operationXpAwards.js";
 
 const missionSchema = z
   .object({
@@ -675,10 +675,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           return {
             operation_id: operationId,
             operation_deleted: false,
-            ingest_requests_deleted: 0
+            ingest_requests_deleted: 0,
+            xp_awards_reverted_count: 0,
+            xp_awards_reverted_total: 0
           };
         }
 
+        const xpReversal = await revertOperationXpAwards(tx, operation.id);
         const ingestResult = await tx.query("DELETE FROM ingest_requests WHERE operation_id = $1", [operation.id]);
         await tx.query("DELETE FROM operations WHERE id = $1", [operation.id]);
         await tx.query(
@@ -694,7 +697,9 @@ export async function registerOperationRoutes(app: FastifyInstance) {
               server_key: operation.server_key,
               mission_uid: operation.mission_uid,
               mission_name: operation.mission_name,
-              ingest_requests_deleted: ingestResult.rowCount ?? 0
+              ingest_requests_deleted: ingestResult.rowCount ?? 0,
+              xp_awards_reverted_count: xpReversal.players_updated,
+              xp_awards_reverted_total: xpReversal.xp_reverted
             })
           ]
         );
@@ -702,7 +707,9 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         return {
           operation_id: operation.id,
           operation_deleted: true,
-          ingest_requests_deleted: ingestResult.rowCount ?? 0
+          ingest_requests_deleted: ingestResult.rowCount ?? 0,
+          xp_awards_reverted_count: xpReversal.players_updated,
+          xp_awards_reverted_total: xpReversal.xp_reverted
         };
       });
 
