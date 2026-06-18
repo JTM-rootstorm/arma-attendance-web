@@ -111,6 +111,11 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
     reason: "attendance/stat upserts"
   },
   {
+    pattern: /^apps\/api\/src\/xp\/operationXpAwards\.ts$/,
+    category: "operation ingest",
+    reason: "finish-time XP award ledger and aggregate update transaction"
+  },
+  {
     pattern: /^apps\/api\/src\/discord\/scoring\.ts$/,
     category: "discord scoring",
     reason: "role evaluation CTEs and action audit reporting"

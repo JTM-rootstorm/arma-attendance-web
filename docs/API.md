@@ -60,6 +60,8 @@ GET  /v1/ingest-requests/:request_id
 
 Operation ingest requests require `request_id` and `server_key`. Extra payload fields are stored as raw JSON. Reusing the same `request_id` returns the saved response with `idempotent: true`.
 
+`POST /v1/operations/:operation_id/finish` awards hidden player XP after finish attendance is normalized. The award is based on the final stored `mission_name`, matched case-insensitively against `xp_reward_tiers.mission_name_match`. Replayed or duplicate finish requests are protected by an `operation_xp_awards` ledger and do not double-award XP.
+
 ## Players
 
 ```http
@@ -147,7 +149,7 @@ PATCH /v1/system/xp-reward-tiers/:tier_id
 DELETE /v1/system/xp-reward-tiers/:tier_id
 ```
 
-XP reward tier endpoints are owner-only configuration endpoints. They allow creating, editing, listing, and deleting mission-name-match to XP-amount rows. They do not award XP yet.
+XP reward tier endpoints are owner-only configuration endpoints. When an operation is finished, the API compares the final operation mission name against these configured match strings and awards the single best matching XP tier to each attendee. Player XP totals are stored internally and are not exposed through public APIs or the web UI yet.
 
 ## Discord
 

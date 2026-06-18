@@ -11,6 +11,7 @@ import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 import { persistOperationAttendance, type NormalizationSummary } from "../normalization/operationAttendance.js";
 import { insertPrimaryOperationUnit, syncOperationUnitsForParticipants } from "../normalization/operationUnits.js";
 import { redactAttendance, redactOperation, redactOperationListItem } from "../privacy/redaction.js";
+import { awardOperationXp, type OperationXpAwardSummary } from "../xp/operationXpAwards.js";
 
 const missionSchema = z
   .object({
@@ -60,6 +61,7 @@ type OperationIngestResponse = {
   accepted: true;
   idempotent: boolean;
   normalized?: NormalizationSummary;
+  xp_award?: OperationXpAwardSummary;
 };
 
 type OperationRow = {
@@ -507,6 +509,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         const updateResult = await tx.query<{
           id: string;
           status: OperationStatus;
+          mission_name: string | null;
         }>(
           `
           UPDATE operations
@@ -519,7 +522,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
             raw_end_payload = $5::jsonb,
             updated_at = now()
           WHERE id = $1
-          RETURNING id, status
+          RETURNING id, status, mission_name
           `,
           [
             operationId,
@@ -539,6 +542,10 @@ export async function registerOperationRoutes(app: FastifyInstance) {
         await insertOperationPayload(tx, operationId, payload.request_id, "finish", payload);
         const normalized = await persistOperationAttendance(tx, operationId, "finish", payload);
         await syncOperationUnitsForParticipants(tx, operationId);
+        const xpAward = await awardOperationXp(tx, {
+          operationId,
+          missionName: updatedOperation.mission_name
+        });
 
         const response: OperationIngestResponse = {
           ok: true,
@@ -546,7 +553,8 @@ export async function registerOperationRoutes(app: FastifyInstance) {
           status: updatedOperation.status,
           accepted: true,
           idempotent: false,
-          normalized
+          normalized,
+          xp_award: xpAward
         };
 
         await insertIngestRequest(
