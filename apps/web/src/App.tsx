@@ -52,7 +52,9 @@ import type {
   PlayerDetailResponse,
   PlayersResponse,
   PlayerSummaryResponse,
-  ViewName
+  ViewName,
+  XpRewardTierResponse,
+  XpRewardTiersResponse
 } from "./types";
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
@@ -85,6 +87,7 @@ export function App() {
   const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
   const [machineTokens, setMachineTokens] = useState<ApiResult<MachineTokensResponse>>(emptyResult);
   const [createdMachineToken, setCreatedMachineToken] = useState<CreateMachineTokenResponse | null>(null);
+  const [xpRewardTiers, setXpRewardTiers] = useState<ApiResult<XpRewardTiersResponse>>(emptyResult);
   const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
   const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
@@ -204,6 +207,27 @@ export function App() {
       });
     } catch (error) {
       setMachineTokens(errorResult(error, "Machine tokens failed."));
+    }
+  }, [canManageSystem]);
+
+  const loadXpRewardTiers = useCallback(async () => {
+    if (!canManageSystem) {
+      setXpRewardTiers(emptyResult);
+      return;
+    }
+
+    setXpRewardTiers({ status: "loading", data: null, error: null });
+
+    try {
+      setXpRewardTiers({
+        status: "ready",
+        data: await apiFetch<XpRewardTiersResponse>("/v1/system/xp-reward-tiers", {
+          params: { limit: "200" }
+        }),
+        error: null
+      });
+    } catch (error) {
+      setXpRewardTiers(errorResult(error, "XP reward tiers failed."));
     }
   }, [canManageSystem]);
 
@@ -390,6 +414,10 @@ export function App() {
   }, [loadMachineTokens]);
 
   useEffect(() => {
+    void loadXpRewardTiers();
+  }, [loadXpRewardTiers]);
+
+  useEffect(() => {
     void loadMyStats();
   }, [loadMyStats]);
 
@@ -447,6 +475,7 @@ export function App() {
     setMe(emptyResult);
     setAdminUsers(emptyResult);
     setMachineTokens(emptyResult);
+    setXpRewardTiers(emptyResult);
     setView("me");
   }
 
@@ -503,6 +532,29 @@ export function App() {
 
   async function revealMachineToken(tokenId: string) {
     return apiFetch<MachineTokenSecretResponse>(`/v1/system/machine-tokens/${tokenId}/secret`, { method: "POST" });
+  }
+
+  async function createXpRewardTier(input: { mission_name_match: string; xp_amount: number }) {
+    await apiFetch<XpRewardTierResponse>("/v1/system/xp-reward-tiers", {
+      method: "POST",
+      body: input
+    });
+    await loadXpRewardTiers();
+  }
+
+  async function updateXpRewardTier(tierId: string, input: { mission_name_match?: string; xp_amount?: number }) {
+    await apiFetch<XpRewardTierResponse>(`/v1/system/xp-reward-tiers/${tierId}`, {
+      method: "PATCH",
+      body: input
+    });
+    await loadXpRewardTiers();
+  }
+
+  async function deleteXpRewardTier(tierId: string) {
+    await apiFetch<XpRewardTierResponse>(`/v1/system/xp-reward-tiers/${tierId}`, {
+      method: "DELETE"
+    });
+    await loadXpRewardTiers();
   }
 
   async function updatePlayerName(displayName: string) {
@@ -638,6 +690,11 @@ export function App() {
         onRevokeToken={revokeMachineToken}
         onRevealToken={revealMachineToken}
         onRefresh={() => void loadMachineTokens()}
+        xpRewardTiers={xpRewardTiers}
+        onRefreshXpRewardTiers={() => void loadXpRewardTiers()}
+        onCreateXpRewardTier={createXpRewardTier}
+        onUpdateXpRewardTier={updateXpRewardTier}
+        onDeleteXpRewardTier={deleteXpRewardTier}
       />
     ) : sessionUser ? (
       <MyStatsPage

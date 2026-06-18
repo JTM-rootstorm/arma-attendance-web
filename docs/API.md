@@ -141,7 +141,13 @@ GET  /v1/system/machine-tokens
 POST /v1/system/machine-tokens
 POST /v1/system/machine-tokens/:token_id/secret
 DELETE /v1/system/machine-tokens/:token_id
+GET  /v1/system/xp-reward-tiers
+POST /v1/system/xp-reward-tiers
+PATCH /v1/system/xp-reward-tiers/:tier_id
+DELETE /v1/system/xp-reward-tiers/:tier_id
 ```
+
+XP reward tier endpoints are owner-only configuration endpoints. They allow creating, editing, listing, and deleting mission-name-match to XP-amount rows. They do not award XP yet.
 
 ## Discord
 

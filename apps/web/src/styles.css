@@ -1178,6 +1178,26 @@ tbody tr.selected {
   color: #ffffff;
 }
 
+.system-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.system-tabs button.active {
+  border-color: var(--holo-cyan);
+  box-shadow:
+    inset 0 0 18px rgba(103, 199, 255, 0.18),
+    0 0 18px rgba(103, 199, 255, 0.12);
+  color: #ffffff;
+}
+
+.xp-tier-form {
+  grid-template-columns: minmax(14rem, 1fr) minmax(8rem, 0.35fr) auto;
+}
+
 .identity-account-grid {
   display: grid;
   grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1fr);

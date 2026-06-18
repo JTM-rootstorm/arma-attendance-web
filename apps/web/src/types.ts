@@ -615,6 +615,29 @@ export type MachineTokenSecretResponse = {
   token_record: MachineTokenRecord;
 };
 
+export type XpRewardTier = {
+  id: string;
+  mission_name_match: string;
+  xp_amount: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type XpRewardTiersResponse = {
+  ok: true;
+  tiers: XpRewardTier[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type XpRewardTierResponse = {
+  ok: true;
+  tier: XpRewardTier;
+};
+
 export type UnitRole = "member" | "officer" | "admin" | "tcw_admin";
 
 export type BattalionSummary = {

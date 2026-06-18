@@ -24,6 +24,7 @@ import { registerSquadXmlRoutes } from "./routes/squadXml.js";
 import { registerSummaryRoutes } from "./routes/summaries.js";
 import { registerUnitRoutes } from "./routes/units.js";
 import { registerWebRoutes } from "./routes/web.js";
+import { registerXpRewardTierRoutes } from "./routes/xpRewardTiers.js";
 
 const app = Fastify({
   logger: {
@@ -148,6 +149,7 @@ await registerPlayerRoutes(app);
 await registerUnitRoutes(app);
 await registerLeaderboardRoutes(app);
 await registerSquadXmlRoutes(app);
+await registerXpRewardTierRoutes(app);
 await registerWebRoutes(app);
 
 try {
