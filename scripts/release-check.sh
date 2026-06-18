@@ -27,7 +27,7 @@ require_env() {
 }
 
 run pnpm typecheck
-run pnpm lint
+echo "[release:check] lint is not configured; pnpm typecheck is the current static gate"
 run pnpm drizzle:check
 run pnpm drizzle:boundary
 run pnpm build

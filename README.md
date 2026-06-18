@@ -131,7 +131,7 @@ Discord support covers guild/role snapshots, attendance-based role action evalua
 
 The API does not run a Discord client process or store a Discord bot token. A separate bot can call the bot-facing endpoints with `API_TOKEN` or `BOT_API_TOKEN`.
 
-See [`docs/discord/AUTH_POLICY.md`](docs/discord/AUTH_POLICY.md).
+See [`docs/discord/AUTH_POLICY.md`](docs/discord/AUTH_POLICY.md) and [`docs/discord/BOT_ASSIGNMENTS.md`](docs/discord/BOT_ASSIGNMENTS.md).
 
 ## API surface
 
@@ -176,5 +176,6 @@ More detail lives in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 - [`docs/API.md`](docs/API.md): endpoint index and request conventions.
 - [`docs/database/DRIZZLE.md`](docs/database/DRIZZLE.md): Drizzle/raw-SQL boundary.
 - [`docs/discord/AUTH_POLICY.md`](docs/discord/AUTH_POLICY.md): Discord auth policy and reconciliation.
+- [`docs/discord/BOT_ASSIGNMENTS.md`](docs/discord/BOT_ASSIGNMENTS.md): Discord bot assignment write contract.
 - [`docs/auth/JWT_AUTH.md`](docs/auth/JWT_AUTH.md): JWT handoff for external frontends.
 - [`docs/base44/BASE44_AGENT.md`](docs/base44/BASE44_AGENT.md): Base44 integration guidance.

@@ -32,8 +32,13 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
   },
   {
     pattern: /^apps\/api\/src\/routes\/operations\.ts$/,
-    category: "operation ingest",
-    reason: "operation ingest, idempotency, payloads, delete cascade, and detail aggregates"
+    category: "operation routes",
+    reason: "operation route registrar"
+  },
+  {
+    pattern: /^apps\/api\/src\/operations\/.*\.ts$/,
+    category: "operation services",
+    reason: "operation ingest, idempotency, payloads, delete cascade, XP rollback, and detail aggregates"
   },
   {
     pattern: /^apps\/api\/src\/routes\/ingestRequests\.ts$/,
@@ -78,7 +83,12 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
   {
     pattern: /^apps\/api\/src\/routes\/discord\.ts$/,
     category: "discord hybrid",
-    reason: "Drizzle CRUD route with raw SQL for action report joins and evaluation audit projections"
+    reason: "Discord route registrar"
+  },
+  {
+    pattern: /^apps\/api\/src\/routes\/discord\/.*\.ts$/,
+    category: "discord hybrid",
+    reason: "Discord admin CRUD, sync, role action, and audit route modules"
   },
   {
     pattern: /^apps\/api\/src\/routes\/auth\.ts$/,
@@ -106,9 +116,19 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
     reason: "operation visibility bridge joining identities to attendance"
   },
   {
+    pattern: /^apps\/api\/src\/identity\/playerCanonicalization\.ts$/,
+    category: "identity merge",
+    reason: "Discord placeholder player canonicalization moves related rows across identity, unit, operation, and audit tables"
+  },
+  {
     pattern: /^apps\/api\/src\/normalization\/operationAttendance\.ts$/,
     category: "normalization",
     reason: "attendance/stat upserts"
+  },
+  {
+    pattern: /^apps\/api\/src\/normalization\/operationUnits\.ts$/,
+    category: "normalization",
+    reason: "operation-unit attribution from primary operation unit and active participant roster membership"
   },
   {
     pattern: /^apps\/api\/src\/xp\/operationXpAwards\.ts$/,

@@ -179,6 +179,9 @@ Focused checks:
 | `pnpm smoke:csrf` | cookie-session CSRF hardening |
 | `pnpm smoke:discord` | Discord guild/role/rule/evaluation/audit flow |
 | `pnpm smoke:discord-auth-policy` | Discord auth policy, snapshots, reconciliation |
+| `pnpm smoke:xp-rewards` | owner-only XP reward tier CRUD |
+| `pnpm smoke:xp-award-on-finish` | finish-time XP award matching, duplicate protection, and public XP redaction |
+| `pnpm smoke:xp-award-delete-reversal` | operation delete XP aggregate reversal |
 | `pnpm smoke:auth` | synthetic OAuth, owner grant, Steam link/unlink, logout |
 | `pnpm smoke:rbac` | session RBAC, redaction, machine-token boundaries |
 
@@ -189,7 +192,7 @@ pnpm release:check
 RUN_DB_SMOKE=1 pnpm release:check
 ```
 
-The default release check runs typecheck, lint, build, and local non-DB smoke. `RUN_DB_SMOKE=1` adds DB-backed smoke coverage.
+The default release check runs typecheck, Drizzle schema/boundary checks, build, and local non-DB smoke. Lint is not configured yet; `pnpm typecheck` is the current static gate. `RUN_DB_SMOKE=1` adds DB-backed smoke coverage.
 
 ## Debian LXC deployment notes
 

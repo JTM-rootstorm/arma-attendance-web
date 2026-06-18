@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "echo \"lint not configured for api yet\""
+    "lint:placeholder": "echo \"lint not configured for api yet; pnpm typecheck is the current static gate\""
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

@@ -6,7 +6,8 @@
 |---|---|---|---|
 | `apps/api/src/db/pool.ts` | db plumbing | central PostgreSQL pool wrapper | permanent |
 | `apps/api/src/db/transactions.ts` | db plumbing | central transaction wrapper | permanent |
-| `apps/api/src/routes/operations.ts` | operation ingest | start/finish ingest, idempotency, payload durability, delete cascade, and detail aggregates | permanent for ingest/aggregate sections |
+| `apps/api/src/routes/operations.ts` | operation routes | operation route registrar | permanent |
+| `apps/api/src/operations/*.ts` | operation services | start/finish ingest, idempotency, payload durability, delete cascade, XP rollback, and detail aggregates | permanent for ingest/aggregate sections |
 | `apps/api/src/routes/ingestRequests.ts` | operation ingest | ingest request observability | permanent |
 | `apps/api/src/routes/summaries.ts` | reporting | dashboard aggregates and player summary projections | permanent |
 | `apps/api/src/routes/leaderboards.ts` | reporting | ranking CTEs and aggregate leaderboard math | permanent |
@@ -15,13 +16,18 @@
 | `apps/api/src/routes/healthDb.ts` | health | readiness probe is clearer as direct SQL | permanent |
 | `apps/api/src/routes/players.ts` | reporting | player list/detail aggregate projections and privacy-gated summaries | permanent for aggregate sections |
 | `apps/api/src/routes/units.ts` | unit hybrid | Drizzle route with limited raw SQL for counts, hierarchy CTE deletion, and aggregate checks | candidate for narrower helper extraction |
-| `apps/api/src/routes/discord.ts` | discord hybrid | Drizzle CRUD route with raw SQL for role-action report joins and audit projections | candidate for narrower helper extraction |
+| `apps/api/src/routes/discord.ts` | discord hybrid | Discord route registrar | permanent |
+| `apps/api/src/routes/discord/*.ts` | discord hybrid | Discord admin CRUD, sync, role action, and audit route modules | candidate for narrower helper extraction |
 | `apps/api/src/routes/auth.ts` | auth/session bridge | OAuth and synthetic auth bridge with provider-state, self-stat aggregates, and audit transactions | candidate for future conversion |
 | `apps/api/src/routes/admin.ts` | admin/user search | admin multi-filter search, role transactions, audit writes, and player-name reset projections | candidate for future conversion |
 | `apps/api/src/auth/csrf.ts` | auth/session bridge | CSRF token compatibility path | candidate for future conversion |
 | `apps/api/src/auth/operationAccess.ts` | auth/session bridge | operation visibility bridge joining identities to attendance | candidate for future conversion |
+| `apps/api/src/identity/playerCanonicalization.ts` | identity merge | Discord placeholder player canonicalization moves related rows across identity, unit, operation, and audit tables | permanent |
 | `apps/api/src/normalization/operationAttendance.ts` | normalization | attendance/stat upserts across normalized operation rows | permanent |
+| `apps/api/src/normalization/operationUnits.ts` | normalization | operation-unit attribution from primary operation unit and active participant roster membership | permanent |
+| `apps/api/src/xp/operationXpAwards.ts` | operation ingest | finish-time XP award ledger and aggregate update transaction | permanent |
 | `apps/api/src/discord/scoring.ts` | Discord scoring | rule evaluation CTEs and action audit reporting | permanent |
+| `apps/api/src/discord/membershipResolver.ts` | Discord auth sync | Discord guild role claim resolution and assignment reconciliation | permanent |
 | `apps/api/src/scripts/backfillAttendance.ts` | backfill | maintenance backfill | permanent |
 | `apps/api/src/scripts/backfillScoreboardStats.ts` | backfill | maintenance backfill | permanent |
 | `apps/api/src/scripts/backfillUnits.ts` | backfill | maintenance backfill | permanent |

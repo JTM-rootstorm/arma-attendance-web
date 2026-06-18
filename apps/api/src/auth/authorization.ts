@@ -1,12 +1,9 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import {
-  getAcceptedMachineTokenKind,
-  getCurrentUser,
-  hasRole,
-  type CurrentUser,
-  type MachineTokenKind
-} from "../auth.js";
+import { getCurrentUser, hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
+import { sendForbidden, sendUnauthorized } from "../http/responses.js";
+import { type AuthContextOptions, resolveMachineTokenKind } from "./authContext.js";
+import { machineTokenKindSets } from "./machineTokenKinds.js";
 import { getVisibleUnitIds, hasUnitRole } from "./units.js";
 
 export type AuthContext =
@@ -27,55 +24,21 @@ export type AnonymousAuthContext = {
   machineTokenKind: null;
 };
 
-function unauthorized(reply: FastifyReply) {
-  return reply.code(401).send({
-    ok: false,
-    error: {
-      code: "unauthorized",
-      message: "Missing or invalid authentication."
-    }
-  });
-}
-
-function forbidden(reply: FastifyReply) {
-  return reply.code(403).send({
-    ok: false,
-    error: {
-      code: "forbidden",
-      message: "The authenticated user does not have permission for this action."
-    }
-  });
-}
-
 export async function getAuthContext(
   request: FastifyRequest,
   reply: FastifyReply,
-  options: { allowMachineToken?: boolean; allowBotToken?: boolean; machineTokenKinds?: MachineTokenKind[] } = {}
+  options: AuthContextOptions = {}
 ): Promise<AuthContext | null> {
-  if (options.machineTokenKinds) {
-    const tokenKind = await getAcceptedMachineTokenKind(request, options.machineTokenKinds);
+  const tokenKind = await resolveMachineTokenKind(request, options);
 
-    if (tokenKind) {
-      return { kind: "machine", user: null, machineTokenKind: tokenKind };
-    }
-  } else if (options.allowBotToken) {
-    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]);
-
-    if (tokenKind) {
-      return { kind: "machine", user: null, machineTokenKind: tokenKind };
-    }
-  } else if (options.allowMachineToken) {
-    const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "arma_server"]);
-
-    if (tokenKind) {
-      return { kind: "machine", user: null, machineTokenKind: tokenKind };
-    }
+  if (tokenKind) {
+    return { kind: "machine", user: null, machineTokenKind: tokenKind };
   }
 
   const user = await getCurrentUser(request);
 
   if (!user) {
-    unauthorized(reply);
+    sendUnauthorized(reply);
     return null;
   }
 
@@ -87,29 +50,15 @@ export async function getOptionalAuthContext(
   options: {
     allowMachineToken?: boolean;
     allowBotToken?: boolean;
-    machineTokenKinds?: MachineTokenKind[];
+    machineTokenKinds?: readonly MachineTokenKind[];
     ignoreInvalidCredentials?: boolean;
   } = {}
 ): Promise<AuthContext | AnonymousAuthContext> {
   try {
-    if (options.machineTokenKinds) {
-      const tokenKind = await getAcceptedMachineTokenKind(request, options.machineTokenKinds);
+    const tokenKind = await resolveMachineTokenKind(request, options);
 
-      if (tokenKind) {
-        return { kind: "machine", user: null, machineTokenKind: tokenKind };
-      }
-    } else if (options.allowBotToken) {
-      const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]);
-
-      if (tokenKind) {
-        return { kind: "machine", user: null, machineTokenKind: tokenKind };
-      }
-    } else if (options.allowMachineToken) {
-      const tokenKind = await getAcceptedMachineTokenKind(request, ["api", "arma_server"]);
-
-      if (tokenKind) {
-        return { kind: "machine", user: null, machineTokenKind: tokenKind };
-      }
+    if (tokenKind) {
+      return { kind: "machine", user: null, machineTokenKind: tokenKind };
     }
 
     const user = await getCurrentUser(request);
@@ -132,7 +81,7 @@ export async function requireDiscordBotAssignmentWriter(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<AuthContext | null> {
-  return getAuthContext(request, reply, { machineTokenKinds: ["api", "bot"] });
+  return getAuthContext(request, reply, { machineTokenKinds: machineTokenKindSets.botWriter });
 }
 
 export function canSeeSensitiveIds(user: CurrentUser | null, machineTokenKind?: MachineTokenKind | null): boolean {
@@ -196,5 +145,5 @@ export async function getReadableUnitFilter(user: CurrentUser | null): Promise<{
 }
 
 export function deny(reply: FastifyReply) {
-  return forbidden(reply);
+  return sendForbidden(reply);
 }

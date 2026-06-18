@@ -5,6 +5,7 @@ import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 
 import { config } from "./config.js";
 import { isLikelyJwt, verifyAccessJwt } from "./auth/jwt.js";
+import { machineTokenKindSets } from "./auth/machineTokenKinds.js";
 import { getDrizzleDb } from "./db/drizzle.js";
 import { appUsers, userIdentities, userRoles, userSessions } from "./db/schema/auth.js";
 import { machineTokens } from "./db/schema/machineTokens.js";
@@ -301,7 +302,7 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
   return (await getCurrentUserFromJwt(request)) ?? getCurrentUserFromCookie(request);
 }
 
-async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {
+async function findActiveDbMachineToken(request: FastifyRequest, kinds: readonly MachineTokenKind[]): Promise<MachineTokenKind | null> {
   const token = getBearerToken(request);
 
   if (!token || !config.databaseUrl) {
@@ -342,7 +343,7 @@ async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineT
   return row.token_kind;
 }
 
-export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {
+export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds: readonly MachineTokenKind[]): Promise<MachineTokenKind | null> {
   const token = getBearerToken(request);
 
   if (!token) {
@@ -361,21 +362,21 @@ export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds
 }
 
 export async function requireBearerToken(request: FastifyRequest, reply: FastifyReply) {
-  if (!(await getAcceptedMachineTokenKind(request, ["api", "arma_server"]))) {
+  if (!(await getAcceptedMachineTokenKind(request, machineTokenKindSets.ingest))) {
     return unauthorized(reply);
   }
 }
 
 export async function isMachineTokenRequest(request: FastifyRequest): Promise<boolean> {
-  return Boolean(await getAcceptedMachineTokenKind(request, ["api", "arma_server"]));
+  return Boolean(await getAcceptedMachineTokenKind(request, machineTokenKindSets.ingest));
 }
 
 export async function isAdminOrBotTokenRequest(request: FastifyRequest): Promise<boolean> {
-  return Boolean(await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]));
+  return Boolean(await getAcceptedMachineTokenKind(request, machineTokenKindSets.adminOrBotOrIngest));
 }
 
 export async function isBase44TokenRequest(request: FastifyRequest): Promise<boolean> {
-  return Boolean(await getAcceptedMachineTokenKind(request, ["base44_integration"]));
+  return Boolean(await getAcceptedMachineTokenKind(request, machineTokenKindSets.base44));
 }
 
 export async function requireAdminOrBotToken(request: FastifyRequest, reply: FastifyReply) {
