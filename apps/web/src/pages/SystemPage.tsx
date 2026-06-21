@@ -126,6 +126,7 @@ export function SystemPage({
     completion_percent: string;
     display_order: number;
     is_active: boolean;
+    world_name_matches?: string[];
   }) => Promise<void>;
   onUpdatePlanet: (
     planetId: string,
@@ -136,6 +137,7 @@ export function SystemPage({
       completion_percent?: string;
       display_order?: number;
       is_active?: boolean;
+      world_name_matches?: string[];
     }
   ) => Promise<void>;
   onDeletePlanet: (planetId: string) => Promise<void>;
@@ -160,6 +162,7 @@ export function SystemPage({
   const [planetDescription, setPlanetDescription] = useState("");
   const [planetCompletionPercent, setPlanetCompletionPercent] = useState("0.000");
   const [planetDisplayOrder, setPlanetDisplayOrder] = useState("0");
+  const [planetWorldFilters, setPlanetWorldFilters] = useState("");
   const [planetActive, setPlanetActive] = useState(true);
   const [planetError, setPlanetError] = useState("");
   const [editingPlanet, setEditingPlanet] = useState<{
@@ -169,8 +172,32 @@ export function SystemPage({
     description: string;
     completion_percent: string;
     display_order: string;
+    world_name_matches: string;
     is_active: boolean;
   } | null>(null);
+
+  function parseWorldNameMatches(value: string): string[] {
+    const seen = new Set<string>();
+    const matches: string[] = [];
+
+    for (const rawPart of value.split(/[\n,]+/)) {
+      const match = rawPart.trim().replace(/\s+/g, " ");
+      const key = match.toLowerCase();
+
+      if (match.length === 0 || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      matches.push(match);
+    }
+
+    return matches;
+  }
+
+  function formatWorldNameMatches(matches: string[]): string {
+    return matches.join("\n");
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -275,13 +302,15 @@ export function SystemPage({
         description: planetDescription.trim() || null,
         completion_percent: toPercent(planetCompletionPercent),
         display_order: Number(planetDisplayOrder),
-        is_active: planetActive
+        is_active: planetActive,
+        world_name_matches: parseWorldNameMatches(planetWorldFilters)
       });
       setPlanetSlug("");
       setPlanetName("");
       setPlanetDescription("");
       setPlanetCompletionPercent("0.000");
       setPlanetDisplayOrder("0");
+      setPlanetWorldFilters("");
       setPlanetActive(true);
     } catch (error) {
       setPlanetError(error instanceof Error ? error.message : "Planet could not be created.");
@@ -297,6 +326,7 @@ export function SystemPage({
       description: planet.description ?? "",
       completion_percent: planet.completion_percent,
       display_order: String(planet.display_order),
+      world_name_matches: formatWorldNameMatches(planet.world_name_matches),
       is_active: planet.is_active
     });
   }
@@ -315,6 +345,7 @@ export function SystemPage({
         description: editingPlanet.description.trim() || null,
         completion_percent: toPercent(editingPlanet.completion_percent),
         display_order: Number(editingPlanet.display_order),
+        world_name_matches: parseWorldNameMatches(editingPlanet.world_name_matches),
         is_active: editingPlanet.is_active
       });
       setEditingPlanet(null);
@@ -690,6 +721,13 @@ export function SystemPage({
               placeholder="Order"
               aria-label="Planet display order"
             />
+            <textarea
+              rows={2}
+              value={planetWorldFilters}
+              onChange={(event) => setPlanetWorldFilters(event.target.value)}
+              placeholder="World filters"
+              aria-label="Planet world filters"
+            />
             <label className="checkbox-control">
               <input type="checkbox" checked={planetActive} onChange={(event) => setPlanetActive(event.target.checked)} />
               <span>Active</span>
@@ -706,6 +744,7 @@ export function SystemPage({
                   <th>Name</th>
                   <th>Slug</th>
                   <th>Completion</th>
+                  <th>World Filters</th>
                   <th>Active</th>
                   <th>Updated</th>
                   <th>Actions</th>
@@ -757,6 +796,20 @@ export function SystemPage({
                         </td>
                         <td>
                           {isEditing && editingPlanet ? (
+                            <textarea
+                              rows={2}
+                              value={editingPlanet.world_name_matches}
+                              onChange={(event) => setEditingPlanet({ ...editingPlanet, world_name_matches: event.target.value })}
+                              aria-label="Edit planet world filters"
+                            />
+                          ) : planet.world_name_matches.length > 0 ? (
+                            planet.world_name_matches.join(", ")
+                          ) : (
+                            "None"
+                          )}
+                        </td>
+                        <td>
+                          {isEditing && editingPlanet ? (
                             <label className="checkbox-control compact">
                               <input
                                 type="checkbox"
@@ -796,7 +849,7 @@ export function SystemPage({
                   })
                 ) : (
                   <tr>
-                    <td colSpan={6}>{planets.status === "loading" ? "Loading planets." : "No planets configured yet."}</td>
+                    <td colSpan={7}>{planets.status === "loading" ? "Loading planets." : "No planets configured yet."}</td>
                   </tr>
                 )}
               </tbody>

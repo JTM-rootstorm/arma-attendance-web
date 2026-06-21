@@ -660,6 +660,7 @@ export function App() {
     completion_percent: string;
     display_order: number;
     is_active: boolean;
+    world_name_matches?: string[];
   }) {
     await apiFetch<PlanetResponse>("/v1/system/planets", {
       method: "POST",
@@ -678,6 +679,7 @@ export function App() {
       completion_percent?: string;
       display_order?: number;
       is_active?: boolean;
+      world_name_matches?: string[];
     }
   ) {
     await apiFetch<PlanetResponse>(`/v1/system/planets/${planetId}`, {

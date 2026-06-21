@@ -40,6 +40,7 @@ export const operationPlanetProgressAwards = pgTable(
     tierId: uuid("tier_id").references(() => xpRewardTiers.id, { onDelete: "set null" }),
     missionName: text("mission_name").notNull(),
     missionNameMatch: text("mission_name_match").notNull(),
+    worldNameMatch: text("world_name_match"),
     progressPercent: numeric("progress_percent", { precision: 6, scale: 3 }).notNull(),
     awardedAt: timestamp("awarded_at", { withTimezone: true }).notNull().defaultNow()
   },

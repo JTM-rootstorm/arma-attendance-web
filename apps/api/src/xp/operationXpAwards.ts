@@ -23,16 +23,19 @@ export type OperationPlanetProgressAwardSummary =
       reason:
         | "operation_failed"
         | "no_mission_name"
+        | "no_world_name"
         | "no_matching_tier"
-        | "no_active_planets"
+        | "no_matching_planet"
         | "zero_progress"
         | "already_awarded";
       mission_name: string | null;
+      world_name: string | null;
     }
   | {
       awarded: true;
       award_status: "awarded" | "already_awarded";
       mission_name: string;
+      world_name: string;
       tier_id: string;
       mission_name_match: string;
       progress_percent: string;
@@ -41,6 +44,7 @@ export type OperationPlanetProgressAwardSummary =
         planet_id: string;
         planet_slug: string;
         planet_name: string;
+        world_name_match: string;
         completion_percent_before: string;
         completion_percent_after: string;
       }>;
@@ -68,12 +72,14 @@ type PlanetRow = {
   slug: string;
   name: string;
   completion_percent: string;
+  world_name_match: string;
 };
 
 type PlanetAwardUpdateRow = {
   id: string;
   slug: string;
   name: string;
+  world_name_match: string;
   completion_percent_before: string;
   completion_percent: string;
 };
@@ -85,6 +91,11 @@ type PlanetProgressRevertResultRow = {
 
 function normalizeMissionName(missionName: string | null): string | null {
   const normalized = missionName?.trim().replace(/\s+/g, " ") ?? "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeWorldName(worldName: string | null): string | null {
+  const normalized = worldName?.trim().replace(/\s+/g, " ") ?? "";
   return normalized.length > 0 ? normalized : null;
 }
 
@@ -214,16 +225,28 @@ export async function awardOperationPlanetProgress(
   input: {
     operationId: string;
     missionName: string | null;
+    worldName: string | null;
     tier?: XpRewardTierMatchRow | null;
   }
 ): Promise<OperationPlanetProgressAwardSummary> {
   const missionName = normalizeMissionName(input.missionName);
+  const worldName = normalizeWorldName(input.worldName);
 
   if (!missionName) {
     return {
       awarded: false,
       reason: "no_mission_name",
-      mission_name: null
+      mission_name: null,
+      world_name: worldName
+    };
+  }
+
+  if (!worldName) {
+    return {
+      awarded: false,
+      reason: "no_world_name",
+      mission_name: missionName,
+      world_name: null
     };
   }
 
@@ -233,7 +256,8 @@ export async function awardOperationPlanetProgress(
     return {
       awarded: false,
       reason: "no_matching_tier",
-      mission_name: missionName
+      mission_name: missionName,
+      world_name: worldName
     };
   }
 
@@ -243,13 +267,14 @@ export async function awardOperationPlanetProgress(
     return {
       awarded: false,
       reason: "zero_progress",
-      mission_name: missionName
+      mission_name: missionName,
+      world_name: worldName
     };
   }
 
   const existingAwardResult = await tx.query<PlanetRow>(
     `
-    SELECT p.id, p.slug, p.name, p.completion_percent::text
+    SELECT p.id, p.slug, p.name, p.completion_percent::text, COALESCE(oppa.world_name_match, '') AS world_name_match
     FROM operation_planet_progress_awards oppa
     JOIN planets p ON p.id = oppa.planet_id
     WHERE oppa.operation_id = $1
@@ -263,6 +288,7 @@ export async function awardOperationPlanetProgress(
       awarded: true,
       award_status: "already_awarded",
       mission_name: missionName,
+      world_name: worldName,
       tier_id: tier.id,
       mission_name_match: tier.mission_name_match,
       progress_percent: progressPercent.toFixed(3),
@@ -271,6 +297,7 @@ export async function awardOperationPlanetProgress(
         planet_id: planet.id,
         planet_slug: planet.slug,
         planet_name: planet.name,
+        world_name_match: planet.world_name_match,
         completion_percent_before: Number(planet.completion_percent).toFixed(3),
         completion_percent_after: Number(planet.completion_percent).toFixed(3)
       }))
@@ -279,11 +306,24 @@ export async function awardOperationPlanetProgress(
 
   const updateResult = await tx.query<PlanetAwardUpdateRow>(
     `
-    WITH active_planets AS MATERIALIZED (
-      SELECT id, slug, name, display_order, completion_percent
-      FROM planets
-      WHERE is_active = true
-      ORDER BY display_order ASC, name ASC
+    WITH matched_planet AS MATERIALIZED (
+      SELECT
+        p.id,
+        p.slug,
+        p.name,
+        p.display_order,
+        p.completion_percent,
+        pwf.world_name_match
+      FROM planet_world_filters pwf
+      JOIN planets p ON p.id = pwf.planet_id
+      WHERE p.is_active = true
+        AND position(lower(regexp_replace(btrim(pwf.world_name_match), '\\s+', ' ', 'g')) in lower($6)) > 0
+      ORDER BY
+        length(regexp_replace(btrim(pwf.world_name_match), '\\s+', ' ', 'g')) DESC,
+        p.display_order ASC,
+        p.name ASC,
+        p.id ASC
+      LIMIT 1
       FOR UPDATE
     ),
     inserted_awards AS (
@@ -293,16 +333,18 @@ export async function awardOperationPlanetProgress(
         tier_id,
         mission_name,
         mission_name_match,
+        world_name_match,
         progress_percent
       )
       SELECT
         $1,
-        active_planets.id,
+        matched_planet.id,
         $2,
         $3,
         $4,
+        matched_planet.world_name_match,
         $5::numeric(6,3)
-      FROM active_planets
+      FROM matched_planet
       ON CONFLICT (operation_id, planet_id) DO NOTHING
       RETURNING planet_id
     ),
@@ -311,18 +353,19 @@ export async function awardOperationPlanetProgress(
       SET
         completion_percent = least(100.000, p.completion_percent + $5::numeric(6,3))::numeric(6,3),
         updated_at = now()
-      FROM active_planets
-      JOIN inserted_awards ON inserted_awards.planet_id = active_planets.id
-      WHERE p.id = active_planets.id
+      FROM matched_planet
+      JOIN inserted_awards ON inserted_awards.planet_id = matched_planet.id
+      WHERE p.id = matched_planet.id
       RETURNING
         p.id,
         p.slug,
         p.name,
-        active_planets.display_order,
-        active_planets.completion_percent::text AS completion_percent_before,
+        matched_planet.display_order,
+        matched_planet.world_name_match,
+        matched_planet.completion_percent::text AS completion_percent_before,
         p.completion_percent::text AS completion_percent
     )
-    SELECT id, slug, name, completion_percent_before, completion_percent
+    SELECT id, slug, name, world_name_match, completion_percent_before, completion_percent
     FROM updated_planets
     ORDER BY display_order ASC, name ASC
     `,
@@ -331,15 +374,17 @@ export async function awardOperationPlanetProgress(
       tier.id,
       missionName,
       tier.mission_name_match,
-      progressPercent.toFixed(3)
+      progressPercent.toFixed(3),
+      worldName
     ]
   );
 
   if (updateResult.rows.length === 0) {
     return {
       awarded: false,
-      reason: "no_active_planets",
-      mission_name: missionName
+      reason: "no_matching_planet",
+      mission_name: missionName,
+      world_name: worldName
     };
   }
 
@@ -347,6 +392,7 @@ export async function awardOperationPlanetProgress(
     awarded: true,
     award_status: "awarded",
     mission_name: missionName,
+    world_name: worldName,
     tier_id: tier.id,
     mission_name_match: tier.mission_name_match,
     progress_percent: progressPercent.toFixed(3),
@@ -355,6 +401,7 @@ export async function awardOperationPlanetProgress(
       planet_id: planet.id,
       planet_slug: planet.slug,
       planet_name: planet.name,
+      world_name_match: planet.world_name_match,
       completion_percent_before: Number(planet.completion_percent_before).toFixed(3),
       completion_percent_after: Number(planet.completion_percent).toFixed(3)
     }))

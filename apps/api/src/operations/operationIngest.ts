@@ -118,6 +118,7 @@ async function finishOperationIngestInTransaction(
     id: string;
     status: OperationStatus;
     mission_name: string | null;
+    world_name: string | null;
   }>(
     `
     UPDATE operations
@@ -130,7 +131,7 @@ async function finishOperationIngestInTransaction(
       raw_end_payload = $6::jsonb,
       updated_at = now()
     WHERE id = $1
-    RETURNING id, status, mission_name
+    RETURNING id, status, mission_name, world_name
     `,
     [
       operationId,
@@ -171,11 +172,13 @@ async function finishOperationIngestInTransaction(
       ? {
           awarded: false as const,
           reason: "operation_failed" as const,
-          mission_name: updatedOperation.mission_name
+          mission_name: updatedOperation.mission_name,
+          world_name: updatedOperation.world_name
         }
       : await awardOperationPlanetProgress(tx, {
           operationId,
           missionName: updatedOperation.mission_name,
+          worldName: updatedOperation.world_name,
           tier
         });
 

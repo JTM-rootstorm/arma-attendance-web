@@ -652,6 +652,7 @@ export type Planet = {
   completion_percent: string;
   display_order: number;
   is_active: boolean;
+  world_name_matches: string[];
   created_at: string;
   updated_at: string;
 };

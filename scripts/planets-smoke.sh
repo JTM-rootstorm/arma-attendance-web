@@ -72,17 +72,17 @@ create_response="$(
     -H "Origin: $BASE_URL" \
     -H "X-CSRF-Token: $(csrf_token)" \
     -H "Content-Type: application/json" \
-    -d "{\"slug\":\"$planet_slug\",\"name\":\"$planet_name\",\"description\":\"Smoke theater\",\"completion_percent\":\"42.375\",\"display_order\":9,\"is_active\":true}"
+    -d "{\"slug\":\"$planet_slug\",\"name\":\"$planet_name\",\"description\":\"Smoke theater\",\"completion_percent\":\"42.375\",\"display_order\":9,\"is_active\":true,\"world_name_matches\":[\"VR\",\"Altis Smoke $STAMP\"]}"
 )"
 printf "%s" "$create_response" |
-  assert_json "data.ok === true && data.planet.slug === '$planet_slug' && data.planet.completion_percent === '42.375' && data.planet.is_active === true"
+  assert_json "data.ok === true && data.planet.slug === '$planet_slug' && data.planet.completion_percent === '42.375' && data.planet.is_active === true && data.planet.world_name_matches.includes('VR') && data.planet.world_name_matches.includes('Altis Smoke $STAMP')"
 planet_id="$(printf "%s" "$create_response" | json_value ".planet.id")"
 
 echo "[$SCRIPT_NAME] Checking owner and public reads..."
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/system/planets?include_inactive=true&limit=200" |
-  assert_json "data.ok === true && data.planets.some((planet) => planet.id === '$planet_id' && planet.slug === '$planet_slug')"
+  assert_json "data.ok === true && data.planets.some((planet) => planet.id === '$planet_id' && planet.slug === '$planet_slug' && planet.world_name_matches.includes('VR'))"
 curl -fsS "$BASE_URL/public/planets" |
-  assert_json "data.ok === true && data.planets.some((planet) => planet.slug === '$planet_slug' && planet.completion_percent === '42.375')"
+  assert_json "data.ok === true && data.planets.some((planet) => planet.slug === '$planet_slug' && planet.completion_percent === '42.375' && planet.world_name_matches.includes('VR'))"
 curl -fsS "$BASE_URL/public/planets/all" |
   assert_json "data.ok === true && data.planets.some((planet) => planet.slug === '$planet_slug' && planet.completion_percent === '42.375')"
 curl -fsS "$BASE_URL/public/planets/$planet_slug" |
@@ -105,8 +105,8 @@ curl -fsS -b "$OWNER_COOKIE_JAR" -X PATCH "$BASE_URL/v1/system/planets/$planet_i
   -H "Origin: $BASE_URL" \
   -H "X-CSRF-Token: $(csrf_token)" \
   -H "Content-Type: application/json" \
-  -d "{\"completion_percent\":\"55.125\",\"is_active\":false}" |
-  assert_json "data.ok === true && data.planet.completion_percent === '55.125' && data.planet.is_active === false"
+  -d "{\"completion_percent\":\"55.125\",\"is_active\":false,\"world_name_matches\":[\"Tanoa Smoke $STAMP\"]}" |
+  assert_json "data.ok === true && data.planet.completion_percent === '55.125' && data.planet.is_active === false && data.planet.world_name_matches.length === 1 && data.planet.world_name_matches[0] === 'Tanoa Smoke $STAMP'"
 
 inactive_public_status="$(curl -sS -o "$TMP_DIR/inactive-public.json" -w "%{http_code}" "$BASE_URL/public/planets/$planet_slug")"
 if [[ "$inactive_public_status" != "404" ]]; then

@@ -84,7 +84,13 @@ SQL
 )"
 planet_id="$(printf "%s\n" "$planet_ids" | sed -n '1p')"
 second_planet_id="$(printf "%s\n" "$planet_ids" | sed -n '2p')"
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v match_name="$match_name" <<'SQL'
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -v match_name="$match_name" \
+  -v planet_id="$planet_id" \
+  -v second_planet_id="$second_planet_id" <<'SQL'
+INSERT INTO planet_world_filters (planet_id, world_name_match)
+VALUES (:'planet_id', 'VR'), (:'second_planet_id', 'Tanoa');
+
 INSERT INTO xp_reward_tiers (mission_name_match, xp_amount, planet_progress_percent)
 VALUES (:'match_name', 30, 7.125);
 SQL
@@ -104,20 +110,20 @@ curl -fsS -X POST "$BASE_URL/v1/operations/$operation_id/finish" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(operation_finish_payload "$finish_request_id" "$SERVER_KEY" "$mission_uid" "$mission_name" "VR" "$players_json")" |
-  assert_json "data.ok === true && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 30 && data.xp_award.players_awarded === 2 && data.planet_progress_award?.awarded === true && data.planet_progress_award.award_status === 'awarded' && data.planet_progress_award.planets_updated === 2 && data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$planet_slug' && planet.completion_percent_after === '47.125') && data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$second_planet_slug' && planet.completion_percent_after === '57.125')"
+  assert_json "data.ok === true && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 30 && data.xp_award.players_awarded === 2 && data.planet_progress_award?.awarded === true && data.planet_progress_award.award_status === 'awarded' && data.planet_progress_award.world_name === 'VR' && data.planet_progress_award.planets_updated === 1 && data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$planet_slug' && planet.world_name_match === 'VR' && planet.completion_percent_after === '47.125') && !data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$second_planet_slug')"
 
 smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")" "30" "player one XP before delete"
 smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_two_uid")" "30" "player two XP before delete"
 smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")" "2" "ledger row count before delete"
-smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_planet_progress_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")" "2" "planet ledger row count before delete"
+smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_planet_progress_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")" "1" "planet ledger row count before delete"
 smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$planet_id")" "47.125" "planet completion before delete"
-smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$second_planet_id")" "57.125" "second planet completion before delete"
+smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$second_planet_id")" "50.000" "second planet completion before delete"
 
 echo "[$SCRIPT_NAME] Deleting operation as owner..."
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" \
   -H "Origin: $BASE_URL" \
   -H "X-CSRF-Token: $(csrf_token)" |
-  assert_json "data.ok === true && data.operation_deleted === true && data.xp_awards_reverted_count === 2 && data.xp_awards_reverted_total === 60 && data.planet_progress_reverted_count === 2 && data.planet_progress_reverted_total === '14.250'"
+  assert_json "data.ok === true && data.operation_deleted === true && data.xp_awards_reverted_count === 2 && data.xp_awards_reverted_total === 60 && data.planet_progress_reverted_count === 1 && data.planet_progress_reverted_total === '7.125'"
 
 smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")" "0" "player one XP after delete"
 smoke_assert_equals "$SCRIPT_NAME" "$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_two_uid")" "0" "player two XP after delete"
@@ -130,7 +136,7 @@ smoke_assert_equals "$SCRIPT_NAME" "$(
 )" "60" "audit XP reverted total"
 smoke_assert_equals "$SCRIPT_NAME" "$(
   smoke_sql_scalar "SELECT COALESCE(details->>'planet_progress_reverted_total', '') FROM admin_audit_events WHERE action = 'delete_operation' AND details->>'operation_id' = :'operation_id' ORDER BY created_at DESC LIMIT 1;" -v operation_id="$operation_id"
-)" "14.250" "audit planet progress reverted total"
+)" "7.125" "audit planet progress reverted total"
 
 echo "[$SCRIPT_NAME] Replaying delete for missing operation..."
 curl -fsS -b "$OWNER_COOKIE_JAR" -X DELETE "$BASE_URL/v1/operations/$operation_id" \

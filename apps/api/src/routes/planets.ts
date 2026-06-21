@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
@@ -6,7 +6,7 @@ import { requireRole, requireUser } from "../auth.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { adminAuditEvents } from "../db/schema/auth.js";
-import { planets } from "../db/schema/planets.js";
+import { planetWorldFilters, planets } from "../db/schema/planets.js";
 
 const planetSlugPattern = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const planetPercentPattern = /^(?:100(?:\.000)?|(?:\d|[1-9]\d)(?:\.\d{1,3})?)$/;
@@ -39,13 +39,37 @@ const planetPercentSchema = z.union([z.string(), z.number()]).transform((value, 
   return Number(raw).toFixed(3);
 });
 
+const worldNameMatchesSchema = z
+  .array(z.string().trim().min(1).max(200))
+  .max(50)
+  .default([])
+  .transform((values) => {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+
+    for (const value of values) {
+      const match = value.replace(/\s+/g, " ").trim();
+      const key = match.toLowerCase();
+
+      if (match.length === 0 || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      normalized.push(match);
+    }
+
+    return normalized;
+  });
+
 const createPlanetSchema = z.object({
   slug: z.string().trim().regex(planetSlugPattern),
   name: z.string().trim().min(1).max(200),
   description: z.string().trim().max(2000).nullable().optional(),
   completion_percent: planetPercentSchema.default("0.000"),
   display_order: z.coerce.number().int().min(-1_000_000).max(1_000_000).default(0),
-  is_active: z.coerce.boolean().default(true)
+  is_active: z.coerce.boolean().default(true),
+  world_name_matches: worldNameMatchesSchema
 });
 
 const updatePlanetSchema = z
@@ -55,7 +79,8 @@ const updatePlanetSchema = z
     description: z.string().trim().max(2000).nullable().optional(),
     completion_percent: planetPercentSchema.optional(),
     display_order: z.coerce.number().int().min(-1_000_000).max(1_000_000).optional(),
-    is_active: z.coerce.boolean().optional()
+    is_active: z.coerce.boolean().optional(),
+    world_name_matches: worldNameMatchesSchema.optional()
   })
   .refine(
     (value) =>
@@ -64,7 +89,8 @@ const updatePlanetSchema = z
       value.description !== undefined ||
       value.completion_percent !== undefined ||
       value.display_order !== undefined ||
-      value.is_active !== undefined
+      value.is_active !== undefined ||
+      value.world_name_matches !== undefined
   );
 
 type PlanetRow = {
@@ -79,7 +105,9 @@ type PlanetRow = {
   updated_at: Date;
 };
 
-type PublicPlanetRow = Pick<PlanetRow, "slug" | "name" | "description" | "completion_percent" | "updated_at">;
+type PublicPlanetRow = Pick<PlanetRow, "id" | "slug" | "name" | "description" | "completion_percent" | "updated_at">;
+
+type PlanetWorldFilterMap = Map<string, string[]>;
 
 function sendValidationFailed(reply: FastifyReply) {
   return reply.code(400).send({
@@ -139,6 +167,7 @@ function planetReturningColumns() {
 
 function publicPlanetReturningColumns() {
   return {
+    id: planets.id,
     slug: planets.slug,
     name: planets.name,
     description: planets.description,
@@ -147,7 +176,33 @@ function publicPlanetReturningColumns() {
   };
 }
 
-function serializePlanet(row: PlanetRow) {
+async function loadPlanetWorldFilterMap(planetIds: string[]): Promise<PlanetWorldFilterMap> {
+  const filterMap: PlanetWorldFilterMap = new Map();
+
+  if (planetIds.length === 0) {
+    return filterMap;
+  }
+
+  const db = getDrizzleDb();
+  const rows = await db
+    .select({
+      planet_id: planetWorldFilters.planetId,
+      world_name_match: planetWorldFilters.worldNameMatch
+    })
+    .from(planetWorldFilters)
+    .where(inArray(planetWorldFilters.planetId, planetIds))
+    .orderBy(asc(planetWorldFilters.worldNameMatch));
+
+  for (const row of rows) {
+    const matches = filterMap.get(row.planet_id) ?? [];
+    matches.push(row.world_name_match);
+    filterMap.set(row.planet_id, matches);
+  }
+
+  return filterMap;
+}
+
+function serializePlanet(row: PlanetRow, filterMap?: PlanetWorldFilterMap) {
   return {
     id: row.id,
     slug: row.slug,
@@ -156,17 +211,19 @@ function serializePlanet(row: PlanetRow) {
     completion_percent: Number(row.completion_percent).toFixed(3),
     display_order: row.display_order,
     is_active: row.is_active,
+    world_name_matches: filterMap?.get(row.id) ?? [],
     created_at: row.created_at,
     updated_at: row.updated_at
   };
 }
 
-function serializePublicPlanet(row: PublicPlanetRow) {
+function serializePublicPlanet(row: PublicPlanetRow, filterMap?: PlanetWorldFilterMap) {
   return {
     slug: row.slug,
     name: row.name,
     description: row.description,
     completion_percent: Number(row.completion_percent).toFixed(3),
+    world_name_matches: filterMap?.get(row.id) ?? [],
     updated_at: row.updated_at
   };
 }
@@ -178,11 +235,12 @@ async function listPublicPlanets(reply: FastifyReply) {
     .from(planets)
     .where(eq(planets.isActive, true))
     .orderBy(asc(planets.displayOrder), asc(planets.name));
+  const filterMap = await loadPlanetWorldFilterMap(rows.map((row) => row.id));
 
   reply.header("Cache-Control", "public, max-age=60");
   return {
     ok: true,
-    planets: rows.map(serializePublicPlanet)
+    planets: rows.map((row) => serializePublicPlanet(row, filterMap))
   };
 }
 
@@ -231,9 +289,10 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
       }
 
       reply.header("Cache-Control", "public, max-age=60");
+      const filterMap = await loadPlanetWorldFilterMap([planet.id]);
       return {
         ok: true,
-        planet: serializePublicPlanet(planet)
+        planet: serializePublicPlanet(planet, filterMap)
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to fetch public planet");
@@ -257,10 +316,11 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
         .orderBy(asc(planets.displayOrder), asc(planets.name))
         .limit(parsedQuery.data.limit)
         .offset(parsedQuery.data.offset);
+      const filterMap = await loadPlanetWorldFilterMap(rows.map((row) => row.id));
 
       return {
         ok: true,
-        planets: rows.map(serializePlanet),
+        planets: rows.map((row) => serializePlanet(row, filterMap)),
         pagination: {
           limit: parsedQuery.data.limit,
           offset: parsedQuery.data.offset,
@@ -306,6 +366,16 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
           throw new Error("Planet insert returned no rows.");
         }
 
+        if (parsedBody.data.world_name_matches.length > 0) {
+          await tx.insert(planetWorldFilters).values(
+            parsedBody.data.world_name_matches.map((worldNameMatch) => ({
+              planetId: row.id,
+              worldNameMatch,
+              createdByUserId: actor.id
+            }))
+          );
+        }
+
         await tx.insert(adminAuditEvents).values({
           actorUserId: actor.id,
           actorLabel: actor.display_name ?? actor.id,
@@ -313,14 +383,16 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
           details: {
             planet_id: row.id,
             slug: row.slug,
-            completion_percent: row.completion_percent
+            completion_percent: row.completion_percent,
+            world_name_matches: parsedBody.data.world_name_matches
           }
         });
 
         return row;
       });
 
-      return { ok: true, planet: serializePlanet(planet) };
+      const filterMap = await loadPlanetWorldFilterMap([planet.id]);
+      return { ok: true, planet: serializePlanet(planet, filterMap) };
     } catch (error) {
       if (isUniqueViolation(error)) {
         return sendDuplicatePlanet(reply);
@@ -394,6 +466,20 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
           return null;
         }
 
+        if (parsedBody.data.world_name_matches !== undefined) {
+          await tx.delete(planetWorldFilters).where(eq(planetWorldFilters.planetId, row.id));
+
+          if (parsedBody.data.world_name_matches.length > 0) {
+            await tx.insert(planetWorldFilters).values(
+              parsedBody.data.world_name_matches.map((worldNameMatch) => ({
+                planetId: row.id,
+                worldNameMatch,
+                createdByUserId: actor.id
+              }))
+            );
+          }
+        }
+
         await tx.insert(adminAuditEvents).values({
           actorUserId: actor.id,
           actorLabel: actor.display_name ?? actor.id,
@@ -402,7 +488,8 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
             planet_id: row.id,
             slug: row.slug,
             completion_percent: row.completion_percent,
-            is_active: row.is_active
+            is_active: row.is_active,
+            world_name_matches: parsedBody.data.world_name_matches
           }
         });
 
@@ -419,7 +506,8 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
         });
       }
 
-      return { ok: true, planet: serializePlanet(planet) };
+      const filterMap = await loadPlanetWorldFilterMap([planet.id]);
+      return { ok: true, planet: serializePlanet(planet, filterMap) };
     } catch (error) {
       if (isUniqueViolation(error)) {
         return sendDuplicatePlanet(reply);
@@ -479,7 +567,8 @@ export async function registerPlanetRoutes(app: FastifyInstance) {
         });
       }
 
-      return { ok: true, planet: serializePlanet(planet) };
+      const filterMap = await loadPlanetWorldFilterMap([planet.id]);
+      return { ok: true, planet: serializePlanet(planet, filterMap) };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to deactivate planet");
       return sendDatabaseUnavailable(reply);

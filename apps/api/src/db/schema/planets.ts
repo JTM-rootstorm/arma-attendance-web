@@ -21,3 +21,20 @@ export const planets = pgTable(
     index("idx_planets_public_sort").on(table.isActive, table.displayOrder, table.name)
   ]
 );
+
+export const planetWorldFilters = pgTable(
+  "planet_world_filters",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    planetId: uuid("planet_id")
+      .notNull()
+      .references(() => planets.id, { onDelete: "cascade" }),
+    worldNameMatch: text("world_name_match").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("idx_planet_world_filters_planet_id").on(table.planetId)
+  ]
+);
