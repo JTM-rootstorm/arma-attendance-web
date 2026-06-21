@@ -30,12 +30,15 @@ export function MyStatsPage({
   const scoreboardTotals = myPlayer.status === "ready" ? myPlayer.data.scoreboard_totals : null;
   const operations = myOperations.status === "ready" ? myOperations.data.operations.slice(0, 5) : [];
   const [playerName, setPlayerName] = useState(player?.display_name ?? "");
+  const [playerNameDirty, setPlayerNameDirty] = useState(false);
   const [playerNameState, setPlayerNameState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [playerNameError, setPlayerNameError] = useState("");
 
   useEffect(() => {
-    setPlayerName(player?.display_name ?? "");
-  }, [player?.display_name]);
+    if (!playerNameDirty) {
+      setPlayerName(player?.display_name ?? "");
+    }
+  }, [player?.display_name, playerNameDirty]);
 
   async function submitPlayerName(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -54,6 +57,7 @@ export function MyStatsPage({
     try {
       await onUpdatePlayerName(nextName);
       setPlayerName(nextName);
+      setPlayerNameDirty(false);
       setPlayerNameState("saved");
     } catch (error) {
       setPlayerNameError(error instanceof Error ? error.message : "Player name update failed.");
@@ -140,6 +144,7 @@ export function MyStatsPage({
             value={playerName}
             onChange={(event) => {
               setPlayerName(event.target.value);
+              setPlayerNameDirty(true);
               setPlayerNameState("idle");
             }}
             maxLength={200}

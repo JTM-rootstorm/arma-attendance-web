@@ -49,6 +49,8 @@ import type {
   OperationDetailResponse,
   OperationsResponse,
   OperationSummaryResponse,
+  PlanetResponse,
+  PlanetsResponse,
   PlayerDetailResponse,
   PlayersResponse,
   PlayerSummaryResponse,
@@ -56,6 +58,9 @@ import type {
   XpRewardTierResponse,
   XpRewardTiersResponse
 } from "./types";
+
+const adminUsersPageSize = 50;
+const autoRefreshMs = 60_000;
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   const parsed = resultError(error, fallback);
@@ -85,9 +90,11 @@ export function App() {
   const [dbHealth, setDbHealth] = useState<ApiResult<DbHealthResponse>>(emptyResult);
   const [me, setMe] = useState<ApiResult<MeResponse>>(emptyResult);
   const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
+  const [adminUsersOffset, setAdminUsersOffset] = useState(0);
   const [machineTokens, setMachineTokens] = useState<ApiResult<MachineTokensResponse>>(emptyResult);
   const [createdMachineToken, setCreatedMachineToken] = useState<CreateMachineTokenResponse | null>(null);
   const [xpRewardTiers, setXpRewardTiers] = useState<ApiResult<XpRewardTiersResponse>>(emptyResult);
+  const [planets, setPlanets] = useState<ApiResult<PlanetsResponse>>(emptyResult);
   const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
   const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
@@ -182,13 +189,18 @@ export function App() {
     try {
       setAdminUsers({
         status: "ready",
-        data: await apiFetch<AdminUsersResponse>("/v1/admin/users"),
+        data: await apiFetch<AdminUsersResponse>("/v1/admin/users", {
+          params: {
+            limit: String(adminUsersPageSize),
+            offset: String(adminUsersOffset)
+          }
+        }),
         error: null
       });
     } catch (error) {
       setAdminUsers(errorResult(error, "Admin users failed."));
     }
-  }, [canAdmin]);
+  }, [adminUsersOffset, canAdmin]);
 
   const loadMachineTokens = useCallback(async () => {
     if (!canManageSystem) {
@@ -228,6 +240,27 @@ export function App() {
       });
     } catch (error) {
       setXpRewardTiers(errorResult(error, "XP reward tiers failed."));
+    }
+  }, [canManageSystem]);
+
+  const loadPlanets = useCallback(async () => {
+    if (!canManageSystem) {
+      setPlanets(emptyResult);
+      return;
+    }
+
+    setPlanets({ status: "loading", data: null, error: null });
+
+    try {
+      setPlanets({
+        status: "ready",
+        data: await apiFetch<PlanetsResponse>("/v1/system/planets", {
+          params: { include_inactive: "true", limit: "200" }
+        }),
+        error: null
+      });
+    } catch (error) {
+      setPlanets(errorResult(error, "Planets failed."));
     }
   }, [canManageSystem]);
 
@@ -418,6 +451,10 @@ export function App() {
   }, [loadXpRewardTiers]);
 
   useEffect(() => {
+    void loadPlanets();
+  }, [loadPlanets]);
+
+  useEffect(() => {
     void loadMyStats();
   }, [loadMyStats]);
 
@@ -465,6 +502,53 @@ export function App() {
     }
   }, [loadPlayerDetail, selectedPlayerUid]);
 
+  useEffect(() => {
+    if (!sessionUser) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      if (view === "me") {
+        void loadMyStats();
+      } else if (view === "dashboard") {
+        void loadSummary();
+        void loadDataQuality();
+      } else if (view === "operations") {
+        void loadOperations();
+        if (selectedOperationId) {
+          void loadOperationDetail(selectedOperationId);
+        }
+      } else if (view === "players") {
+        void refreshRoster();
+      } else if (view === "admin") {
+        void loadAdminUsers();
+      } else if (view === "system") {
+        void loadMachineTokens();
+        void loadXpRewardTiers();
+        void loadPlanets();
+      }
+    }, autoRefreshMs);
+
+    return () => window.clearInterval(interval);
+  }, [
+    loadAdminUsers,
+    loadDataQuality,
+    loadMachineTokens,
+    loadMyStats,
+    loadOperationDetail,
+    loadOperations,
+    loadPlanets,
+    loadSummary,
+    loadXpRewardTiers,
+    selectedOperationId,
+    sessionUser,
+    view
+  ]);
+
   async function logout() {
     try {
       await apiFetch("/auth/logout", { method: "POST" });
@@ -476,6 +560,7 @@ export function App() {
     setAdminUsers(emptyResult);
     setMachineTokens(emptyResult);
     setXpRewardTiers(emptyResult);
+    setPlanets(emptyResult);
     setView("me");
   }
 
@@ -534,7 +619,12 @@ export function App() {
     return apiFetch<MachineTokenSecretResponse>(`/v1/system/machine-tokens/${tokenId}/secret`, { method: "POST" });
   }
 
-  async function createXpRewardTier(input: { mission_name_match: string; xp_amount: number }) {
+  async function createXpRewardTier(input: {
+    mission_name_match: string;
+    xp_amount: number;
+    planet_id?: string | null;
+    planet_progress_percent?: string;
+  }) {
     await apiFetch<XpRewardTierResponse>("/v1/system/xp-reward-tiers", {
       method: "POST",
       body: input
@@ -542,7 +632,15 @@ export function App() {
     await loadXpRewardTiers();
   }
 
-  async function updateXpRewardTier(tierId: string, input: { mission_name_match?: string; xp_amount?: number }) {
+  async function updateXpRewardTier(
+    tierId: string,
+    input: {
+      mission_name_match?: string;
+      xp_amount?: number;
+      planet_id?: string | null;
+      planet_progress_percent?: string;
+    }
+  ) {
     await apiFetch<XpRewardTierResponse>(`/v1/system/xp-reward-tiers/${tierId}`, {
       method: "PATCH",
       body: input
@@ -554,6 +652,49 @@ export function App() {
     await apiFetch<XpRewardTierResponse>(`/v1/system/xp-reward-tiers/${tierId}`, {
       method: "DELETE"
     });
+    await loadXpRewardTiers();
+  }
+
+  async function createPlanet(input: {
+    slug: string;
+    name: string;
+    description?: string | null;
+    completion_percent: string;
+    display_order: number;
+    is_active: boolean;
+  }) {
+    await apiFetch<PlanetResponse>("/v1/system/planets", {
+      method: "POST",
+      body: input
+    });
+    await loadPlanets();
+    await loadXpRewardTiers();
+  }
+
+  async function updatePlanet(
+    planetId: string,
+    input: {
+      slug?: string;
+      name?: string;
+      description?: string | null;
+      completion_percent?: string;
+      display_order?: number;
+      is_active?: boolean;
+    }
+  ) {
+    await apiFetch<PlanetResponse>(`/v1/system/planets/${planetId}`, {
+      method: "PATCH",
+      body: input
+    });
+    await loadPlanets();
+    await loadXpRewardTiers();
+  }
+
+  async function deletePlanet(planetId: string) {
+    await apiFetch<PlanetResponse>(`/v1/system/planets/${planetId}`, {
+      method: "DELETE"
+    });
+    await loadPlanets();
     await loadXpRewardTiers();
   }
 
@@ -681,6 +822,7 @@ export function App() {
         onLogout={() => void logout()}
         onRefreshMe={() => void loadMe()}
         onRefreshAdminUsers={() => void loadAdminUsers()}
+        onAdminUsersPageChange={(offset) => setAdminUsersOffset(offset)}
       />
     ) : view === "system" && canManageSystem ? (
       <SystemPage
@@ -691,10 +833,15 @@ export function App() {
         onRevealToken={revealMachineToken}
         onRefresh={() => void loadMachineTokens()}
         xpRewardTiers={xpRewardTiers}
+        planets={planets}
         onRefreshXpRewardTiers={() => void loadXpRewardTiers()}
         onCreateXpRewardTier={createXpRewardTier}
         onUpdateXpRewardTier={updateXpRewardTier}
         onDeleteXpRewardTier={deleteXpRewardTier}
+        onRefreshPlanets={() => void loadPlanets()}
+        onCreatePlanet={createPlanet}
+        onUpdatePlanet={updatePlanet}
+        onDeletePlanet={deletePlanet}
       />
     ) : sessionUser ? (
       <MyStatsPage

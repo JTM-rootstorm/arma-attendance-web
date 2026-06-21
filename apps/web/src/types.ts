@@ -160,6 +160,7 @@ export type PlayersResponse = {
   players: Array<{
     player_uid: string | null;
     last_name: string | null;
+    xp_total: number;
     first_seen_at: string;
     last_seen_at: string;
     operation_count: number | null;
@@ -171,6 +172,7 @@ export type PlayerDetailResponse = {
   player: {
     player_uid: string | null;
     last_name: string | null;
+    xp_total: number;
     first_seen_at: string;
     last_seen_at: string;
   };
@@ -193,6 +195,7 @@ export type PlayerDetailResponse = {
 export type PlayerSummaryResponse = {
   ok: true;
   summary: {
+    xp_total: number;
     operation_count: number | null;
     present_at_start_count: number | null;
     present_at_end_count: number | null;
@@ -523,6 +526,7 @@ export type AdminUsersResponse = {
     limit: number;
     offset: number;
     count: number;
+    total: number;
   };
 };
 
@@ -530,6 +534,7 @@ export type MyPlayerResponse = {
   ok: true;
   linked_player: {
     display_name: string | null;
+    xp_total: number;
     rank: string | null;
     first_seen_at?: string;
     last_seen_at?: string;
@@ -619,6 +624,10 @@ export type XpRewardTier = {
   id: string;
   mission_name_match: string;
   xp_amount: number;
+  planet_id: string | null;
+  planet_slug: string | null;
+  planet_name: string | null;
+  planet_progress_percent: string;
   created_at: string;
   updated_at: string;
 };
@@ -636,6 +645,33 @@ export type XpRewardTiersResponse = {
 export type XpRewardTierResponse = {
   ok: true;
   tier: XpRewardTier;
+};
+
+export type Planet = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  completion_percent: string;
+  display_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlanetsResponse = {
+  ok: true;
+  planets: Planet[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type PlanetResponse = {
+  ok: true;
+  planet: Planet;
 };
 
 export type UnitRole = "member" | "officer" | "admin" | "tcw_admin";
