@@ -10,6 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 TMP_DIR="$(mktemp -d)"
 JSON_HELPER="$ROOT/scripts/lib/smoke-json.mjs"
+OWNER_COOKIE_JAR="$TMP_DIR/owner.cookie"
 
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/smoke-env.sh"
@@ -107,6 +108,12 @@ INSERT INTO xp_reward_tiers (mission_name_match, xp_amount, planet_progress_perc
 VALUES (:'broad_match', 5, 0.000), (:'specific_match', 25, 2.500);
 SQL
 
+echo "[$SCRIPT_NAME] Creating owner session for admin planet checks..."
+curl -fsS -c "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/auth/test/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"provider_user_id\":\"xp-award-owner-$STAMP\",\"display_name\":\"XP Award Owner\",\"roles\":[\"owner\"]}" |
+  assert_json "data.ok === true"
+
 echo "[$SCRIPT_NAME] Starting matching operation..."
 start_response="$(
   curl -fsS -X POST "$BASE_URL/v1/operations/start" \
@@ -141,6 +148,10 @@ smoke_assert_equals "$SCRIPT_NAME" "$planet_ledger_count" "1" "planet ledger row
 smoke_assert_equals "$SCRIPT_NAME" "$planet_completion" "12.500" "planet completion after award"
 smoke_assert_equals "$SCRIPT_NAME" "$second_planet_completion" "20.000" "second planet completion after award"
 smoke_assert_equals "$SCRIPT_NAME" "$inactive_planet_completion" "30.000" "inactive planet completion after award"
+
+echo "[$SCRIPT_NAME] Checking admin planet list reflects award completion..."
+curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/system/planets?include_inactive=true&limit=200" |
+  assert_json "data.ok === true && data.planets.some((planet) => planet.slug === '$planet_slug' && planet.completion_percent === '12.500' && planet.world_name_matches.includes('VR'))"
 
 echo "[$SCRIPT_NAME] Checking player XP API exposure..."
 curl -fsS "$BASE_URL/v1/players?q=$STAMP&limit=20" \

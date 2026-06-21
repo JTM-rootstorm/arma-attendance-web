@@ -839,7 +839,7 @@ export function App() {
         onCreateXpRewardTier={createXpRewardTier}
         onUpdateXpRewardTier={updateXpRewardTier}
         onDeleteXpRewardTier={deleteXpRewardTier}
-        onRefreshPlanets={() => void loadPlanets()}
+        onRefreshPlanets={loadPlanets}
         onCreatePlanet={createPlanet}
         onUpdatePlanet={updatePlanet}
         onDeletePlanet={deletePlanet}

@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import { formatDate } from "../format";
 import type {
@@ -15,6 +15,7 @@ import type {
 } from "../types";
 
 const trackerConfigBaseUrl = "https://arma-stats.root-storm.com";
+const planetRefreshMs = 10_000;
 type SystemTab = "machineTokens" | "xpRewards" | "planets";
 
 function tomlString(value: string): string {
@@ -389,6 +390,24 @@ export function SystemPage({
     editingPlanet.name.trim().length === 0 ||
     !isValidPercent(editingPlanet.completion_percent) ||
     !Number.isInteger(Number(editingPlanet.display_order));
+
+  useEffect(() => {
+    if (activeTab !== "planets") {
+      return;
+    }
+
+    void onRefreshPlanets();
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      void onRefreshPlanets();
+    }, planetRefreshMs);
+
+    return () => window.clearInterval(interval);
+  }, [activeTab, onRefreshPlanets]);
 
   return (
     <section className="view-grid system-grid">
