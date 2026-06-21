@@ -14,6 +14,40 @@ export function displayValue(value: string | number | null | undefined): string 
   return String(value);
 }
 
+const textEntityMap: Record<string, string> = {
+  amp: "&",
+  apos: "'",
+  dash: "-",
+  hyphen: "-",
+  quot: "\""
+};
+
+function decodeTextEntity(match: string, entity: string): string {
+  const normalized = entity.toLowerCase();
+
+  if (normalized.startsWith("#x")) {
+    const codePoint = Number.parseInt(normalized.slice(2), 16);
+    return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+  }
+
+  if (normalized.startsWith("#")) {
+    const codePoint = Number.parseInt(normalized.slice(1), 10);
+    return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+  }
+
+  return textEntityMap[normalized] ?? match;
+}
+
+export function displayPlayerName(value: string | null | undefined): string {
+  const display = displayValue(value);
+
+  if (display === "n/a") {
+    return display;
+  }
+
+  return display.replace(/&(#\d+|#x[0-9a-f]+|amp|apos|dash|hyphen|quot);/gi, decodeTextEntity);
+}
+
 export function formatDate(value: string | null | undefined): string {
   if (!value) {
     return "n/a";

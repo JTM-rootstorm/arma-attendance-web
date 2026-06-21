@@ -6,7 +6,7 @@ import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate } from "../format";
+import { displayPlayerName, displayValue, formatDate } from "../format";
 import type {
   ApiResult,
   AuthUser,
@@ -124,7 +124,7 @@ function squadLabel(squad: BattalionSquadNode): string {
 }
 
 function leaderNames(leaders: BattalionRosterPlayer[]): string {
-  return leaders.map((leader) => leader.roster_name).join(", ");
+  return leaders.map((leader) => displayPlayerName(leader.roster_name)).join(", ");
 }
 
 function squadLeadSummary(squad: BattalionSquadNode): string {
@@ -210,14 +210,14 @@ function RosterMemberCard({
   return (
     <article className="roster-member-card">
       <div className="roster-member-identity">
-        <strong>{player.roster_name}</strong>
+        <strong>{displayPlayerName(player.roster_name)}</strong>
         {canRevealIds && playerUid ? <p className="mono">{playerUid}</p> : null}
       </div>
       <div className="roster-member-fields">
         <label>
           <span>Rank</span>
           {canManage && playerUid ? (
-            <select value={player.rank_id ?? ""} onChange={(event) => onRankChange(playerUid, event.target.value)} aria-label={`Rank for ${player.roster_name}`}>
+            <select value={player.rank_id ?? ""} onChange={(event) => onRankChange(playerUid, event.target.value)} aria-label={`Rank for ${displayPlayerName(player.roster_name)}`}>
               <option value="">Unassigned</option>
               {ranks.map((rank) => (
                 <option key={rank.id} value={rank.id}>
@@ -239,7 +239,7 @@ function RosterMemberCard({
           <select
             value={draft.squad_id}
             onChange={(event) => onDraftChange(playerUid, { squad_id: event.target.value })}
-            aria-label={`Squad assignment for ${player.roster_name}`}
+            aria-label={`Squad assignment for ${displayPlayerName(player.roster_name)}`}
           >
             <option value="">UNASSIGNED POOL</option>
             {allSquads.map((squad) => (
@@ -251,7 +251,7 @@ function RosterMemberCard({
           <select
             value={draft.billet}
             onChange={(event) => onDraftChange(playerUid, { billet: event.target.value as BattalionRosterPlayer["billet"] })}
-            aria-label={`Billet assignment for ${player.roster_name}`}
+            aria-label={`Billet assignment for ${displayPlayerName(player.roster_name)}`}
           >
             <option value="trooper">Trooper</option>
             <option value="squad_lead">Squad lead</option>
@@ -262,7 +262,7 @@ function RosterMemberCard({
             type="number"
             value={draft.sort_order}
             onChange={(event) => onDraftChange(playerUid, { sort_order: Number(event.target.value || "0") })}
-            aria-label={`Sort order for ${player.roster_name}`}
+            aria-label={`Sort order for ${displayPlayerName(player.roster_name)}`}
           />
           <button type="button" className="danger" onClick={() => onRemovePlayer(player)}>
             Remove from unit
@@ -877,7 +877,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
       return;
     }
 
-    if (!window.confirm(`Remove ${player.roster_name} from ${selectedUnit.display_name}? Past operation records will be retained.`)) {
+    if (!window.confirm(`Remove ${displayPlayerName(player.roster_name)} from ${selectedUnit.display_name}? Past operation records will be retained.`)) {
       return;
     }
 
@@ -1229,7 +1229,7 @@ export function BattalionPage({ user }: { user: AuthUser }) {
                     {playerCandidates.data.players.map((player) => (
                       <tr key={player.player_uid}>
                         <td>
-                          <strong>{displayValue(player.last_name)}</strong>
+                          <strong>{displayPlayerName(player.last_name)}</strong>
                           <p className="mono">{player.player_uid}</p>
                         </td>
                         <td>{formatDate(player.last_seen_at)}</td>

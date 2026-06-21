@@ -2,7 +2,7 @@ import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { OperationLifecycleChip, OperationOutcomeChip, OperationStatusPair } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate } from "../format";
+import { displayPlayerName, displayValue, formatDate } from "../format";
 import type {
   ApiResult,
   OperationAttendanceResponse,
@@ -104,7 +104,7 @@ function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendan
         {rows.map((row, index) => (
           <tr key={row.player_uid ?? `${row.name_at_end ?? row.name_at_start ?? "player"}-${index}`}>
             {showPlayerId ? <td className="mono">{displayValue(row.player_uid)}</td> : null}
-            <td>{displayValue(row.name_at_end ?? row.name_at_start)}</td>
+            <td>{displayPlayerName(row.name_at_end ?? row.name_at_start)}</td>
             <td>{displayValue(statValue(row, "infantry_kills"))}</td>
             <td>{displayValue(statValue(row, "soft_vehicle_kills"))}</td>
             <td>{displayValue(statValue(row, "armor_kills"))}</td>

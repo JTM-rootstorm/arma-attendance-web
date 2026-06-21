@@ -4,7 +4,7 @@ import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { OperationLifecycleChip, OperationOutcomeChip, StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate } from "../format";
+import { displayPlayerName, displayValue, formatDate } from "../format";
 import type { ApiResult, PlayerDetailResponse, PlayersResponse, PlayerSummaryResponse } from "../types";
 
 function DataMessage({ result }: { result: ApiResult<unknown> }) {
@@ -63,7 +63,7 @@ export function PlayersPage({
   const canSeeRecentOperations = Boolean(summary && summary.recent_operations.length > 0);
   const scoreboardTotals = summary?.scoreboard_totals;
   const deletingSelectedPlayer = deletePlayerUid === selectedPlayerUid ? detail?.player : null;
-  const deletingPlayerName = displayValue(deletingSelectedPlayer?.last_name);
+  const deletingPlayerName = displayPlayerName(deletingSelectedPlayer?.last_name);
 
   async function confirmDeletePlayer() {
     if (!deletePlayerUid || isDeletingPlayer) {
@@ -134,7 +134,7 @@ export function PlayersPage({
                         onClick={playerUid ? () => onSelectPlayer(playerUid) : undefined}
                       >
                         <td className="mono">{playerUid ?? "Restricted"}</td>
-                        <td>{displayValue(player.last_name)}</td>
+                        <td>{displayPlayerName(player.last_name)}</td>
                         <td>{formatDate(player.last_seen_at)}</td>
                         {canSeeOperationCounts ? <td>{player.operation_count ?? "Restricted"}</td> : null}
                       </tr>
@@ -178,7 +178,7 @@ export function PlayersPage({
                 <>
                   <div className="detail-grid">
                     <div>
-                      <h3>{displayValue(detail.player.last_name)}</h3>
+                      <h3>{displayPlayerName(detail.player.last_name)}</h3>
                       {detail.player.player_uid ? <p className="mono">{detail.player.player_uid}</p> : null}
                       <div className="detail-meta">
                         <StatusChip label={`first ${formatDate(detail.player.first_seen_at)}`} tone="muted" />

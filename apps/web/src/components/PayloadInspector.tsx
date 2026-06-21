@@ -1,4 +1,4 @@
-import { displayValue } from "../format";
+import { displayPlayerName, displayValue } from "../format";
 import type { OperationDetailResponse, PlayerDetailResponse } from "../types";
 import { CommandPanel } from "./CommandPanel";
 import { OperationStatusPair, StatusChip } from "./StatusChip";
@@ -46,7 +46,7 @@ export function PayloadInspector({
         {playerDetail ? (
           <section>
             <div className="inspection-title">
-              <strong>{displayValue(playerDetail.player.last_name)}</strong>
+              <strong>{displayPlayerName(playerDetail.player.last_name)}</strong>
               {playerDetail.recent_operations.length > 0 ? <StatusChip label={`${playerDetail.recent_operations.length} recent`} tone="ready" /> : null}
             </div>
             {playerDetail.player.player_uid ? <p className="mono">{playerDetail.player.player_uid}</p> : null}

@@ -2,7 +2,7 @@ import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { OperationLifecycleChip, OperationOutcomeChip, StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate } from "../format";
+import { displayPlayerName, displayValue, formatDate } from "../format";
 import type { ApiResult, DashboardSummaryResponse, DataQualityResponse, OperationListItem } from "../types";
 
 function DataMessage({ result }: { result: ApiResult<unknown> }) {
@@ -150,7 +150,7 @@ export function DashboardPage({
           <tbody>
             {summaryData?.top_players_by_attendance.map((player) => (
               <tr key={player.player_uid}>
-                <td>{displayValue(player.last_name) !== "n/a" ? displayValue(player.last_name) : player.player_uid}</td>
+                <td>{displayPlayerName(player.last_name) !== "n/a" ? displayPlayerName(player.last_name) : player.player_uid}</td>
                 <td>{player.operation_count}</td>
               </tr>
             ))}

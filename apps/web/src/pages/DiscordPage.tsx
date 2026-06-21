@@ -5,7 +5,7 @@ import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate, resultError } from "../format";
+import { displayPlayerName, displayValue, formatDate, resultError } from "../format";
 import type {
   ApiResult,
   DiscordAssignmentAuditsResponse,
@@ -500,7 +500,7 @@ export function DiscordPage({ hasToken, token }: { hasToken: boolean; token: str
               <tbody>
                 {linkData.map((link) => (
                   <tr key={link.discord_user_id}>
-                    <td>{displayValue(link.player_name) !== "n/a" ? displayValue(link.player_name) : link.player_uid}</td>
+                    <td>{displayPlayerName(link.player_name) !== "n/a" ? displayPlayerName(link.player_name) : link.player_uid}</td>
                     <td>{displayValue(link.discord_display_name ?? link.discord_username ?? link.discord_user_id)}</td>
                     <td>{link.source}</td>
                     <td>{formatDate(link.updated_at)}</td>

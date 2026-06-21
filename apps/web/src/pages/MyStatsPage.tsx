@@ -2,7 +2,7 @@ import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
 
 import { OperationLifecycleChip, OperationOutcomeChip } from "../components/StatusChip";
-import { formatDate } from "../format";
+import { displayPlayerName, formatDate } from "../format";
 import type { ApiResult, AuthUser, MyOperationsResponse, MyPlayerResponse } from "../types";
 
 export function MyStatsPage({
@@ -81,7 +81,7 @@ export function MyStatsPage({
       <div className="stat-grid compact">
         <div>
           <span>Player</span>
-          <strong>{player?.display_name ?? user.display_name ?? "Unlinked"}</strong>
+          <strong>{player?.display_name ? displayPlayerName(player.display_name) : user.display_name ? displayPlayerName(user.display_name) : "Unlinked"}</strong>
         </div>
         <div>
           <span>Battalion</span>
