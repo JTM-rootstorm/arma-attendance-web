@@ -83,7 +83,7 @@ finish_response="$(
     -d "$(operation_finish_payload "$finish_request_id" "$SERVER_KEY" "$operation_mission_uid" "$mission_name" "VR" "$players_json")"
 )"
 printf "%s" "$finish_response" |
-  assert_json "data.ok === true && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 25 && data.xp_award.players_awarded === 2 && data.xp_award.mission_name_match === '$specific_match'"
+  assert_json "data.ok === true && data.status === 'finished' && data.outcome === 'success' && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 25 && data.xp_award.players_awarded === 2 && data.xp_award.mission_name_match === '$specific_match'"
 
 player_one_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")"
 player_two_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_two_uid")"
