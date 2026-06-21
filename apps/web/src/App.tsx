@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiClientError, apiFetch, fetchCsv } from "./api";
 import {
@@ -22,15 +22,6 @@ import { CommandShell } from "./components/CommandShell";
 import { PayloadInspector } from "./components/PayloadInspector";
 import { StatusChip } from "./components/StatusChip";
 import { emptyResult, resultError, statusLabel } from "./format";
-import { DashboardPage } from "./pages/DashboardPage";
-import { BattalionPage } from "./pages/BattalionPage";
-import { DiscordPage } from "./pages/DiscordPage";
-import { IdentityPage } from "./pages/IdentityPage";
-import { LeaderboardPage } from "./pages/LeaderboardPage";
-import { MyStatsPage } from "./pages/MyStatsPage";
-import { OperationsPage } from "./pages/OperationsPage";
-import { PlayersPage } from "./pages/PlayersPage";
-import { SystemPage } from "./pages/SystemPage";
 import type {
   AdminUsersResponse,
   ApiResult,
@@ -61,6 +52,16 @@ import type {
 
 const adminUsersPageSize = 50;
 const autoRefreshMs = 60_000;
+
+const BattalionPage = lazy(() => import("./pages/BattalionPage").then((module) => ({ default: module.BattalionPage })));
+const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
+const DiscordPage = lazy(() => import("./pages/DiscordPage").then((module) => ({ default: module.DiscordPage })));
+const IdentityPage = lazy(() => import("./pages/IdentityPage").then((module) => ({ default: module.IdentityPage })));
+const LeaderboardPage = lazy(() => import("./pages/LeaderboardPage").then((module) => ({ default: module.LeaderboardPage })));
+const MyStatsPage = lazy(() => import("./pages/MyStatsPage").then((module) => ({ default: module.MyStatsPage })));
+const OperationsPage = lazy(() => import("./pages/OperationsPage").then((module) => ({ default: module.OperationsPage })));
+const PlayersPage = lazy(() => import("./pages/PlayersPage").then((module) => ({ default: module.PlayersPage })));
+const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   const parsed = resultError(error, fallback);
@@ -899,7 +900,15 @@ export function App() {
         ) : null
       }
     >
-      {content}
+      <Suspense
+        fallback={
+          <section className="command-panel">
+            <p className="empty-copy">Loading console...</p>
+          </section>
+        }
+      >
+        {content}
+      </Suspense>
     </CommandShell>
   );
 }
