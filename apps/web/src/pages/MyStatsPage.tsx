@@ -91,6 +91,10 @@ export function MyStatsPage({
           <strong>{primaryBattalion?.rank ?? player?.rank ?? "Unassigned"}</strong>
         </div>
         <div>
+          <span>XP</span>
+          <strong>{summary?.xp_total ?? player?.xp_total ?? 0}</strong>
+        </div>
+        <div>
           <span>Ops</span>
           <strong>{summary?.operation_count ?? 0}</strong>
         </div>
