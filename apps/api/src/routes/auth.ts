@@ -180,6 +180,7 @@ type AuthUserProfileRow = {
 type LinkedPlayerRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   rank: string | null;
   roster_name: string | null;
   first_seen_at: Date;
@@ -224,6 +225,7 @@ type SelfOperationRow = {
 };
 
 type SelfSummaryRow = {
+  xp_total: number;
   operation_count: number;
   present_at_start_count: number;
   present_at_end_count: number;
@@ -464,6 +466,7 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
     .select({
       player_uid: players.playerUid,
       last_name: players.lastName,
+      xp_total: players.xpTotal,
       rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
       roster_name: unitPlayers.rosterName,
       first_seen_at: players.firstSeenAt,
@@ -500,6 +503,7 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
     SELECT
       p.player_uid,
       p.last_name,
+      p.xp_total,
       COALESCE(ur.name, up.rank) AS rank,
       up.roster_name,
       p.first_seen_at,
@@ -1662,6 +1666,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         `
         SELECT
           COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          $2::int AS xp_total,
           COUNT(*) FILTER (WHERE op.present_at_start = true)::int AS present_at_start_count,
           COUNT(*) FILTER (WHERE op.present_at_end = true)::int AS present_at_end_count,
           COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
@@ -1679,10 +1684,11 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           AND ops.player_uid = op.player_uid
         WHERE op.player_uid = $1
         `,
-        [player.player_uid]
+        [player.player_uid, player.xp_total]
       );
 
       const summary = summaryResult.rows[0] ?? {
+        xp_total: player.xp_total,
         operation_count: 0,
         present_at_start_count: 0,
         present_at_end_count: 0,
@@ -1726,6 +1732,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         link_state: linkState,
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
+          xp_total: player.xp_total,
           rank: membershipRows[0]?.rank ?? player.rank,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at

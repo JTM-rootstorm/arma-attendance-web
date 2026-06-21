@@ -24,6 +24,7 @@ const playerParamsSchema = z.object({
 type PlayerRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   first_seen_at: Date;
   last_seen_at: Date;
   raw_last_player: unknown;
@@ -33,6 +34,7 @@ type PlayerRow = {
 type PlayerDetailRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   first_seen_at: Date;
   last_seen_at: Date;
   raw_last_player: unknown;
@@ -157,6 +159,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         SELECT
           p.player_uid,
           p.last_name,
+          p.xp_total,
           p.first_seen_at,
           p.last_seen_at,
           p.raw_last_player,
@@ -206,6 +209,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         .select({
           player_uid: players.playerUid,
           last_name: players.lastName,
+          xp_total: players.xpTotal,
           first_seen_at: players.firstSeenAt,
           last_seen_at: players.lastSeenAt,
           raw_last_player: players.rawLastPlayer,

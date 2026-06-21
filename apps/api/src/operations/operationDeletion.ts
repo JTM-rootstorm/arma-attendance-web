@@ -1,6 +1,6 @@
 import { hasRole, type CurrentUser } from "../auth.js";
 import { withDbTransaction } from "../db/transactions.js";
-import { revertOperationXpAwards } from "../xp/operationXpAwards.js";
+import { revertOperationPlanetProgressAwards, revertOperationXpAwards } from "../xp/operationXpAwards.js";
 import type { OperationDeleteResult, OperationDeleteRow } from "./types.js";
 
 export function canDeleteOperation(user: CurrentUser): boolean {
@@ -26,11 +26,14 @@ export async function deleteOperationWithAudit(operationId: string, actor: Curre
         operation_deleted: false,
         ingest_requests_deleted: 0,
         xp_awards_reverted_count: 0,
-        xp_awards_reverted_total: 0
+        xp_awards_reverted_total: 0,
+        planet_progress_reverted_count: 0,
+        planet_progress_reverted_total: "0.000"
       };
     }
 
     const xpReversal = await revertOperationXpAwards(tx, operation.id);
+    const planetProgressReversal = await revertOperationPlanetProgressAwards(tx, operation.id);
     const ingestResult = await tx.query("DELETE FROM ingest_requests WHERE operation_id = $1", [operation.id]);
     await tx.query("DELETE FROM operations WHERE id = $1", [operation.id]);
     await tx.query(
@@ -48,7 +51,9 @@ export async function deleteOperationWithAudit(operationId: string, actor: Curre
           mission_name: operation.mission_name,
           ingest_requests_deleted: ingestResult.rowCount ?? 0,
           xp_awards_reverted_count: xpReversal.players_updated,
-          xp_awards_reverted_total: xpReversal.xp_reverted
+          xp_awards_reverted_total: xpReversal.xp_reverted,
+          planet_progress_reverted_count: planetProgressReversal.planets_updated,
+          planet_progress_reverted_total: planetProgressReversal.progress_reverted
         })
       ]
     );
@@ -58,7 +63,9 @@ export async function deleteOperationWithAudit(operationId: string, actor: Curre
       operation_deleted: true,
       ingest_requests_deleted: ingestResult.rowCount ?? 0,
       xp_awards_reverted_count: xpReversal.players_updated,
-      xp_awards_reverted_total: xpReversal.xp_reverted
+      xp_awards_reverted_total: xpReversal.xp_reverted,
+      planet_progress_reverted_count: planetProgressReversal.planets_updated,
+      planet_progress_reverted_total: planetProgressReversal.progress_reverted
     };
   });
 }

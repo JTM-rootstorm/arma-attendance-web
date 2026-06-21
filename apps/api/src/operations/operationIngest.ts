@@ -2,7 +2,7 @@ import { getDefaultUnitId, getUnitIdForServerKey } from "../auth/units.js";
 import { type DbTransaction, withDbTransaction } from "../db/transactions.js";
 import { persistOperationAttendance } from "../normalization/operationAttendance.js";
 import { insertPrimaryOperationUnit, syncOperationUnitsForParticipants } from "../normalization/operationUnits.js";
-import { awardOperationXp } from "../xp/operationXpAwards.js";
+import { awardOperationPlanetProgress, awardOperationXp, findXpRewardTierForMission } from "../xp/operationXpAwards.js";
 import { getMissionField, type OperationFinishBody, type OperationStartBody } from "../routes/operations/schemas.js";
 import { getExistingIngestResponse, insertIngestRequest, insertOperationPayload, replayResponse } from "./ingestRequests.js";
 import { OperationRouteError, type OperationIngestResponse, type OperationOutcome, type OperationStatus } from "./types.js";
@@ -151,17 +151,33 @@ async function finishOperationIngestInTransaction(
   await insertOperationPayload(tx, operationId, payload.request_id, "finish", payload);
   const normalized = await persistOperationAttendance(tx, operationId, "finish", payload);
   await syncOperationUnitsForParticipants(tx, operationId);
-  const xpAward = payload.outcome === "failed"
-    ? {
-        awarded: false as const,
-        reason: "operation_failed" as const,
-        mission_name: updatedOperation.mission_name,
-        players_awarded: 0 as const
-      }
-    : await awardOperationXp(tx, {
-        operationId,
-        missionName: updatedOperation.mission_name
-      });
+  const missionName = updatedOperation.mission_name?.trim().replace(/\s+/g, " ") ?? "";
+  const tier = payload.outcome === "failed" || missionName.length === 0 ? null : await findXpRewardTierForMission(tx, missionName);
+  const xpAward =
+    payload.outcome === "failed"
+      ? {
+          awarded: false as const,
+          reason: "operation_failed" as const,
+          mission_name: updatedOperation.mission_name,
+          players_awarded: 0 as const
+        }
+      : await awardOperationXp(tx, {
+          operationId,
+          missionName: updatedOperation.mission_name,
+          tier
+        });
+  const planetProgressAward =
+    payload.outcome === "failed"
+      ? {
+          awarded: false as const,
+          reason: "operation_failed" as const,
+          mission_name: updatedOperation.mission_name
+        }
+      : await awardOperationPlanetProgress(tx, {
+          operationId,
+          missionName: updatedOperation.mission_name,
+          tier
+        });
 
   const response: OperationIngestResponse = {
     ok: true,
@@ -171,7 +187,8 @@ async function finishOperationIngestInTransaction(
     accepted: true,
     idempotent: false,
     normalized,
-    xp_award: xpAward
+    xp_award: xpAward,
+    planet_progress_award: planetProgressAward
   };
 
   await insertIngestRequest(
