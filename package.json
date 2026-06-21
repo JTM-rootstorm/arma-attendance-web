@@ -34,6 +34,7 @@
     "smoke:leaderboard": "bash scripts/leaderboard-smoke.sh",
     "smoke:leaderboard:public": "bash scripts/public-leaderboard-smoke.sh",
     "smoke:xp-rewards": "bash scripts/xp-reward-tiers-smoke.sh",
+    "smoke:planets": "bash scripts/planets-smoke.sh",
     "smoke:xp-award-on-finish": "bash scripts/xp-award-on-finish-smoke.sh",
     "smoke:xp-award-delete-reversal": "bash scripts/xp-award-delete-reversal-smoke.sh",
     "smoke:unit-stat-totals": "bash scripts/unit-leaderboard-identity-merge-smoke.sh",
@@ -52,6 +53,7 @@
     "smoke:discord-auth-policy-loader": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/discord-auth-policy-loader-smoke.ts",
     "smoke:discord-display-name": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/discord-display-name-smoke.ts",
     "smoke:auth": "bash scripts/auth-smoke.sh",
+    "smoke:admin-users-pagination": "bash scripts/admin-users-pagination-smoke.sh",
     "smoke:rbac": "bash scripts/rbac-smoke.sh",
     "release:check": "bash scripts/release-check.sh"
   }
