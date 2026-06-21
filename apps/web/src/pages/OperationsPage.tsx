@@ -25,16 +25,20 @@ function DataMessage({ result }: { result: ApiResult<unknown> }) {
 }
 
 function OperationsTable({
+  label,
   operations,
+  emptyMessage,
   selectedId,
   onSelect
 }: {
+  label: string;
   operations: OperationListItem[];
+  emptyMessage: string;
   selectedId: string;
   onSelect: (operationId: string) => void;
 }) {
   return (
-    <TacticalTable label="Operations">
+    <TacticalTable label={label}>
       <thead>
         <tr>
           <th>Mission</th>
@@ -66,6 +70,11 @@ function OperationsTable({
             <td>{displayValue(operation.payload_count)}</td>
           </tr>
         ))}
+        {operations.length === 0 ? (
+          <tr>
+            <td colSpan={7}>{emptyMessage}</td>
+          </tr>
+        ) : null}
       </tbody>
     </TacticalTable>
   );
@@ -141,6 +150,9 @@ export function OperationsPage({
   const summary = operationSummary.status === "ready" ? operationSummary.data : null;
   const attendance = operationAttendance.status === "ready" ? operationAttendance.data : null;
   const isDetailOpen = selectedOperationId.length > 0;
+  const operationRows = operations.status === "ready" ? operations.data.operations : [];
+  const inProgressOperations = operationRows.filter((operation) => operation.status === "started");
+  const finishedOperations = operationRows.filter((operation) => operation.status !== "started");
 
   return (
     <div className="view-grid">
@@ -174,7 +186,32 @@ export function OperationsPage({
             </form>
             <DataMessage result={operations} />
             {operations.status === "ready" ? (
-              <OperationsTable operations={operations.data.operations} selectedId={selectedOperationId} onSelect={onSelectOperation} />
+              <div className="operations-table-stack">
+                <section>
+                  <div className="panel-heading slim">
+                    <h3>In-Progress Operations</h3>
+                  </div>
+                  <OperationsTable
+                    label="In-progress operations"
+                    operations={inProgressOperations}
+                    emptyMessage="No in-progress operations."
+                    selectedId={selectedOperationId}
+                    onSelect={onSelectOperation}
+                  />
+                </section>
+                <section>
+                  <div className="panel-heading slim">
+                    <h3>Finished Operations</h3>
+                  </div>
+                  <OperationsTable
+                    label="Finished operations"
+                    operations={finishedOperations}
+                    emptyMessage="No finished operations."
+                    selectedId={selectedOperationId}
+                    onSelect={onSelectOperation}
+                  />
+                </section>
+              </div>
             ) : null}
           </div>
 

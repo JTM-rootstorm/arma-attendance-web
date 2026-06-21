@@ -619,6 +619,11 @@ h3 {
   color: var(--holo-cyan);
 }
 
+.operations-table-stack {
+  display: grid;
+  gap: 1rem;
+}
+
 .command-panel {
   position: relative;
   min-width: 0;
