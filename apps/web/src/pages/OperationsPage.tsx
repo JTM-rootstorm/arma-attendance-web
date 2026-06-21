@@ -1,6 +1,6 @@
 import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
-import { OperationStatusChip, StatusChip } from "../components/StatusChip";
+import { OperationLifecycleChip, OperationOutcomeChip, OperationStatusPair } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
 import { displayValue, formatDate } from "../format";
 import type {
@@ -40,7 +40,8 @@ function OperationsTable({
           <th>Mission</th>
           <th>World</th>
           <th>Server</th>
-          <th>Status</th>
+          <th>Lifecycle</th>
+          <th>Outcome</th>
           <th>Started</th>
           <th>Payloads</th>
         </tr>
@@ -56,7 +57,10 @@ function OperationsTable({
             <td>{displayValue(operation.world_name)}</td>
             <td className="mono">{operation.server_key}</td>
             <td>
-              <OperationStatusChip status={operation.status} />
+              <OperationLifecycleChip status={operation.status} />
+            </td>
+            <td>
+              <OperationOutcomeChip status={operation.status} />
             </td>
             <td>{formatDate(operation.started_at)}</td>
             <td>{displayValue(operation.payload_count)}</td>
@@ -155,9 +159,10 @@ export function OperationsPage({
                 onChange={(event) => onFiltersChange({ ...operationFilters, status: event.target.value })}
                 aria-label="Status filter"
               >
-                <option value="">any status</option>
+                <option value="">any lifecycle</option>
                 <option value="started">started</option>
-                <option value="finished">finished</option>
+                <option value="finished">finished / mission success</option>
+                <option value="failed">finished / mission failed</option>
                 <option value="abandoned">abandoned</option>
               </select>
               <input
@@ -214,7 +219,7 @@ export function OperationsPage({
                     <h3>{displayValue(detail.operation.mission_name)}</h3>
                     <p className="mono">{detail.operation.id}</p>
                     <div className="detail-meta">
-                      <StatusChip label={detail.operation.status} tone={detail.operation.status === "abandoned" ? "danger" : "info"} />
+                      <OperationStatusPair status={detail.operation.status} />
                       <span>{displayValue(detail.operation.world_name)}</span>
                       <span>{formatDate(detail.operation.started_at)}</span>
                     </div>

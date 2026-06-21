@@ -1,6 +1,7 @@
 import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
 
+import { OperationLifecycleChip, OperationOutcomeChip } from "../components/StatusChip";
 import { formatDate } from "../format";
 import type { ApiResult, AuthUser, MyOperationsResponse, MyPlayerResponse } from "../types";
 
@@ -177,7 +178,8 @@ export function MyStatsPage({
               <tr>
                 <th>Mission</th>
                 <th>World</th>
-                <th>Status</th>
+                <th>Lifecycle</th>
+                <th>Outcome</th>
                 <th>Started</th>
               </tr>
             </thead>
@@ -186,13 +188,18 @@ export function MyStatsPage({
                 <tr key={operation.operation_id}>
                   <td>{operation.mission_name ?? "Unknown"}</td>
                   <td>{operation.world_name ?? "Unknown"}</td>
-                  <td>{operation.status}</td>
+                  <td>
+                    <OperationLifecycleChip status={operation.status} />
+                  </td>
+                  <td>
+                    <OperationOutcomeChip status={operation.status} />
+                  </td>
                   <td>{formatDate(operation.started_at)}</td>
                 </tr>
               ))}
               {operations.length === 0 ? (
                 <tr>
-                  <td colSpan={4}>No linked operations yet.</td>
+                  <td colSpan={5}>No linked operations yet.</td>
                 </tr>
               ) : null}
             </tbody>

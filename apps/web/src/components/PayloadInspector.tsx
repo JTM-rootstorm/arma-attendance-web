@@ -1,7 +1,7 @@
 import { displayValue } from "../format";
 import type { OperationDetailResponse, PlayerDetailResponse } from "../types";
 import { CommandPanel } from "./CommandPanel";
-import { StatusChip } from "./StatusChip";
+import { OperationStatusPair, StatusChip } from "./StatusChip";
 
 function jsonPreview(value: unknown): string {
   if (value === null || value === undefined) {
@@ -27,7 +27,7 @@ export function PayloadInspector({
           <section>
             <div className="inspection-title">
               <strong>{displayValue(operationDetail.operation.mission_name)}</strong>
-              <StatusChip label={operationDetail.operation.status} tone={operationDetail.operation.status === "abandoned" ? "danger" : "info"} />
+              <OperationStatusPair status={operationDetail.operation.status} />
             </div>
             <p className="mono">{operationDetail.operation.id}</p>
             <details>

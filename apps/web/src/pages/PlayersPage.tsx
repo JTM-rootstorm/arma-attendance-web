@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
-import { StatusChip } from "../components/StatusChip";
+import { OperationLifecycleChip, OperationOutcomeChip, StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
 import { displayValue, formatDate } from "../format";
 import type { ApiResult, PlayerDetailResponse, PlayersResponse, PlayerSummaryResponse } from "../types";
@@ -199,7 +199,8 @@ export function PlayersPage({
                       <thead>
                         <tr>
                           <th>Mission</th>
-                          <th>Status</th>
+                          <th>Lifecycle</th>
+                          <th>Outcome</th>
                           <th>Started</th>
                           <th>Present</th>
                         </tr>
@@ -208,7 +209,12 @@ export function PlayersPage({
                         {summary.recent_operations.map((operation) => (
                           <tr key={operation.operation_id}>
                             <td>{displayValue(operation.mission_name)}</td>
-                            <td>{operation.status}</td>
+                            <td>
+                              <OperationLifecycleChip status={operation.status} />
+                            </td>
+                            <td>
+                              <OperationOutcomeChip status={operation.status} />
+                            </td>
                             <td>{formatDate(operation.started_at)}</td>
                             <td>{operation.present_at_start || operation.present_at_end ? "yes" : "no"}</td>
                           </tr>
