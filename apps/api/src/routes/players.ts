@@ -43,7 +43,7 @@ type PlayerDetailRow = {
 type PlayerOperationRow = {
   operation_id: string;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;

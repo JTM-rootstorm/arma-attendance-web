@@ -3,7 +3,7 @@ import type { DbTransaction } from "../db/transactions.js";
 export type OperationXpAwardSummary =
   | {
       awarded: false;
-      reason: "no_mission_name" | "no_matching_tier" | "no_attendees";
+      reason: "operation_failed" | "no_mission_name" | "no_matching_tier" | "no_attendees";
       mission_name: string | null;
       players_awarded: 0;
     }

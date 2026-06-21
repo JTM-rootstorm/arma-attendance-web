@@ -4,6 +4,7 @@ type StatusTone = "ready" | "info" | "warn" | "danger" | "muted" | "active";
 
 const operationTone: Record<OperationStatus, StatusTone> = {
   finished: "ready",
+  failed: "danger",
   started: "active",
   abandoned: "danger"
 };

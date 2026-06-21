@@ -61,7 +61,9 @@ DELETE /v1/operations/:operation_id
 
 Operation ingest requests require `request_id` and `server_key`. Extra payload fields are stored as raw JSON. Reusing the same `request_id` returns the saved response with `idempotent: true`.
 
-`POST /v1/operations/:operation_id/finish` awards hidden player XP after finish attendance is normalized. The award is based on the final stored `mission_name`, matched case-insensitively against `xp_reward_tiers.mission_name_match`. Replayed or duplicate finish requests are protected by an `operation_xp_awards` ledger and do not double-award XP. When a tier matches, `xp_award.award_status` is `awarded` if new XP was added and `already_awarded` if the ledger blocked a duplicate award.
+`POST /v1/operations/:operation_id/finish` accepts `outcome: "success" | "failed"` and defaults missing `outcome` to `"success"` for older extension payloads. Successful outcomes store `status: "finished"` and failed outcomes store `status: "failed"` while still accepting normalized attendance and stats.
+
+Successful finish requests award hidden player XP after finish attendance is normalized. Failed outcomes do not award XP and return `xp_award.reason: "operation_failed"`. The award is based on the final stored `mission_name`, matched case-insensitively against `xp_reward_tiers.mission_name_match`. Replayed or duplicate finish requests are protected by an `operation_xp_awards` ledger and do not double-award XP. When a tier matches, `xp_award.award_status` is `awarded` if new XP was added and `already_awarded` if the ledger blocked a duplicate award.
 
 `DELETE /v1/operations/:operation_id` is admin-only. When a deleted operation has hidden XP awards, the API reverses those awards from `players.xp_total` before deleting the operation and cascading the award ledger rows.
 

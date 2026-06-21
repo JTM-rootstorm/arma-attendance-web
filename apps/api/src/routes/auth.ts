@@ -214,7 +214,7 @@ type SelfUnitMembershipRow = {
 
 type SelfOperationRow = {
   operation_id: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_name: string | null;
   world_name: string | null;
   started_at: Date;

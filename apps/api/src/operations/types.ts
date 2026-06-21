@@ -1,12 +1,14 @@
 import type { NormalizationSummary } from "../normalization/operationAttendance.js";
 import type { OperationXpAwardSummary } from "../xp/operationXpAwards.js";
 
-export type OperationStatus = "started" | "finished" | "abandoned";
+export type OperationStatus = "started" | "finished" | "failed" | "abandoned";
+export type OperationOutcome = "success" | "failed";
 
 export type OperationIngestResponse = {
   ok: true;
   operation_id: string;
   status: OperationStatus;
+  outcome?: OperationOutcome;
   accepted: true;
   idempotent: boolean;
   normalized?: NormalizationSummary;

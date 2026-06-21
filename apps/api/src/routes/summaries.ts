@@ -35,7 +35,7 @@ type RecentOperationRow = {
   id: string;
   unit_id: string | null;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;
@@ -60,7 +60,7 @@ type OperationIdentityRow = {
   id: string;
   unit_id: string | null;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;
@@ -113,7 +113,7 @@ type PlayerSummaryRow = StatsSummaryRow & {
 type PlayerRecentOperationRow = {
   operation_id: string;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;

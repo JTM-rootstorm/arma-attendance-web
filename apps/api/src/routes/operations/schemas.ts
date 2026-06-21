@@ -23,6 +23,7 @@ export const operationFinishBodySchema = z
     request_id: z.string().min(1).max(200),
     server_key: z.string().min(1).max(128),
     payload_version: z.number().int().positive().optional(),
+    outcome: z.enum(["success", "failed"]).default("success"),
     mission: missionSchema
   })
   .passthrough();
@@ -33,7 +34,7 @@ export const operationParamsSchema = z.object({
 
 export const operationListQuerySchema = z.object({
   server_key: z.string().max(128).optional(),
-  status: z.enum(["started", "finished", "abandoned"]).optional(),
+  status: z.enum(["started", "finished", "failed", "abandoned"]).optional(),
   mission_uid: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0)

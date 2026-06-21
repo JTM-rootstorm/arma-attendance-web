@@ -37,7 +37,7 @@ export type DbHealthResponse = {
   };
 };
 
-export type OperationStatus = "started" | "finished" | "abandoned";
+export type OperationStatus = "started" | "finished" | "failed" | "abandoned";
 
 export type OperationListItem = {
   id: string;

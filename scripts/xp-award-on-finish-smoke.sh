@@ -48,10 +48,14 @@ finish_request_id="$SERVER_KEY:$STAMP:finish"
 finish_retry_request_id="$SERVER_KEY:$STAMP:finish-retry"
 no_match_start_request_id="$SERVER_KEY:$STAMP:no-match-start"
 no_match_finish_request_id="$SERVER_KEY:$STAMP:no-match-finish"
+failed_start_request_id="$SERVER_KEY:$STAMP:failed-start"
+failed_finish_request_id="$SERVER_KEY:$STAMP:failed-finish"
 player_one_uid="$SERVER_KEY-$STAMP-alpha"
 player_two_uid="$SERVER_KEY-$STAMP-bravo"
+failed_player_uid="$SERVER_KEY-$STAMP-failed"
 players_json="$(two_player_payload_json "$player_one_uid" "XP Award Alpha" "$player_two_uid" "XP Award Bravo")"
 player_one_json="$(one_player_payload_json "$player_one_uid" "XP Award Alpha")"
+failed_player_json="$(one_player_payload_json "$failed_player_uid" "XP Award Failed")"
 
 echo "[$SCRIPT_NAME] Seeding XP reward tiers..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -133,6 +137,28 @@ player_one_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid
 no_match_ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$no_match_operation_id")"
 smoke_assert_equals "$SCRIPT_NAME" "$player_one_xp" "25" "player one XP after no-match finish"
 smoke_assert_equals "$SCRIPT_NAME" "$no_match_ledger_count" "0" "no-match operation ledger row count"
+
+echo "[$SCRIPT_NAME] Starting failed-outcome operation..."
+failed_start_response="$(
+  curl -fsS -X POST "$BASE_URL/v1/operations/start" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$(operation_start_payload "$failed_start_request_id" "$SERVER_KEY" "$SERVER_KEY-$STAMP-failed" "$mission_name" "VR")"
+)"
+printf "%s" "$failed_start_response" | assert_json "data.ok === true && data.operation_id"
+failed_operation_id="$(printf "%s" "$failed_start_response" | json_value ".operation_id")"
+
+echo "[$SCRIPT_NAME] Finishing failed-outcome operation..."
+curl -fsS -X POST "$BASE_URL/v1/operations/$failed_operation_id/finish" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$(operation_finish_payload "$failed_finish_request_id" "$SERVER_KEY" "$SERVER_KEY-$STAMP-failed" "$mission_name" "VR" "$failed_player_json" "failed")" |
+  assert_json "data.ok === true && data.status === 'failed' && data.outcome === 'failed' && data.xp_award?.awarded === false && data.xp_award.reason === 'operation_failed'"
+
+failed_player_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$failed_player_uid")"
+failed_ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$failed_operation_id")"
+smoke_assert_equals "$SCRIPT_NAME" "$failed_player_xp" "0" "failed-outcome player XP"
+smoke_assert_equals "$SCRIPT_NAME" "$failed_ledger_count" "0" "failed-outcome operation ledger row count"
 
 echo "[$SCRIPT_NAME] Checking public player leaderboard stays XP-free..."
 curl -fsS "$BASE_URL/public/leaderboard/players" |

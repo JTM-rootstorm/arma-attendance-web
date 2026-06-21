@@ -5,7 +5,7 @@ import { insertPrimaryOperationUnit, syncOperationUnitsForParticipants } from ".
 import { awardOperationXp } from "../xp/operationXpAwards.js";
 import { getMissionField, type OperationFinishBody, type OperationStartBody } from "../routes/operations/schemas.js";
 import { getExistingIngestResponse, insertIngestRequest, insertOperationPayload, replayResponse } from "./ingestRequests.js";
-import { OperationRouteError, type OperationIngestResponse, type OperationStatus } from "./types.js";
+import { OperationRouteError, type OperationIngestResponse, type OperationOutcome, type OperationStatus } from "./types.js";
 
 export async function startOperationIngest(payload: OperationStartBody): Promise<OperationIngestResponse | unknown> {
   return withDbTransaction(async (tx) => {
@@ -74,6 +74,10 @@ export async function finishOperationIngest(
   return withDbTransaction(async (tx) => finishOperationIngestInTransaction(tx, operationId, payload));
 }
 
+function statusForFinishOutcome(outcome: OperationOutcome): Extract<OperationStatus, "finished" | "failed"> {
+  return outcome === "failed" ? "failed" : "finished";
+}
+
 async function finishOperationIngestInTransaction(
   tx: DbTransaction,
   operationId: string,
@@ -109,6 +113,7 @@ async function finishOperationIngestInTransaction(
     throw new OperationRouteError(409, "server_key_mismatch", "Server key did not match operation.");
   }
 
+  const finishStatus = statusForFinishOutcome(payload.outcome);
   const updateResult = await tx.query<{
     id: string;
     status: OperationStatus;
@@ -117,18 +122,19 @@ async function finishOperationIngestInTransaction(
     `
     UPDATE operations
     SET
-      status = 'finished',
+      status = $2,
       ended_at = COALESCE(ended_at, now()),
-      mission_uid = COALESCE(mission_uid, $2),
-      mission_name = COALESCE(mission_name, $3),
-      world_name = COALESCE(world_name, $4),
-      raw_end_payload = $5::jsonb,
+      mission_uid = COALESCE(mission_uid, $3),
+      mission_name = COALESCE(mission_name, $4),
+      world_name = COALESCE(world_name, $5),
+      raw_end_payload = $6::jsonb,
       updated_at = now()
     WHERE id = $1
     RETURNING id, status, mission_name
     `,
     [
       operationId,
+      finishStatus,
       getMissionField(payload.mission, "mission_uid"),
       getMissionField(payload.mission, "mission_name"),
       getMissionField(payload.mission, "world_name"),
@@ -145,15 +151,23 @@ async function finishOperationIngestInTransaction(
   await insertOperationPayload(tx, operationId, payload.request_id, "finish", payload);
   const normalized = await persistOperationAttendance(tx, operationId, "finish", payload);
   await syncOperationUnitsForParticipants(tx, operationId);
-  const xpAward = await awardOperationXp(tx, {
-    operationId,
-    missionName: updatedOperation.mission_name
-  });
+  const xpAward = payload.outcome === "failed"
+    ? {
+        awarded: false as const,
+        reason: "operation_failed" as const,
+        mission_name: updatedOperation.mission_name,
+        players_awarded: 0 as const
+      }
+    : await awardOperationXp(tx, {
+        operationId,
+        missionName: updatedOperation.mission_name
+      });
 
   const response: OperationIngestResponse = {
     ok: true,
     operation_id: updatedOperation.id,
     status: updatedOperation.status,
+    outcome: payload.outcome,
     accepted: true,
     idempotent: false,
     normalized,

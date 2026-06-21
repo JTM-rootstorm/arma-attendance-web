@@ -26,10 +26,12 @@ operation_finish_payload() {
   local mission_name="$4"
   local world_name="$5"
   local players_json="$6"
+  local outcome="${7:-success}"
 
-  printf '{"request_id":%s,"server_key":%s,"payload_version":1,"mission":{"mission_uid":%s,"mission_name":%s,"world_name":%s},"players":%s}' \
+  printf '{"request_id":%s,"server_key":%s,"payload_version":1,"outcome":%s,"mission":{"mission_uid":%s,"mission_name":%s,"world_name":%s},"players":%s}' \
     "$(json_string "$request_id")" \
     "$(json_string "$server_key")" \
+    "$(json_string "$outcome")" \
     "$(json_string "$mission_uid")" \
     "$(json_string "$mission_name")" \
     "$(json_string "$world_name")" \
