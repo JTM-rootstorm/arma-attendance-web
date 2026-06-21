@@ -624,9 +624,6 @@ export type XpRewardTier = {
   id: string;
   mission_name_match: string;
   xp_amount: number;
-  planet_id: string | null;
-  planet_slug: string | null;
-  planet_name: string | null;
   planet_progress_percent: string;
   created_at: string;
   updated_at: string;

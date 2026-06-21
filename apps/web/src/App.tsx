@@ -622,7 +622,6 @@ export function App() {
   async function createXpRewardTier(input: {
     mission_name_match: string;
     xp_amount: number;
-    planet_id?: string | null;
     planet_progress_percent?: string;
   }) {
     await apiFetch<XpRewardTierResponse>("/v1/system/xp-reward-tiers", {
@@ -637,7 +636,6 @@ export function App() {
     input: {
       mission_name_match?: string;
       xp_amount?: number;
-      planet_id?: string | null;
       planet_progress_percent?: string;
     }
   ) {

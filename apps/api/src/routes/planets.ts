@@ -171,21 +171,34 @@ function serializePublicPlanet(row: PublicPlanetRow) {
   };
 }
 
+async function listPublicPlanets(reply: FastifyReply) {
+  const db = getDrizzleDb();
+  const rows = await db
+    .select(publicPlanetReturningColumns())
+    .from(planets)
+    .where(eq(planets.isActive, true))
+    .orderBy(asc(planets.displayOrder), asc(planets.name));
+
+  reply.header("Cache-Control", "public, max-age=60");
+  return {
+    ok: true,
+    planets: rows.map(serializePublicPlanet)
+  };
+}
+
 export async function registerPlanetRoutes(app: FastifyInstance) {
   app.get("/public/planets", async (_request, reply) => {
     try {
-      const db = getDrizzleDb();
-      const rows = await db
-        .select(publicPlanetReturningColumns())
-        .from(planets)
-        .where(eq(planets.isActive, true))
-        .orderBy(asc(planets.displayOrder), asc(planets.name));
+      return await listPublicPlanets(reply);
+    } catch (error) {
+      _request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list public planets");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
 
-      reply.header("Cache-Control", "public, max-age=60");
-      return {
-        ok: true,
-        planets: rows.map(serializePublicPlanet)
-      };
+  app.get("/public/planets/all", async (_request, reply) => {
+    try {
+      return await listPublicPlanets(reply);
     } catch (error) {
       _request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list public planets");
       return sendDatabaseUnavailable(reply);

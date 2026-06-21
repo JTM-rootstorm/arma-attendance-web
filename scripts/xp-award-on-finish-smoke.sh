@@ -22,8 +22,8 @@ cleanup() {
   rm -rf "$TMP_DIR"
   smoke_cleanup_xp_data "$STAMP" "xp-award-smoke-$STAMP%" "$SERVER_KEY-$STAMP-%" "%$STAMP%"
   if [[ -n "${DATABASE_URL:-}" ]]; then
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v planet_slug="xp-smoke-$STAMP" >/dev/null 2>&1 <<'SQL' || true
-DELETE FROM planets WHERE slug = :'planet_slug';
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v planet_slug_pattern="xp-smoke-$STAMP%" >/dev/null 2>&1 <<'SQL' || true
+DELETE FROM planets WHERE slug LIKE :'planet_slug_pattern';
 SQL
   fi
 }
@@ -45,6 +45,8 @@ assert_json() {
 broad_match="XP Smoke $STAMP"
 specific_match="XP Smoke Specific Mission $STAMP"
 planet_slug="xp-smoke-$STAMP"
+second_planet_slug="xp-smoke-$STAMP-second"
+inactive_planet_slug="xp-smoke-$STAMP-inactive"
 mission_name="TCWA3 $specific_match"
 no_match_mission="Unrewarded XP Smoke Mission $STAMP"
 operation_mission_uid="xp-award-smoke-$STAMP"
@@ -63,22 +65,36 @@ players_json="$(two_player_payload_json "$player_one_uid" "XP Award Alpha" "$pla
 player_one_json="$(one_player_payload_json "$player_one_uid" "XP Award Alpha")"
 failed_player_json="$(one_player_payload_json "$failed_player_uid" "XP Award Failed")"
 
-echo "[$SCRIPT_NAME] Seeding planet and XP reward tiers..."
-planet_id="$(
+echo "[$SCRIPT_NAME] Seeding planets and XP reward tiers..."
+planet_ids="$(
   psql "$DATABASE_URL" -q -tA -v ON_ERROR_STOP=1 \
     -v planet_slug="$planet_slug" \
-    -v planet_name="XP Smoke Planet $STAMP" <<'SQL'
-INSERT INTO planets (slug, name, completion_percent)
-VALUES (:'planet_slug', :'planet_name', 10.000)
-RETURNING id;
+    -v second_planet_slug="$second_planet_slug" \
+    -v inactive_planet_slug="$inactive_planet_slug" \
+    -v planet_name="XP Smoke Planet $STAMP" \
+    -v second_planet_name="XP Smoke Planet Second $STAMP" \
+    -v inactive_planet_name="XP Smoke Planet Inactive $STAMP" <<'SQL'
+WITH inserted AS (
+  INSERT INTO planets (slug, name, completion_percent, is_active, display_order)
+VALUES
+  (:'planet_slug', :'planet_name', 10.000, true, 10),
+  (:'second_planet_slug', :'second_planet_name', 20.000, true, 11),
+  (:'inactive_planet_slug', :'inactive_planet_name', 30.000, false, 12)
+  RETURNING id, slug
+)
+SELECT id
+FROM inserted
+ORDER BY slug;
 SQL
 )"
+planet_id="$(printf "%s\n" "$planet_ids" | sed -n '1p')"
+inactive_planet_id="$(printf "%s\n" "$planet_ids" | sed -n '2p')"
+second_planet_id="$(printf "%s\n" "$planet_ids" | sed -n '3p')"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v broad_match="$broad_match" \
-  -v specific_match="$specific_match" \
-  -v planet_id="$planet_id" <<'SQL'
-INSERT INTO xp_reward_tiers (mission_name_match, xp_amount, planet_id, planet_progress_percent)
-VALUES (:'broad_match', 5, NULL, 0.000), (:'specific_match', 25, :'planet_id', 2.500);
+  -v specific_match="$specific_match" <<'SQL'
+INSERT INTO xp_reward_tiers (mission_name_match, xp_amount, planet_progress_percent)
+VALUES (:'broad_match', 5, 0.000), (:'specific_match', 25, 2.500);
 SQL
 
 echo "[$SCRIPT_NAME] Starting matching operation..."
@@ -99,18 +115,22 @@ finish_response="$(
     -d "$(operation_finish_payload "$finish_request_id" "$SERVER_KEY" "$operation_mission_uid" "$mission_name" "VR" "$players_json")"
 )"
 printf "%s" "$finish_response" |
-  assert_json "data.ok === true && data.status === 'finished' && data.outcome === 'success' && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 25 && data.xp_award.players_awarded === 2 && data.xp_award.mission_name_match === '$specific_match' && data.planet_progress_award?.awarded === true && data.planet_progress_award.award_status === 'awarded' && data.planet_progress_award.planet_slug === '$planet_slug' && data.planet_progress_award.progress_percent === '2.500' && data.planet_progress_award.completion_percent_before === '10.000' && data.planet_progress_award.completion_percent_after === '12.500'"
+  assert_json "data.ok === true && data.status === 'finished' && data.outcome === 'success' && data.xp_award?.awarded === true && data.xp_award.award_status === 'awarded' && data.xp_award.xp_amount === 25 && data.xp_award.players_awarded === 2 && data.xp_award.mission_name_match === '$specific_match' && data.planet_progress_award?.awarded === true && data.planet_progress_award.award_status === 'awarded' && data.planet_progress_award.progress_percent === '2.500' && data.planet_progress_award.planets_updated === 2 && data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$planet_slug' && planet.completion_percent_before === '10.000' && planet.completion_percent_after === '12.500') && data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$second_planet_slug' && planet.completion_percent_before === '20.000' && planet.completion_percent_after === '22.500') && !data.planet_progress_award.planets.some((planet) => planet.planet_slug === '$inactive_planet_slug')"
 
 player_one_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")"
 player_two_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_two_uid")"
 ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"
 planet_ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_planet_progress_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"
 planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$planet_id")"
+second_planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$second_planet_id")"
+inactive_planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$inactive_planet_id")"
 smoke_assert_equals "$SCRIPT_NAME" "$player_one_xp" "25" "player one XP after award"
 smoke_assert_equals "$SCRIPT_NAME" "$player_two_xp" "25" "player two XP after award"
 smoke_assert_equals "$SCRIPT_NAME" "$ledger_count" "2" "ledger row count after award"
-smoke_assert_equals "$SCRIPT_NAME" "$planet_ledger_count" "1" "planet ledger row count after award"
+smoke_assert_equals "$SCRIPT_NAME" "$planet_ledger_count" "2" "planet ledger row count after award"
 smoke_assert_equals "$SCRIPT_NAME" "$planet_completion" "12.500" "planet completion after award"
+smoke_assert_equals "$SCRIPT_NAME" "$second_planet_completion" "22.500" "second planet completion after award"
+smoke_assert_equals "$SCRIPT_NAME" "$inactive_planet_completion" "30.000" "inactive planet completion after award"
 
 echo "[$SCRIPT_NAME] Checking player XP API exposure..."
 curl -fsS "$BASE_URL/v1/players?q=$STAMP&limit=20" \
@@ -133,9 +153,11 @@ curl -fsS -X POST "$BASE_URL/v1/operations/$operation_id/finish" \
 player_one_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid = :'player_uid';" -v player_uid="$player_one_uid")"
 ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"
 planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$planet_id")"
+second_planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$second_planet_id")"
 smoke_assert_equals "$SCRIPT_NAME" "$player_one_xp" "25" "player one XP after same request replay"
 smoke_assert_equals "$SCRIPT_NAME" "$ledger_count" "2" "ledger row count after same request replay"
 smoke_assert_equals "$SCRIPT_NAME" "$planet_completion" "12.500" "planet completion after same request replay"
+smoke_assert_equals "$SCRIPT_NAME" "$second_planet_completion" "22.500" "second planet completion after same request replay"
 
 echo "[$SCRIPT_NAME] Replaying finish with a different request ID..."
 curl -fsS -X POST "$BASE_URL/v1/operations/$operation_id/finish" \
@@ -148,10 +170,12 @@ player_two_xp="$(smoke_sql_scalar "SELECT xp_total FROM players WHERE player_uid
 ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_xp_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"
 planet_ledger_count="$(smoke_sql_scalar "SELECT COUNT(*)::int FROM operation_planet_progress_awards WHERE operation_id = :'operation_id';" -v operation_id="$operation_id")"
 planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$planet_id")"
+second_planet_completion="$(smoke_sql_scalar "SELECT completion_percent::text FROM planets WHERE id = :'planet_id';" -v planet_id="$second_planet_id")"
 smoke_assert_equals "$SCRIPT_NAME" "$player_two_xp" "25" "player two XP after alternate request replay"
 smoke_assert_equals "$SCRIPT_NAME" "$ledger_count" "2" "ledger row count after alternate request replay"
-smoke_assert_equals "$SCRIPT_NAME" "$planet_ledger_count" "1" "planet ledger row count after alternate request replay"
+smoke_assert_equals "$SCRIPT_NAME" "$planet_ledger_count" "2" "planet ledger row count after alternate request replay"
 smoke_assert_equals "$SCRIPT_NAME" "$planet_completion" "12.500" "planet completion after alternate request replay"
+smoke_assert_equals "$SCRIPT_NAME" "$second_planet_completion" "22.500" "second planet completion after alternate request replay"
 
 echo "[$SCRIPT_NAME] Starting no-match operation..."
 no_match_start_response="$(

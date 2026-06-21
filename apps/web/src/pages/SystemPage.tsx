@@ -107,7 +107,6 @@ export function SystemPage({
   onCreateXpRewardTier: (input: {
     mission_name_match: string;
     xp_amount: number;
-    planet_id?: string | null;
     planet_progress_percent?: string;
   }) => Promise<void>;
   onUpdateXpRewardTier: (
@@ -115,7 +114,6 @@ export function SystemPage({
     input: {
       mission_name_match?: string;
       xp_amount?: number;
-      planet_id?: string | null;
       planet_progress_percent?: string;
     }
   ) => Promise<void>;
@@ -149,14 +147,12 @@ export function SystemPage({
   const [tokenError, setTokenError] = useState("");
   const [missionNameMatch, setMissionNameMatch] = useState("");
   const [xpAmount, setXpAmount] = useState("");
-  const [tierPlanetId, setTierPlanetId] = useState("");
   const [tierPlanetProgressPercent, setTierPlanetProgressPercent] = useState("0.000");
   const [xpError, setXpError] = useState("");
   const [editingTier, setEditingTier] = useState<{
     id: string;
     mission_name_match: string;
     xp_amount: string;
-    planet_id: string;
     planet_progress_percent: string;
   } | null>(null);
   const [planetSlug, setPlanetSlug] = useState("");
@@ -175,7 +171,6 @@ export function SystemPage({
     display_order: string;
     is_active: boolean;
   } | null>(null);
-  const activePlanets = planets.status === "ready" ? planets.data.planets.filter((planet) => planet.is_active) : [];
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -213,12 +208,10 @@ export function SystemPage({
       await onCreateXpRewardTier({
         mission_name_match: missionNameMatch.trim(),
         xp_amount: toXpAmount(xpAmount),
-        planet_id: tierPlanetId || null,
         planet_progress_percent: toPercent(tierPlanetProgressPercent)
       });
       setMissionNameMatch("");
       setXpAmount("");
-      setTierPlanetId("");
       setTierPlanetProgressPercent("0.000");
     } catch (error) {
       setXpError(error instanceof Error ? error.message : "XP reward tier could not be created.");
@@ -231,7 +224,6 @@ export function SystemPage({
       id: tier.id,
       mission_name_match: tier.mission_name_match,
       xp_amount: String(tier.xp_amount),
-      planet_id: tier.planet_id ?? "",
       planet_progress_percent: tier.planet_progress_percent
     });
   }
@@ -247,7 +239,6 @@ export function SystemPage({
       await onUpdateXpRewardTier(editingTier.id, {
         mission_name_match: editingTier.mission_name_match.trim(),
         xp_amount: toXpAmount(editingTier.xp_amount),
-        planet_id: editingTier.planet_id || null,
         planet_progress_percent: toPercent(editingTier.planet_progress_percent)
       });
       setEditingTier(null);
@@ -528,11 +519,10 @@ export function SystemPage({
           </div>
 
           <p className="muted-copy">
-            Configure automatic player XP and optional planet progress by standardized TCW mission name. Enter a full mission name or a partial substring.
+            Configure automatic player XP and global planet progress by standardized TCW mission name. Enter a full mission name or a partial substring.
           </p>
 
           {xpRewardTiers.status === "error" ? <p className="error-line">{xpRewardTiers.error}</p> : null}
-          {planets.status === "error" ? <p className="error-line">{planets.error}</p> : null}
           {xpError ? <p className="error-line">{xpError}</p> : null}
 
           <form className="inline-form xp-tier-form" onSubmit={(event) => void submitXpTier(event)}>
@@ -552,14 +542,6 @@ export function SystemPage({
               placeholder="XP amount"
               aria-label="XP amount"
             />
-            <select value={tierPlanetId} onChange={(event) => setTierPlanetId(event.target.value)} aria-label="Planet target">
-              <option value="">No planet</option>
-              {activePlanets.map((planet) => (
-                <option key={planet.id} value={planet.id}>
-                  {planet.name}
-                </option>
-              ))}
-            </select>
             <input
               type="number"
               min="0"
@@ -581,8 +563,7 @@ export function SystemPage({
                 <tr>
                   <th>Mission Name Match</th>
                   <th>XP</th>
-                  <th>Planet</th>
-                  <th>Progress</th>
+                  <th>Global Planet Progress</th>
                   <th>Updated</th>
                   <th>Actions</th>
                 </tr>
@@ -618,24 +599,6 @@ export function SystemPage({
                             />
                           ) : (
                             tier.xp_amount
-                          )}
-                        </td>
-                        <td>
-                          {isEditing && editingTier ? (
-                            <select
-                              value={editingTier.planet_id}
-                              onChange={(event) => setEditingTier({ ...editingTier, planet_id: event.target.value })}
-                              aria-label="Edit planet target"
-                            >
-                              <option value="">No planet</option>
-                              {activePlanets.map((planet) => (
-                                <option key={planet.id} value={planet.id}>
-                                  {planet.name}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            tier.planet_name ?? "No planet"
                           )}
                         </td>
                         <td>
@@ -678,7 +641,7 @@ export function SystemPage({
                   })
                 ) : (
                   <tr>
-                    <td colSpan={6}>{xpRewardTiers.status === "loading" ? "Loading XP reward tiers." : "No XP reward tiers configured yet."}</td>
+                    <td colSpan={5}>{xpRewardTiers.status === "loading" ? "Loading XP reward tiers." : "No XP reward tiers configured yet."}</td>
                   </tr>
                 )}
               </tbody>

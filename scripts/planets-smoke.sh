@@ -50,6 +50,8 @@ match_name="Planet Smoke Mission $STAMP"
 echo "[$SCRIPT_NAME] Checking public planet list is anonymous..."
 curl -fsS "$BASE_URL/public/planets" |
   assert_json "data.ok === true && Array.isArray(data.planets)"
+curl -fsS "$BASE_URL/public/planets/all" |
+  assert_json "data.ok === true && Array.isArray(data.planets)"
 
 echo "[$SCRIPT_NAME] Checking owner planet list rejects anonymous access..."
 owner_status="$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/v1/system/planets")"
@@ -81,19 +83,21 @@ curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/system/planets?include_inactive=t
   assert_json "data.ok === true && data.planets.some((planet) => planet.id === '$planet_id' && planet.slug === '$planet_slug')"
 curl -fsS "$BASE_URL/public/planets" |
   assert_json "data.ok === true && data.planets.some((planet) => planet.slug === '$planet_slug' && planet.completion_percent === '42.375')"
+curl -fsS "$BASE_URL/public/planets/all" |
+  assert_json "data.ok === true && data.planets.some((planet) => planet.slug === '$planet_slug' && planet.completion_percent === '42.375')"
 curl -fsS "$BASE_URL/public/planets/$planet_slug" |
   assert_json "data.ok === true && data.planet.slug === '$planet_slug' && data.planet.completion_percent === '42.375'"
 
-echo "[$SCRIPT_NAME] Creating XP tier with planet target..."
+echo "[$SCRIPT_NAME] Creating XP tier with global planet progress..."
 tier_response="$(
   curl -fsS -b "$OWNER_COOKIE_JAR" -X POST "$BASE_URL/v1/system/xp-reward-tiers" \
     -H "Origin: $BASE_URL" \
     -H "X-CSRF-Token: $(csrf_token)" \
     -H "Content-Type: application/json" \
-    -d "{\"mission_name_match\":\"$match_name\",\"xp_amount\":10,\"planet_id\":\"$planet_id\",\"planet_progress_percent\":\"1.250\"}"
+    -d "{\"mission_name_match\":\"$match_name\",\"xp_amount\":10,\"planet_progress_percent\":\"1.250\"}"
 )"
 printf "%s" "$tier_response" |
-  assert_json "data.ok === true && data.tier.planet_id === '$planet_id' && data.tier.planet_slug === '$planet_slug' && data.tier.planet_progress_percent === '1.250'"
+  assert_json "data.ok === true && data.tier.planet_progress_percent === '1.250' && !('planet_id' in data.tier) && !('planet_slug' in data.tier)"
 tier_id="$(printf "%s" "$tier_response" | json_value ".tier.id")"
 
 echo "[$SCRIPT_NAME] Updating planet and checking inactive public visibility..."
