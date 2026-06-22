@@ -7,6 +7,7 @@ import { requireCsrfForUnsafeSessionRequest } from "./auth/csrf.js";
 import { config, loadedEnvFiles } from "./config.js";
 import { getDiscordAuthPolicyDetails } from "./config/discordAuth.js";
 import { closeDbPool } from "./db/pool.js";
+import { scheduleStaleOperationCleanup } from "./operations/staleOperationCleanup.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
@@ -32,6 +33,7 @@ const app = Fastify({
     level: config.logLevel
   }
 });
+const stopStaleOperationCleanup = config.databaseUrl ? scheduleStaleOperationCleanup(app.log) : () => undefined;
 
 const discordAuthPolicyDetails = getDiscordAuthPolicyDetails();
 
@@ -99,6 +101,7 @@ app.setNotFoundHandler((_request, reply) =>
 );
 
 app.addHook("onClose", async () => {
+  stopStaleOperationCleanup();
   await closeDbPool();
 });
 
