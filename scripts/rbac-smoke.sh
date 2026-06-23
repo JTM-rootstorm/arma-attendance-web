@@ -310,6 +310,7 @@ curl -fsS -b "$DELETE_COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
 
 echo "[smoke:rbac] Checking unauthenticated session rejection..."
 assert_status "401" "$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/v1/me")" "/v1/me without cookie"
+assert_status "401" "$(curl -sS -o /dev/null -w "%{http_code}" -X PATCH "$BASE_URL/v1/me/player" -H "Content-Type: application/json" -d '{"display_name":"No Auth"}')" "/v1/me/player PATCH without auth"
 
 echo "[smoke:rbac] Checking normal user self-only access..."
 curl -fsS -b "$USER_COOKIE_JAR" "$BASE_URL/v1/me" | assert_json 'data.ok === true'
