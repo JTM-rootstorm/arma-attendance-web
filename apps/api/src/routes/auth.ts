@@ -54,7 +54,7 @@ import { queryDb } from "../db/pool.js";
 import { playerDiscordLinks } from "../db/schema/discord.js";
 import { operations } from "../db/schema/operations.js";
 import { operationPlayers, players } from "../db/schema/players.js";
-import { unitPlayers, unitRanks, units } from "../db/schema/units.js";
+import { playerUnitPreferences, unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 import { canonicalizeDiscordLinkedPlayer, isDiscordPlaceholderUid } from "../identity/playerCanonicalization.js";
 
@@ -115,6 +115,10 @@ const testJwtHandoffBodySchema = z.object({
 
 const selfPlayerBodySchema = z.object({
   display_name: z.string().trim().min(1).max(200)
+});
+
+const representedUnitBodySchema = z.object({
+  unit_id: z.string().uuid()
 });
 
 type OAuthStateRow = {
@@ -183,6 +187,7 @@ type LinkedPlayerRow = {
   xp_total: number;
   rank: string | null;
   roster_name: string | null;
+  represented_unit_id: string | null;
   first_seen_at: Date;
   last_seen_at: Date;
 };
@@ -211,6 +216,7 @@ type SelfUnitMembershipRow = {
   rank: string | null;
   roster_name: string | null;
   roster_status: string;
+  is_represented: boolean;
 };
 
 type SelfOperationRow = {
@@ -283,6 +289,16 @@ function sendConflict(reply: FastifyReply, message: string) {
     ok: false,
     error: {
       code: "identity_conflict",
+      message
+    }
+  });
+}
+
+function sendForbidden(reply: FastifyReply, message = "The authenticated user does not have permission for this action.") {
+  return reply.code(403).send({
+    ok: false,
+    error: {
+      code: "forbidden",
       message
     }
   });
@@ -469,10 +485,12 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
       xp_total: players.xpTotal,
       rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
       roster_name: unitPlayers.rosterName,
+      represented_unit_id: playerUnitPreferences.representedUnitId,
       first_seen_at: players.firstSeenAt,
       last_seen_at: players.lastSeenAt
     })
     .from(players)
+    .leftJoin(playerUnitPreferences, eq(playerUnitPreferences.playerUid, players.playerUid))
     .leftJoin(
       unitPlayers,
       and(eq(unitPlayers.playerUid, players.playerUid), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"))
@@ -488,7 +506,10 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
         )
       )
     )
-    .orderBy(desc(players.lastSeenAt))
+    .orderBy(
+      sql`CASE WHEN ${playerUnitPreferences.representedUnitId} = ${unitPlayers.unitId} THEN 0 ELSE 1 END`,
+      desc(players.lastSeenAt)
+    )
     .limit(1);
 
   return rows[0] ?? null;
@@ -506,9 +527,11 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
       p.xp_total,
       COALESCE(ur.name, up.rank) AS rank,
       up.roster_name,
+      pup.represented_unit_id,
       p.first_seen_at,
       p.last_seen_at
     FROM players p
+    LEFT JOIN player_unit_preferences pup ON pup.player_uid = p.player_uid
     LEFT JOIN unit_players up
       ON up.player_uid = p.player_uid
       AND up.is_active = true
@@ -520,7 +543,7 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
         ($1::text IS NOT NULL AND p.player_uid = $1)
         OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
       )
-    ORDER BY p.last_seen_at DESC
+    ORDER BY CASE WHEN pup.represented_unit_id = up.unit_id THEN 0 ELSE 1 END, p.last_seen_at DESC
     LIMIT 1
     `,
     [steamId, discordId]
@@ -617,6 +640,80 @@ async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displa
     last_name: displayName,
     roster_name: displayName
   };
+}
+
+async function updateSelfRepresentedUnit(
+  tx: DbTransaction,
+  user: CurrentUser,
+  unitId: string
+): Promise<(SelfUnitMembershipRow & { player_uid: string }) | "not_linked" | "not_member"> {
+  await ensureAuthenticatedUserRosterEntry(tx, user.id);
+  const player = await findLinkedPlayerWithClient(tx, user);
+
+  if (!player) {
+    return "not_linked";
+  }
+
+  const membershipResult = await tx.query<SelfUnitMembershipRow & { player_uid: string }>(
+    `
+    SELECT
+      up.player_uid,
+      u.id AS unit_id,
+      u.unit_key,
+      u.name,
+      u.display_name,
+      u.callsign,
+      COALESCE(ur.name, up.rank) AS rank,
+      up.roster_name,
+      up.roster_status,
+      true AS is_represented
+    FROM unit_players up
+    JOIN units u ON u.id = up.unit_id
+    LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
+    WHERE up.unit_id = $2
+      AND up.is_active = true
+      AND up.roster_status <> 'inactive'
+      AND u.is_active = true
+      AND u.deleted_at IS NULL
+      AND (
+        up.player_uid = $1
+        OR EXISTS (
+          SELECT 1
+          FROM player_discord_links pdl
+          WHERE up.player_uid = ('discord:' || pdl.discord_user_id)
+            AND pdl.player_uid = $1
+        )
+      )
+    LIMIT 1
+    `,
+    [player.player_uid, unitId]
+  );
+  const membership = membershipResult.rows[0];
+
+  if (!membership) {
+    return "not_member";
+  }
+
+  await tx.query(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id, updated_by_user_id)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (player_uid) DO UPDATE
+    SET represented_unit_id = EXCLUDED.represented_unit_id,
+        updated_by_user_id = EXCLUDED.updated_by_user_id,
+        updated_at = now()
+    `,
+    [player.player_uid, unitId, user.id]
+  );
+  await tx.query(
+    `
+    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
+    VALUES ($1, 'self', 'update_represented_unit', $1, $2::jsonb)
+    `,
+    [user.id, JSON.stringify({ player_uid: player.player_uid, unit_id: unitId })]
+  );
+
+  return membership;
 }
 
 function requestUserAgent(request: FastifyRequest): string | null {
@@ -1152,6 +1249,14 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
       updated_at = now()
     `,
     [unitId, playerUid, displayName]
+  );
+  await tx.query(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id)
+    VALUES ($1, $2)
+    ON CONFLICT (player_uid) DO NOTHING
+    `,
+    [playerUid, unitId]
   );
 
   const discordIdentity = identities.find((identity) => identity.provider === "discord");
@@ -1711,11 +1816,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           callsign: units.callsign,
           rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
           roster_name: unitPlayers.rosterName,
-          roster_status: unitPlayers.rosterStatus
+          roster_status: unitPlayers.rosterStatus,
+          is_represented: sql<boolean>`COALESCE(${playerUnitPreferences.representedUnitId} = ${unitPlayers.unitId}, false)`
         })
         .from(unitPlayers)
         .innerJoin(units, eq(units.id, unitPlayers.unitId))
         .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+        .leftJoin(playerUnitPreferences, eq(playerUnitPreferences.playerUid, unitPlayers.playerUid))
         .where(
           and(
             eq(unitPlayers.playerUid, player.player_uid),
@@ -1734,6 +1841,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           display_name: player.roster_name ?? player.last_name,
           xp_total: player.xp_total,
           rank: membershipRows[0]?.rank ?? player.rank,
+          represented_unit_id: membershipRows.find((membership) => membership.is_represented)?.unit_id ?? null,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         },
@@ -1744,7 +1852,8 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           callsign: membership.callsign,
           rank: membership.rank,
           roster_name: membership.roster_name,
-          roster_status: membership.roster_status
+          roster_status: membership.roster_status,
+          is_represented: membership.is_represented
         })),
         summary,
         scoreboard_totals: {
@@ -1795,12 +1904,64 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
           rank: player.rank,
+          represented_unit_id: player.represented_unit_id,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         }
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update self player");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.patch("/v1/me/player/represented-unit", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = representedUnitBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const membership = await withDbTransaction((tx) => updateSelfRepresentedUnit(tx, user, parsedBody.data.unit_id));
+
+      if (membership === "not_linked") {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "player_not_found",
+            message: "Player was not found."
+          }
+        });
+      }
+
+      if (membership === "not_member") {
+        return sendForbidden(reply, "You can only represent an active battalion membership.");
+      }
+
+      return {
+        ok: true,
+        represented_unit: {
+          unit_id: membership.unit_id,
+          unit_key: membership.unit_key,
+          name: membership.display_name ?? membership.name,
+          callsign: membership.callsign,
+          rank: membership.rank,
+          roster_name: membership.roster_name,
+          roster_status: membership.roster_status
+        }
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update represented unit");
       return reply.code(503).send({
         ok: false,
         error: { code: "database_unavailable", message: "Database is not available." }

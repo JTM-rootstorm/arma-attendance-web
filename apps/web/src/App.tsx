@@ -45,6 +45,7 @@ import type {
   PlayerDetailResponse,
   PlayersResponse,
   PlayerSummaryResponse,
+  RepresentedUnitResponse,
   ViewName,
   XpRewardTierResponse,
   XpRewardTiersResponse
@@ -708,6 +709,15 @@ export function App() {
     await loadPlayers();
   }
 
+  async function updateRepresentedUnit(unitId: string) {
+    await apiFetch<RepresentedUnitResponse>("/v1/me/player/represented-unit", {
+      method: "PATCH",
+      body: { unit_id: unitId }
+    });
+    await loadMyStats();
+    await loadPlayers();
+  }
+
   async function resetPlayerName(playerUid: string) {
     await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}/reset-name`, { method: "POST" });
     await loadPlayers();
@@ -755,6 +765,7 @@ export function App() {
         myOperations={myOperations}
         onRefresh={() => void loadMyStats()}
         onUpdatePlayerName={updatePlayerName}
+        onUpdateRepresentedUnit={updateRepresentedUnit}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}
@@ -851,6 +862,7 @@ export function App() {
         myOperations={myOperations}
         onRefresh={() => void loadMyStats()}
         onUpdatePlayerName={updatePlayerName}
+        onUpdateRepresentedUnit={updateRepresentedUnit}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}

@@ -63,6 +63,7 @@ csrf_token() {
 }
 
 unit_key="unit-stat-alpha-$STAMP"
+represented_unit_key="unit-stat-beta-$STAMP"
 server_key="unit-stat-alpha-server-$STAMP"
 discord_id="123456789$STAMP"
 placeholder_uid="discord:$discord_id"
@@ -189,6 +190,49 @@ if [[ "$canonical_checks" != "1|1|1" ]]; then
   exit 1
 fi
 
+echo "[smoke:unit-stat-totals] Adding a second active unit and selecting it as represented..."
+represented_unit_id="$(
+  psql "$DATABASE_URL" -q -tA -v ON_ERROR_STOP=1 \
+    -v represented_unit_key="$represented_unit_key" \
+    -v steam_uid="$steam_uid" <<'SQL'
+WITH represented_unit_seed AS (
+  INSERT INTO units (unit_key, slug, name, display_name, callsign, sort_order)
+  VALUES (:'represented_unit_key', :'represented_unit_key', 'Unit Stat Beta', 'Unit Stat Beta', 'Beta', 20)
+  RETURNING id
+)
+INSERT INTO unit_players (
+  unit_id,
+  player_uid,
+  roster_name,
+  roster_status,
+  assignment_source,
+  assignment_priority
+)
+SELECT id, :'steam_uid', 'Placeholder Trooper', 'active', 'manual', 100
+FROM represented_unit_seed
+ON CONFLICT (unit_id, player_uid) DO UPDATE
+SET is_active = true,
+    roster_status = 'active',
+    assignment_source = 'manual',
+    assignment_priority = 100,
+    updated_at = now()
+RETURNING unit_id;
+SQL
+)"
+
+curl -fsS -b "$COOKIE_JAR" -X PATCH "$BASE_URL/v1/me/player/represented-unit" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token)" \
+  -H "Content-Type: application/json" \
+  -d "{\"unit_id\":\"$represented_unit_id\"}" |
+  assert_json "data.ok === true && data.represented_unit.unit_id === '$represented_unit_id'"
+
+curl -fsS -b "$COOKIE_JAR" "$BASE_URL/v1/me/player" |
+  assert_json "data.ok === true
+    && data.linked_player.represented_unit_id === '$represented_unit_id'
+    && data.battalion_memberships.some((membership) => membership.unit_id === '$unit_id')
+    && data.battalion_memberships.some((membership) => membership.unit_id === '$represented_unit_id' && membership.is_represented === true)"
+
 echo "[smoke:unit-stat-totals] Starting operation through server-key unit mapping..."
 start_response="$(
   curl -fsS -X POST "$BASE_URL/v1/operations/start" \
@@ -287,6 +331,16 @@ curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$unit_id&limit=10" \
   assert_json "data.ok === true
     && data.leaderboard.length === 1
     && data.leaderboard[0].unit_id === '$unit_id'
+    && data.leaderboard[0].operation_count === 0
+    && data.leaderboard[0].infantry_kills === 0
+    && data.leaderboard[0].total_kills === 0
+    && data.leaderboard[0].deaths === 0"
+
+curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$represented_unit_id&limit=10" \
+  -H "Authorization: Bearer $API_TOKEN" |
+  assert_json "data.ok === true
+    && data.leaderboard.length === 1
+    && data.leaderboard[0].unit_id === '$represented_unit_id'
     && data.leaderboard[0].operation_count === 1
     && data.leaderboard[0].infantry_kills === 7
     && data.leaderboard[0].total_kills === 10
@@ -295,6 +349,7 @@ curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$unit_id&limit=10" \
 operation_checks="$(
   psql "$DATABASE_URL" -tA -F '|' -v ON_ERROR_STOP=1 \
   -v unit_id="$unit_id" \
+  -v represented_unit_id="$represented_unit_id" \
   -v operation_id="$operation_id" \
   -v discord_id="$discord_id" \
   -v steam_uid="$steam_uid" <<'SQL'
@@ -306,6 +361,21 @@ SELECT
       AND unit_id = :'unit_id'::uuid
       AND source IN ('server_key', 'import')
   ) THEN 1 ELSE 0 END,
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM operation_player_units
+    WHERE operation_id = :'operation_id'::uuid
+      AND player_uid = :'steam_uid'
+      AND unit_id = :'represented_unit_id'::uuid
+      AND source = 'represented_unit'
+  ) THEN 1 ELSE 0 END,
+  CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM operation_player_units
+    WHERE operation_id = :'operation_id'::uuid
+      AND player_uid = :'steam_uid'
+      AND unit_id = :'unit_id'::uuid
+  ) THEN 1 ELSE 0 END,
   (
     SELECT COUNT(*)
     FROM unit_players
@@ -315,7 +385,7 @@ SELECT
 SQL
 )"
 
-if [[ "$operation_checks" != "1|1" ]]; then
+if [[ "$operation_checks" != "1|1|1|1" ]]; then
   echo "[smoke:unit-stat-totals] Operation unit or roster count checks failed: $operation_checks" >&2
   exit 1
 fi
@@ -328,7 +398,7 @@ curl -fsS -b "$COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
   -d "{\"provider_user_id\":\"$steam_uid\"}" |
   assert_json "data.ok === true"
 
-curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$unit_id&limit=10" \
+curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$represented_unit_id&limit=10" \
   -H "Authorization: Bearer $API_TOKEN" |
   assert_json "data.ok === true
     && data.leaderboard.length === 1

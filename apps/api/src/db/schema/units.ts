@@ -88,6 +88,34 @@ export const operationUnits = pgTable(
   (table) => [primaryKey({ columns: [table.operationId, table.unitId] })]
 );
 
+export const operationPlayerUnits = pgTable(
+  "operation_player_units",
+  {
+    operationId: uuid("operation_id")
+      .notNull()
+      .references(() => operations.id, { onDelete: "cascade" }),
+    playerUid: text("player_uid")
+      .notNull()
+      .references(() => players.playerUid, { onDelete: "cascade" }),
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id, { onDelete: "cascade" }),
+    source: text("source").notNull().default("represented_unit"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.operationId, table.playerUid] })]
+);
+
+export const playerUnitPreferences = pgTable("player_unit_preferences", {
+  playerUid: text("player_uid")
+    .primaryKey()
+    .references(() => players.playerUid, { onDelete: "cascade" }),
+  representedUnitId: uuid("represented_unit_id").references(() => units.id, { onDelete: "set null" }),
+  updatedByUserId: uuid("updated_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});
+
 export const unitDiscordGuilds = pgTable(
   "unit_discord_guilds",
   {

@@ -129,6 +129,7 @@ POST /auth/jwt/logout
 GET  /v1/me
 GET  /v1/me/player
 PATCH /v1/me/player
+PATCH /v1/me/player/represented-unit
 GET  /v1/me/operations
 GET  /v1/me/operations/:operation_id
 DELETE /v1/me/identities/steam
@@ -137,6 +138,8 @@ DELETE /v1/me/identities/steam
 See [`docs/auth/JWT_AUTH.md`](auth/JWT_AUTH.md) for JWT handoff details.
 
 `PATCH /v1/me/player` lets an authenticated player update their linked player display name with `display_name`. Session-cookie requests must include a valid CSRF token when `CSRF_ENABLED=true`; JWT bearer requests use the normal authenticated API flow.
+
+`PATCH /v1/me/player/represented-unit` lets an authenticated player select which active battalion membership they represent with `unit_id`. New operation-player unit attribution is snapshotted from that selection when operation attendance is ingested, so later representation changes do not move older operation stats.
 
 ## Admin and system
 

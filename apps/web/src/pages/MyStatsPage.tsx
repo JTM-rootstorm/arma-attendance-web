@@ -11,6 +11,7 @@ export function MyStatsPage({
   myOperations,
   onRefresh,
   onUpdatePlayerName,
+  onUpdateRepresentedUnit,
   onLinkSteam,
   onUnlinkSteam
 }: {
@@ -19,6 +20,7 @@ export function MyStatsPage({
   myOperations: ApiResult<MyOperationsResponse>;
   onRefresh: () => void;
   onUpdatePlayerName: (displayName: string) => Promise<void>;
+  onUpdateRepresentedUnit: (unitId: string) => Promise<void>;
   onLinkSteam: () => void;
   onUnlinkSteam: () => void;
 }) {
@@ -26,7 +28,11 @@ export function MyStatsPage({
   const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
   const player = myPlayer.status === "ready" ? myPlayer.data.linked_player : null;
   const battalionMemberships = myPlayer.status === "ready" ? myPlayer.data.battalion_memberships ?? [] : [];
-  const primaryBattalion = battalionMemberships[0] ?? null;
+  const representedBattalion =
+    battalionMemberships.find((membership) => membership.is_represented) ??
+    battalionMemberships.find((membership) => membership.unit_id === player?.represented_unit_id) ??
+    battalionMemberships[0] ??
+    null;
   const summary = myPlayer.status === "ready" ? myPlayer.data.summary : null;
   const scoreboardTotals = myPlayer.status === "ready" ? myPlayer.data.scoreboard_totals : null;
   const operations = myOperations.status === "ready" ? myOperations.data.operations.slice(0, 5) : [];
@@ -34,12 +40,22 @@ export function MyStatsPage({
   const [playerNameDirty, setPlayerNameDirty] = useState(false);
   const [playerNameState, setPlayerNameState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [playerNameError, setPlayerNameError] = useState("");
+  const [representedUnitId, setRepresentedUnitId] = useState(representedBattalion?.unit_id ?? "");
+  const [representedUnitDirty, setRepresentedUnitDirty] = useState(false);
+  const [representedUnitState, setRepresentedUnitState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [representedUnitError, setRepresentedUnitError] = useState("");
 
   useEffect(() => {
     if (!playerNameDirty) {
       setPlayerName(player?.display_name ?? "");
     }
   }, [player?.display_name, playerNameDirty]);
+
+  useEffect(() => {
+    if (!representedUnitDirty) {
+      setRepresentedUnitId(representedBattalion?.unit_id ?? "");
+    }
+  }, [representedBattalion?.unit_id, representedUnitDirty]);
 
   async function submitPlayerName(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -66,6 +82,28 @@ export function MyStatsPage({
     }
   }
 
+  async function submitRepresentedUnit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!representedUnitId) {
+      setRepresentedUnitError("Select a battalion to represent.");
+      setRepresentedUnitState("error");
+      return;
+    }
+
+    setRepresentedUnitState("saving");
+    setRepresentedUnitError("");
+
+    try {
+      await onUpdateRepresentedUnit(representedUnitId);
+      setRepresentedUnitDirty(false);
+      setRepresentedUnitState("saved");
+    } catch (error) {
+      setRepresentedUnitError(error instanceof Error ? error.message : "Battalion selection failed.");
+      setRepresentedUnitState("error");
+    }
+  }
+
   return (
     <section className="command-panel">
       <div className="panel-heading">
@@ -85,11 +123,11 @@ export function MyStatsPage({
         </div>
         <div>
           <span>Battalion</span>
-          <strong>{primaryBattalion?.name ?? "Unassigned"}</strong>
+          <strong>{representedBattalion?.name ?? "Unassigned"}</strong>
         </div>
         <div>
           <span>Rank</span>
-          <strong>{primaryBattalion?.rank ?? player?.rank ?? "Unassigned"}</strong>
+          <strong>{representedBattalion?.rank ?? player?.rank ?? "Unassigned"}</strong>
         </div>
         <div>
           <span>XP</span>
@@ -162,6 +200,34 @@ export function MyStatsPage({
         </button>
         {playerNameState === "error" ? <p className="message error">{playerNameError}</p> : null}
         {playerNameState === "saved" ? <p className="message">Roster name updated.</p> : null}
+      </form>
+
+      <form className="inline-form player-name-form" onSubmit={(event) => void submitRepresentedUnit(event)}>
+        <label>
+          <span>Representing</span>
+          <select
+            value={representedUnitId}
+            onChange={(event) => {
+              setRepresentedUnitId(event.target.value);
+              setRepresentedUnitDirty(true);
+              setRepresentedUnitState("idle");
+            }}
+            aria-label="Represented battalion"
+            disabled={battalionMemberships.length === 0}
+          >
+            {battalionMemberships.length === 0 ? <option value="">No active battalion memberships</option> : null}
+            {battalionMemberships.map((membership) => (
+              <option key={membership.unit_id} value={membership.unit_id}>
+                {membership.callsign ? `${membership.name} ${membership.callsign}` : membership.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="submit" disabled={representedUnitState === "saving" || battalionMemberships.length === 0 || !representedUnitDirty}>
+          {representedUnitState === "saving" ? "Saving" : "Save"}
+        </button>
+        {representedUnitState === "error" ? <p className="message error">{representedUnitError}</p> : null}
+        {representedUnitState === "saved" ? <p className="message">Represented battalion updated.</p> : null}
       </form>
 
       {myPlayer.status === "ready" && !myPlayer.data.linked_player ? (

@@ -24,7 +24,7 @@
 | `apps/api/src/auth/operationAccess.ts` | auth/session bridge | operation visibility bridge joining identities to attendance | candidate for future conversion |
 | `apps/api/src/identity/playerCanonicalization.ts` | identity merge | Discord placeholder player canonicalization moves related rows across identity, unit, operation, and audit tables | permanent |
 | `apps/api/src/normalization/operationAttendance.ts` | normalization | attendance/stat upserts across normalized operation rows | permanent |
-| `apps/api/src/normalization/operationUnits.ts` | normalization | operation-unit attribution from primary operation unit and active participant roster membership | permanent |
+| `apps/api/src/normalization/operationUnits.ts` | normalization | operation-player unit attribution from represented unit snapshots and primary operation fallback | permanent |
 | `apps/api/src/xp/operationXpAwards.ts` | operation ingest | finish-time XP award ledger and aggregate update transaction | permanent |
 | `apps/api/src/discord/scoring.ts` | Discord scoring | rule evaluation CTEs and action audit reporting | permanent |
 | `apps/api/src/discord/membershipResolver.ts` | Discord auth sync | Discord guild role claim resolution and assignment reconciliation | permanent |

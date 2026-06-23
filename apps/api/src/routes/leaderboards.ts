@@ -149,8 +149,8 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
       FROM units u
       WHERE ${filters.join(" AND ")}
     ),
-    unit_player_aliases AS (
-      SELECT
+    active_unit_players AS (
+      SELECT DISTINCT
         au.unit_id,
         COALESCE(
           CASE
@@ -158,42 +158,23 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
             ELSE NULL
           END,
           up.player_uid
-        ) AS player_uid,
-        up.is_active,
-        up.roster_status
+        ) AS player_uid
       FROM active_units au
       JOIN unit_players up
         ON up.unit_id = au.unit_id
       LEFT JOIN player_discord_links pdl
         ON up.player_uid = ('discord:' || pdl.discord_user_id)
-    ),
-    active_unit_players AS (
-      SELECT DISTINCT
-        unit_id,
-        player_uid
-      FROM unit_player_aliases
-      WHERE is_active = true
-        AND roster_status <> 'inactive'
-    ),
-    historical_unit_players AS (
-      SELECT DISTINCT
-        unit_id,
-        player_uid
-      FROM unit_player_aliases
+      WHERE up.is_active = true
+        AND up.roster_status <> 'inactive'
     ),
     eligible_unit_operations AS (
       SELECT
         au.unit_id,
-        o.id AS operation_id
+        opu.operation_id,
+        opu.player_uid
       FROM active_units au
-      JOIN operations o ON o.unit_id = au.unit_id ${operationWhereClause}
-      UNION
-      SELECT
-        au.unit_id,
-        o.id AS operation_id
-      FROM active_units au
-      JOIN operation_units ou ON ou.unit_id = au.unit_id
-      JOIN operations o ON o.id = ou.operation_id ${operationWhereClause}
+      JOIN operation_player_units opu ON opu.unit_id = au.unit_id
+      JOIN operations o ON o.id = opu.operation_id ${operationWhereClause}
     ),
     member_counts AS (
       SELECT
@@ -204,29 +185,24 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
     ),
     unit_operation_counts AS (
       SELECT
-        hup.unit_id,
-        COUNT(DISTINCT op.operation_id)::int AS operation_count
-      FROM historical_unit_players hup
-      JOIN operation_players op ON op.player_uid = hup.player_uid
-      JOIN eligible_unit_operations euo
-        ON euo.unit_id = hup.unit_id
-        AND euo.operation_id = op.operation_id
-      GROUP BY hup.unit_id
+        unit_id,
+        COUNT(DISTINCT operation_id)::int AS operation_count
+      FROM eligible_unit_operations
+      GROUP BY unit_id
     ),
     unit_stats AS (
       SELECT
-        hup.unit_id,
+        euo.unit_id,
         COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
         COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS soft_vehicle_kills,
         COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
         COALESCE(SUM(ops.air_kills), 0)::int AS air_kills,
         COALESCE(SUM(ops.deaths), 0)::int AS deaths
-      FROM historical_unit_players hup
-      JOIN operation_player_stats ops ON ops.player_uid = hup.player_uid
-      JOIN eligible_unit_operations euo
-        ON euo.unit_id = hup.unit_id
-        AND euo.operation_id = ops.operation_id
-      GROUP BY hup.unit_id
+      FROM eligible_unit_operations euo
+      JOIN operation_player_stats ops
+        ON ops.operation_id = euo.operation_id
+        AND ops.player_uid = euo.player_uid
+      GROUP BY euo.unit_id
     ),
     totals AS (
       SELECT

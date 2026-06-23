@@ -536,6 +536,7 @@ export type MyPlayerResponse = {
     display_name: string | null;
     xp_total: number;
     rank: string | null;
+    represented_unit_id: string | null;
     first_seen_at?: string;
     last_seen_at?: string;
   } | null;
@@ -547,10 +548,24 @@ export type MyPlayerResponse = {
     rank: string | null;
     roster_name: string | null;
     roster_status: string;
+    is_represented: boolean;
   }>;
   summary?: PlayerSummaryResponse["summary"];
   scoreboard_totals?: ScoreboardStats;
   message?: string;
+};
+
+export type RepresentedUnitResponse = {
+  ok: true;
+  represented_unit: {
+    unit_id: string;
+    unit_key: string;
+    name: string;
+    callsign: string | null;
+    rank: string | null;
+    roster_name: string | null;
+    roster_status: string;
+  };
 };
 
 export type MyOperationsResponse = {
