@@ -7,6 +7,12 @@ STAMP="$(date +%Y%m%d%H%M%S)"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 COOKIE_JAR="$(mktemp)"
+BASE_ORIGIN="$(
+  node -e '
+const url = new URL(process.argv[1]);
+console.log(url.origin);
+' "$BASE_URL"
+)"
 
 cleanup() {
   rm -f "$COOKIE_JAR"
@@ -109,6 +115,7 @@ echo "[smoke:discord-refresh] Starting refresh OAuth and checking state binding.
 refresh_response="$(
   curl -fsS -b "$COOKIE_JAR" -X POST "$BASE_URL/v1/me/discord/refresh" \
     -H "Content-Type: application/json" \
+    -H "Origin: $BASE_ORIGIN" \
     -H "X-CSRF-Token: $csrf_token" \
     -d '{"return_to":"/?view=me"}'
 )"
