@@ -30,6 +30,7 @@ import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
 import {
   DiscordAuthPolicyError,
+  getAuthGuilds,
   getDiscordDisplayNamePolicy,
   getLoginGrantGuildIds,
   getLoginGuildDisplayNameOrder
@@ -121,12 +122,18 @@ const representedUnitBodySchema = z.object({
   unit_id: z.string().uuid()
 });
 
+const discordRefreshBodySchema = z.object({
+  return_to: z.string().max(1000).optional()
+});
+
 type OAuthStateRow = {
   state: string;
   provider: "discord" | "steam";
   redirect_after: string | null;
   code_verifier: string | null;
   flow_mode: "cookie" | "jwt";
+  purpose: "login" | "discord_refresh";
+  user_id: string | null;
   expires_at: Date;
   consumed_at: Date | null;
 };
@@ -138,11 +145,23 @@ type AuthLinkTicketRow = {
 
 type DiscordTokenResponse = DiscordOAuthToken;
 
+type OAuthStateInsertResult = {
+  state: string;
+  expires_at: Date;
+};
+
 type DiscordProfile = {
   id: string;
   username?: string;
   global_name?: string | null;
   avatar?: string | null;
+};
+
+type DiscordFetchedMembership = {
+  guildId: string;
+  member: DiscordCurrentGuildMember | null;
+  fetched_live: boolean;
+  used_cache: boolean;
 };
 
 class DiscordTokenExchangeError extends Error {
@@ -797,19 +816,27 @@ async function insertOAuthState(
   provider: "discord" | "steam",
   redirectAfter: string | null,
   codeVerifier: string | null,
-  flowMode: "cookie" | "jwt" = "cookie"
-) {
+  flowMode: "cookie" | "jwt" = "cookie",
+  purpose: "login" | "discord_refresh" = "login",
+  userId: string | null = null
+): Promise<OAuthStateInsertResult> {
   const state = randomState();
 
-  await queryDb(
+  const result = await queryDb<{ expires_at: Date }>(
     `
-    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
-    VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, purpose, user_id, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, now() + interval '10 minutes')
+    RETURNING expires_at
     `,
-    [state, provider, redirectAfter, codeVerifier, flowMode]
+    [state, provider, redirectAfter, codeVerifier, flowMode, purpose, userId]
   );
 
-  return state;
+  const expiresAt = result.rows[0]?.expires_at;
+  if (!expiresAt) {
+    throw new Error("OAuth state insert returned no expiration.");
+  }
+
+  return { state, expires_at: expiresAt };
 }
 
 async function insertOAuthStateWithClient(
@@ -817,24 +844,38 @@ async function insertOAuthStateWithClient(
   provider: "discord" | "steam",
   redirectAfter: string | null,
   codeVerifier: string | null,
-  flowMode: "cookie" | "jwt" = "cookie"
-) {
+  flowMode: "cookie" | "jwt" = "cookie",
+  purpose: "login" | "discord_refresh" = "login",
+  userId: string | null = null
+): Promise<OAuthStateInsertResult> {
   const state = randomState();
 
-  await tx.query(
+  const result = await tx.query<{ expires_at: Date }>(
     `
-    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
-    VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, purpose, user_id, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, now() + interval '10 minutes')
+    RETURNING expires_at
     `,
-    [state, provider, redirectAfter, codeVerifier, flowMode]
+    [state, provider, redirectAfter, codeVerifier, flowMode, purpose, userId]
   );
 
-  return state;
+  const expiresAt = result.rows[0]?.expires_at;
+  if (!expiresAt) {
+    throw new Error("OAuth state insert returned no expiration.");
+  }
+
+  return { state, expires_at: expiresAt };
 }
 
 function appendAuthHandoff(returnTo: string, handoffCode: string): string {
   const redirectUrl = new URL(returnTo, config.publicBaseUrl);
   redirectUrl.searchParams.set("auth_handoff", handoffCode);
+  return redirectUrl.toString();
+}
+
+function appendQueryFlag(returnTo: string, key: string, value: string): string {
+  const redirectUrl = new URL(returnTo, config.publicBaseUrl);
+  redirectUrl.searchParams.set(key, value);
   return redirectUrl.toString();
 }
 
@@ -974,31 +1015,58 @@ async function fetchDiscordLoginGuildMemberships(
   discordUserId: string,
   request: FastifyRequest
 ): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
+  return (await fetchDiscordConfiguredGuildMemberships(token, discordUserId, request, "login"))
+    .filter((membership): membership is DiscordFetchedMembership & { member: DiscordCurrentGuildMember } => membership.member !== null)
+    .map((membership) => ({ guildId: membership.guildId, member: membership.member }));
+}
+
+async function getRefreshGuildIds(): Promise<string[]> {
+  const policyGuildIds = getAuthGuilds()
+    .filter((guild) => guild.grantsLogin || guild.syncMembers)
+    .map((guild) => guild.guildId);
+  const mappedGuilds = await queryDb<{ guild_id: string }>(
+    `
+    SELECT DISTINCT guild_id
+    FROM discord_role_mappings
+    WHERE is_enabled = true
+    `
+  );
+
+  return Array.from(new Set([...policyGuildIds, ...mappedGuilds.rows.map((row) => row.guild_id)]));
+}
+
+async function fetchDiscordConfiguredGuildMemberships(
+  token: DiscordTokenResponse,
+  discordUserId: string,
+  request: FastifyRequest,
+  purpose: "login" | "refresh"
+): Promise<DiscordFetchedMembership[]> {
   if (!config.discordAuthEnabled) {
     return [];
   }
 
-  const guildIds = getLoginGrantGuildIds();
+  const guildIds = purpose === "refresh" ? await getRefreshGuildIds() : getLoginGrantGuildIds();
 
   if (guildIds.length === 0) {
-    if (config.discordAuthRequireGuild) {
+    if (purpose === "login" && config.discordAuthRequireGuild) {
       throw new DiscordAuthPolicyError("No Discord login guilds are configured.");
     }
 
     return [];
   }
 
-  const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
+  const memberships: DiscordFetchedMembership[] = [];
 
   for (const guildId of guildIds) {
     try {
       const member = await fetchCurrentUserGuildMemberWithRetry(token, guildId);
-
-      if (member) {
-        memberships.push({ guildId, member });
-      }
+      memberships.push({ guildId, member, fetched_live: true, used_cache: false });
     } catch (error) {
       if (error instanceof DiscordRateLimitError) {
+        if (purpose === "refresh") {
+          throw error;
+        }
+
         const cachedMember = await getCachedDiscordGuildMember(discordUserId, guildId);
 
         if (cachedMember) {
@@ -1006,7 +1074,7 @@ async function fetchDiscordLoginGuildMemberships(
             { guildId, retryAfterSeconds: error.retryAfterSeconds },
             "Using cached Discord membership snapshot after rate limit"
           );
-          memberships.push({ guildId, member: cachedMember });
+          memberships.push({ guildId, member: cachedMember, fetched_live: false, used_cache: true });
           continue;
         }
       }
@@ -1020,6 +1088,24 @@ async function fetchDiscordLoginGuildMemberships(
   }
 
   return memberships;
+}
+
+async function upsertDiscordMemberAbsence(input: {
+  guildId: string;
+  discordUserId: string;
+  userId: string;
+  source: "oauth_refresh_absent";
+}): Promise<void> {
+  await upsertDiscordMemberSnapshot({
+    guildId: input.guildId,
+    discordUserId: input.discordUserId,
+    userId: input.userId,
+    roles: [],
+    nick: null,
+    joinedAt: null,
+    rawMember: { absent: true, source: input.source },
+    source: input.source
+  });
 }
 
 function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
@@ -1102,6 +1188,81 @@ async function upsertDiscordUser(
 
   await ensureAuthenticatedUserRosterEntry(tx, userId);
   return userId;
+}
+
+async function refreshDiscordSnapshotsAndAssignments(input: {
+  userId: string;
+  profile: DiscordProfile;
+  token: DiscordTokenResponse;
+  request: FastifyRequest;
+  source: "oauth_login" | "oauth_refresh";
+  purpose: "login" | "refresh";
+  memberships?: Array<{ guildId: string; member: DiscordCurrentGuildMember }>;
+  fetchedMemberships?: DiscordFetchedMembership[];
+}): Promise<{
+  memberships_checked: number;
+  memberships_present: number;
+  memberships_absent: number;
+  reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null;
+}> {
+  const fetched =
+    input.fetchedMemberships ?? input.memberships?.map((membership) => ({
+      guildId: membership.guildId,
+      member: membership.member,
+      fetched_live: true,
+      used_cache: false
+    })) ?? (await fetchDiscordConfiguredGuildMemberships(input.token, input.profile.id, input.request, input.purpose));
+
+  let present = 0;
+  let absent = 0;
+  let reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null = null;
+
+  for (const membership of fetched) {
+    if (membership.member) {
+      present += 1;
+      await upsertDiscordMemberSnapshot({
+        guildId: membership.guildId,
+        discordUserId: input.profile.id,
+        userId: input.userId,
+        roles: membership.member.roles,
+        nick: membership.member.nick ?? null,
+        joinedAt: membership.member.joined_at ?? null,
+        rawMember: {
+          ...(membership.member as unknown as Record<string, unknown>),
+          fetched_live: membership.fetched_live,
+          used_cache: membership.used_cache
+        },
+        source: input.source
+      });
+      continue;
+    }
+
+    if (input.purpose === "refresh") {
+      absent += 1;
+      await upsertDiscordMemberAbsence({
+        guildId: membership.guildId,
+        discordUserId: input.profile.id,
+        userId: input.userId,
+        source: "oauth_refresh_absent"
+      });
+    }
+  }
+
+  if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
+    reconciliation = await reconcileDiscordMembership({
+      userId: input.userId,
+      discordUserId: input.profile.id,
+      dryRun: false,
+      source: input.source
+    });
+  }
+
+  return {
+    memberships_checked: fetched.length,
+    memberships_present: present,
+    memberships_absent: absent,
+    reconciliation
+  };
 }
 
 function getAuthPlayerUid(identity: AuthIdentityRow): string {
@@ -1432,7 +1593,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     try {
-      const state = await insertOAuthState(
+      const oauthState = await insertOAuthState(
         "discord",
         getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after),
         null,
@@ -1443,7 +1604,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
       authorizeUrl.searchParams.set("response_type", "code");
       authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
-      authorizeUrl.searchParams.set("state", state);
+      authorizeUrl.searchParams.set("state", oauthState.state);
 
       return reply.redirect(authorizeUrl.toString());
     } catch (error) {
@@ -1468,6 +1629,68 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const token = await exchangeDiscordCode(parsedQuery.data.code);
       const profile = await fetchDiscordProfile(token);
+
+      if (state.purpose === "discord_refresh") {
+        const returnTo = getSafeReturnTo(state.redirect_after);
+
+        if (!state.user_id) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "invalid_state"));
+        }
+
+        const user = await loadCurrentUserById(state.user_id);
+        const linkedDiscordIdentity = user?.identities.find((identity) => identity.provider === "discord") ?? null;
+
+        if (!user || !linkedDiscordIdentity) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "discord_identity_missing"));
+        }
+
+        if (linkedDiscordIdentity.provider_user_id !== profile.id) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "identity_mismatch"));
+        }
+
+        try {
+          const fetchedMemberships = await fetchDiscordConfiguredGuildMemberships(token, profile.id, request, "refresh");
+          const presentMemberships = fetchedMemberships
+            .filter((membership): membership is DiscordFetchedMembership & { member: DiscordCurrentGuildMember } => membership.member !== null)
+            .map((membership) => ({ guildId: membership.guildId, member: membership.member }));
+          const preferredName = choosePreferredDiscordDisplayName({
+            profile,
+            memberships: presentMemberships,
+            policy: getDiscordDisplayNamePolicy(),
+            guildOrder: getLoginGuildDisplayNameOrder()
+          });
+          const userId = await withDbTransaction(async (tx) => upsertDiscordUser(tx, profile, preferredName));
+
+          if (userId !== state.user_id) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "identity_mismatch"));
+          }
+
+          await refreshDiscordSnapshotsAndAssignments({
+            userId,
+            profile,
+            token,
+            request,
+            source: "oauth_refresh",
+            purpose: "refresh",
+            fetchedMemberships: fetchedMemberships
+          });
+
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refreshed", "1"));
+        } catch (error) {
+          request.log.error({ err: error }, "Discord refresh callback failed");
+
+          if (error instanceof DiscordRateLimitError) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "rate_limited"));
+          }
+
+          if (error instanceof DiscordMembershipFetchError) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "membership_fetch_failed"));
+          }
+
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "refresh_failed"));
+        }
+      }
+
       const memberships = await fetchDiscordLoginGuildMemberships(token, profile.id, request);
       const preferredName = choosePreferredDiscordDisplayName({
         profile,
@@ -1495,28 +1718,22 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         return nextUserId;
       });
 
-      for (const membership of memberships) {
-        await upsertDiscordMemberSnapshot({
-          guildId: membership.guildId,
-          discordUserId: profile.id,
+      if (config.discordAuthEnabled) {
+        const refreshResult = await refreshDiscordSnapshotsAndAssignments({
           userId,
-          roles: membership.member.roles,
-          nick: membership.member.nick ?? null,
-          joinedAt: membership.member.joined_at ?? null,
-          rawMember: membership.member as unknown as Record<string, unknown>,
-          source: "oauth_login"
-        });
-      }
-
-      if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
-        const reconciliation = await reconcileDiscordMembership({
-          userId,
-          discordUserId: profile.id,
-          dryRun: false,
-          source: "oauth_login"
+          profile,
+          token,
+          request,
+          source: "oauth_login",
+          purpose: "login",
+          memberships
         });
 
-        if (reconciliation.denied) {
+        if (config.discordAuthReconcileOnLogin && refreshResult.reconciliation?.denied) {
+          return sendDiscordGuildMembershipRequired(reply);
+        }
+
+        if (refreshResult.memberships_present === 0 && config.discordAuthRequireGuild) {
           return sendDiscordGuildMembershipRequired(reply);
         }
       }
@@ -1582,6 +1799,64 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       }
 
       return sendProviderFailure(reply);
+    }
+  });
+
+  app.post("/v1/me/discord/refresh", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = discordRefreshBodySchema.safeParse(request.body ?? {});
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
+
+    if (!discordIdentity) {
+      return reply.code(409).send({
+        ok: false,
+        error: {
+          code: "discord_identity_missing",
+          message: "Link Discord before refreshing Discord roles."
+        }
+      });
+    }
+
+    if (!config.discordClientId || !config.discordRedirectUri) {
+      return sendAuthUnavailable(reply, "Discord OAuth is not configured.");
+    }
+
+    try {
+      const flowMode = user.session_id === "jwt" ? "jwt" : "cookie";
+      const oauthState = await insertOAuthState(
+        "discord",
+        getSafeReturnTo(parsedBody.data.return_to),
+        null,
+        flowMode,
+        "discord_refresh",
+        user.id
+      );
+      const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
+      authorizeUrl.searchParams.set("client_id", config.discordClientId);
+      authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
+      authorizeUrl.searchParams.set("state", oauthState.state);
+
+      return {
+        ok: true,
+        mode: flowMode,
+        discord_refresh_url: authorizeUrl.toString(),
+        expires_at: oauthState.expires_at
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Discord refresh OAuth");
+      return sendAuthUnavailable(reply);
     }
   });
 
@@ -2205,7 +2480,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     const state = await insertOAuthState("steam", getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after), user.id);
-    return reply.redirect(steamOpenIdUrl(state));
+    return reply.redirect(steamOpenIdUrl(state.state));
   });
 
   app.post("/auth/steam/link-ticket", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -2272,7 +2547,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         });
       }
 
-      return reply.redirect(steamOpenIdUrl(state));
+      return reply.redirect(steamOpenIdUrl(state.state));
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Steam ticket link");
       return reply.code(503).send({

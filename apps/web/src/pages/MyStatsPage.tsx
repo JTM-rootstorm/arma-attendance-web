@@ -10,8 +10,10 @@ export function MyStatsPage({
   myPlayer,
   myOperations,
   onRefresh,
+  discordRefreshNotice,
   onUpdatePlayerName,
   onUpdateRepresentedUnit,
+  onRefreshDiscord,
   onLinkSteam,
   onUnlinkSteam
 }: {
@@ -19,8 +21,10 @@ export function MyStatsPage({
   myPlayer: ApiResult<MyPlayerResponse>;
   myOperations: ApiResult<MyOperationsResponse>;
   onRefresh: () => void;
+  discordRefreshNotice: { tone: "success" | "error"; message: string } | null;
   onUpdatePlayerName: (displayName: string) => Promise<void>;
   onUpdateRepresentedUnit: (unitId: string) => Promise<void>;
+  onRefreshDiscord: () => Promise<void>;
   onLinkSteam: () => void;
   onUnlinkSteam: () => void;
 }) {
@@ -44,6 +48,8 @@ export function MyStatsPage({
   const [representedUnitDirty, setRepresentedUnitDirty] = useState(false);
   const [representedUnitState, setRepresentedUnitState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [representedUnitError, setRepresentedUnitError] = useState("");
+  const [discordRefreshState, setDiscordRefreshState] = useState<"idle" | "starting" | "error">("idle");
+  const [discordRefreshError, setDiscordRefreshError] = useState("");
 
   useEffect(() => {
     if (!playerNameDirty) {
@@ -101,6 +107,18 @@ export function MyStatsPage({
     } catch (error) {
       setRepresentedUnitError(error instanceof Error ? error.message : "Battalion selection failed.");
       setRepresentedUnitState("error");
+    }
+  }
+
+  async function submitDiscordRefresh() {
+    setDiscordRefreshState("starting");
+    setDiscordRefreshError("");
+
+    try {
+      await onRefreshDiscord();
+    } catch (error) {
+      setDiscordRefreshError(error instanceof Error ? error.message : "Discord refresh failed to start.");
+      setDiscordRefreshState("error");
     }
   }
 
@@ -169,6 +187,9 @@ export function MyStatsPage({
           <strong>{steamIdentity ? "Linked" : "Not linked"}</strong>
         </div>
         <div className="inline-actions">
+          <button type="button" onClick={() => void submitDiscordRefresh()} disabled={!discordIdentity || discordRefreshState === "starting"}>
+            {discordRefreshState === "starting" ? "Opening Discord" : "Refresh Discord"}
+          </button>
           <button type="button" onClick={onLinkSteam}>
             Link Steam
           </button>
@@ -179,6 +200,10 @@ export function MyStatsPage({
           ) : null}
         </div>
       </div>
+      {discordRefreshNotice ? (
+        <p className={discordRefreshNotice.tone === "error" ? "message error" : "message"}>{discordRefreshNotice.message}</p>
+      ) : null}
+      {discordRefreshState === "error" ? <p className="message error">{discordRefreshError}</p> : null}
 
       <form className="inline-form player-name-form" onSubmit={(event) => void submitPlayerName(event)}>
         <label>

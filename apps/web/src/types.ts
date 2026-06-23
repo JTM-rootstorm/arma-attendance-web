@@ -512,6 +512,13 @@ export type MeResponse = {
   user: AuthUser;
 };
 
+export type DiscordRefreshStartResponse = {
+  ok: true;
+  mode: "cookie" | "jwt";
+  discord_refresh_url: string;
+  expires_at: string;
+};
+
 export type AdminUser = AuthUser & {
   disabled_at: string | null;
   created_at: string;

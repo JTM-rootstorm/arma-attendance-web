@@ -29,6 +29,7 @@ import type {
   DashboardSummaryResponse,
   DataQualityResponse,
   DbHealthResponse,
+  DiscordRefreshStartResponse,
   HealthResponse,
   MachineTokenSecretResponse,
   MachineTokensResponse,
@@ -113,6 +114,7 @@ export function App() {
   const [selectedOperationId, setSelectedOperationId] = useState("");
   const [selectedPlayerUid, setSelectedPlayerUid] = useState("");
   const [exportMessage, setExportMessage] = useState("");
+  const [discordRefreshNotice, setDiscordRefreshNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
   const sessionUser = me.status === "ready" ? me.data.user : null;
   const canAdmin = canOpenIdentityAdmin(sessionUser);
@@ -433,6 +435,26 @@ export function App() {
   }, [loadHealth, loadMe]);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const refreshed = url.searchParams.get("discord_refreshed");
+    const refreshError = url.searchParams.get("discord_refresh_error");
+
+    if (!refreshed && !refreshError) {
+      return;
+    }
+
+    if (refreshed === "1") {
+      setDiscordRefreshNotice({ tone: "success", message: "Discord memberships refreshed." });
+    } else {
+      setDiscordRefreshNotice({ tone: "error", message: "Discord refresh failed. Try again in a moment." });
+    }
+
+    url.searchParams.delete("discord_refreshed");
+    url.searchParams.delete("discord_refresh_error");
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  useEffect(() => {
     void loadDbHealth();
     void loadSummary();
     void loadDataQuality();
@@ -718,6 +740,14 @@ export function App() {
     await loadPlayers();
   }
 
+  async function startDiscordRefresh() {
+    const response = await apiFetch<DiscordRefreshStartResponse>("/v1/me/discord/refresh", {
+      method: "POST",
+      body: { return_to: `${window.location.pathname}${window.location.search}${window.location.hash}` }
+    });
+    window.location.href = response.discord_refresh_url;
+  }
+
   async function resetPlayerName(playerUid: string) {
     await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}/reset-name`, { method: "POST" });
     await loadPlayers();
@@ -764,8 +794,10 @@ export function App() {
         myPlayer={myPlayer}
         myOperations={myOperations}
         onRefresh={() => void loadMyStats()}
+        discordRefreshNotice={discordRefreshNotice}
         onUpdatePlayerName={updatePlayerName}
         onUpdateRepresentedUnit={updateRepresentedUnit}
+        onRefreshDiscord={startDiscordRefresh}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}
@@ -861,8 +893,10 @@ export function App() {
         myPlayer={myPlayer}
         myOperations={myOperations}
         onRefresh={() => void loadMyStats()}
+        discordRefreshNotice={discordRefreshNotice}
         onUpdatePlayerName={updatePlayerName}
         onUpdateRepresentedUnit={updateRepresentedUnit}
+        onRefreshDiscord={startDiscordRefresh}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}

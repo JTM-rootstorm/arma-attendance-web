@@ -60,6 +60,17 @@ type CurrentUnitPlayerRow = {
   roster_status: string;
   assignment_locked: boolean;
   assignment_source: string;
+  assignment_priority: number;
+};
+
+type UnitMembershipClaimSet = {
+  unitId: string;
+  membershipKind: "primary" | "secondary";
+  assignmentClaim: DiscordRoleClaim;
+  rankClaim: DiscordRoleClaim | null;
+  rosterStatusClaim: DiscordRoleClaim | null;
+  unitRoleClaims: DiscordRoleClaim[];
+  assignmentPriority: number;
 };
 
 export type DiscordMemberSnapshotInput = {
@@ -70,7 +81,7 @@ export type DiscordMemberSnapshotInput = {
   nick?: string | null;
   joinedAt?: string | null;
   rawMember?: Record<string, unknown>;
-  source: "oauth_login" | "bot_snapshot" | "bot_event" | "manual_import";
+  source: "oauth_login" | "oauth_refresh" | "oauth_refresh_absent" | "bot_snapshot" | "bot_event" | "manual_import";
 };
 
 export type ReconcileDiscordMembershipOptions = {
@@ -91,6 +102,13 @@ export type ReconcileDiscordMembershipResult = {
   manual_locked: boolean;
   winning_claims: {
     unit_primary: DiscordRoleClaim | null;
+    unit_memberships: Array<{
+      unit_id: string;
+      membership_kind: "primary" | "secondary";
+      assignment_claim: DiscordRoleClaim;
+      rank: DiscordRoleClaim | null;
+      roster_status: DiscordRoleClaim | null;
+    }>;
     rank: DiscordRoleClaim | null;
     roster_status: DiscordRoleClaim | null;
     unit_roles: DiscordRoleClaim[];
@@ -98,6 +116,8 @@ export type ReconcileDiscordMembershipResult = {
   };
   ignored_claims: Array<DiscordRoleClaim & { reason: string }>;
   applied: string[];
+  represented_unit_id?: string | null;
+  deactivated_unit_ids?: string[];
 };
 
 const allowedAppRoles = new Set(["viewer", "officer", "admin", "tcw_admin", "owner"]);
@@ -378,7 +398,7 @@ async function loadClaims(options: ReconcileDiscordMembershipOptions, discordUse
 async function currentUnitRows(playerUid: string): Promise<CurrentUnitPlayerRow[]> {
   const result = await queryDb<CurrentUnitPlayerRow>(
     `
-    SELECT unit_id::text, rank_id::text, roster_status, assignment_locked, assignment_source
+    SELECT unit_id::text, rank_id::text, roster_status, assignment_locked, assignment_source, assignment_priority
     FROM unit_players
     WHERE player_uid = $1
       AND is_active = true
@@ -388,6 +408,276 @@ async function currentUnitRows(playerUid: string): Promise<CurrentUnitPlayerRow[
   );
 
   return result.rows;
+}
+
+function pickUnitSpecificWinner(claims: DiscordRoleClaim[], unitId: string): DiscordRoleClaim | null {
+  return [...claims]
+    .filter((claim) => !claim.unitId || claim.unitId === unitId)
+    .sort((a, b) => {
+      const specificity = (b.unitId === unitId ? 1 : 0) - (a.unitId === unitId ? 1 : 0);
+      return specificity || compareClaims(a, b);
+    })[0] ?? null;
+}
+
+function buildUnitMembershipClaimSets(
+  assignmentClaims: DiscordRoleClaim[],
+  rankClaims: DiscordRoleClaim[],
+  rosterStatusClaims: DiscordRoleClaim[],
+  unitRoleClaims: DiscordRoleClaim[]
+): UnitMembershipClaimSet[] {
+  const byUnit = new Map<string, DiscordRoleClaim[]>();
+
+  for (const claim of assignmentClaims) {
+    if (!claim.unitId) {
+      continue;
+    }
+
+    const claims = byUnit.get(claim.unitId) ?? [];
+    claims.push(claim);
+    byUnit.set(claim.unitId, claims);
+  }
+
+  return Array.from(byUnit.entries())
+    .map(([unitId, claims]) => {
+      const primaryWinner = pickWinner(claims.filter((claim) => claim.claimType === "unit_primary"));
+      const assignmentClaim = primaryWinner ?? pickWinner(claims.filter((claim) => claim.claimType === "unit_secondary"));
+
+      if (!assignmentClaim) {
+        return null;
+      }
+
+      return {
+        unitId,
+        membershipKind: primaryWinner ? "primary" as const : "secondary" as const,
+        assignmentClaim,
+        rankClaim: pickUnitSpecificWinner(rankClaims, unitId),
+        rosterStatusClaim: pickUnitSpecificWinner(rosterStatusClaims, unitId),
+        unitRoleClaims: unitRoleClaims.filter((claim) => claim.unitId === unitId),
+        assignmentPriority: assignmentClaim.guildPriority
+      };
+    })
+    .filter((claimSet): claimSet is UnitMembershipClaimSet => claimSet !== null)
+    .sort((a, b) => compareClaims(a.assignmentClaim, b.assignmentClaim));
+}
+
+function serializeUnitMembershipClaimSet(claimSet: UnitMembershipClaimSet) {
+  return {
+    unit_id: claimSet.unitId,
+    membership_kind: claimSet.membershipKind,
+    assignment_claim: claimSet.assignmentClaim,
+    rank: claimSet.rankClaim,
+    roster_status: claimSet.rosterStatusClaim
+  };
+}
+
+async function deactivateDiscordGrantsForDeniedIdentity(
+  targetUserId: string | null,
+  playerUid: string | null
+): Promise<string[]> {
+  if (targetUserId) {
+    await queryDb("DELETE FROM unit_user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+    await queryDb("DELETE FROM unit_memberships WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+    await queryDb("DELETE FROM user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+  }
+
+  if (!playerUid) {
+    return [];
+  }
+
+  const result = await queryDb<{ unit_id: string }>(
+    `
+    UPDATE unit_players
+    SET is_active = false,
+        roster_status = 'inactive',
+        left_unit_at = COALESCE(left_unit_at, now()),
+        updated_at = now()
+    WHERE player_uid = $1
+      AND assignment_source = 'discord'
+      AND assignment_locked = false
+      AND is_active = true
+    RETURNING unit_id::text
+    `,
+    [playerUid]
+  );
+
+  return result.rows.map((row) => row.unit_id);
+}
+
+async function applyDiscordUnitMemberships(
+  playerUid: string,
+  discordUserId: string,
+  claimSets: UnitMembershipClaimSet[],
+  source: string
+): Promise<{ manualLocked: boolean; deactivatedUnitIds: string[]; applied: string[] }> {
+  if (playerUid === `discord:${discordUserId}`) {
+    await ensureDiscordPlaceholderPlayerForReconcile({
+      playerUid,
+      discordUserId,
+      createPlayerIfMissing: true,
+      rawMember: {
+        source: "discord_reconcile",
+        discord_user_id: discordUserId
+      }
+    });
+  }
+
+  const currentRows = await currentUnitRows(playerUid);
+  const manualLocked = currentRows.some((row) => row.assignment_locked);
+  const claimedUnitIds = new Set(claimSets.map((claimSet) => claimSet.unitId));
+  const applied: string[] = [];
+
+  for (const claimSet of claimSets) {
+    await queryDb(
+      `
+      INSERT INTO unit_players (
+        unit_id,
+        player_uid,
+        roster_status,
+        assignment_source,
+        assignment_priority,
+        source_guild_id,
+        source_role_id,
+        rank_id,
+        is_active,
+        joined_unit_at
+      )
+      VALUES ($1::uuid, $2, COALESCE($3, 'active'), 'discord', $4, $5, $6, $7::uuid, true, now())
+      ON CONFLICT (unit_id, player_uid) DO UPDATE
+      SET
+        roster_status = COALESCE(EXCLUDED.roster_status, unit_players.roster_status),
+        assignment_source = 'discord',
+        assignment_priority = EXCLUDED.assignment_priority,
+        source_guild_id = EXCLUDED.source_guild_id,
+        source_role_id = EXCLUDED.source_role_id,
+        rank_id = COALESCE(EXCLUDED.rank_id, unit_players.rank_id),
+        is_active = true,
+        left_unit_at = null,
+        updated_at = now()
+      WHERE unit_players.assignment_locked = false
+        AND unit_players.assignment_source <> 'manual'
+      `,
+      [
+        claimSet.unitId,
+        playerUid,
+        claimSet.rosterStatusClaim?.rosterStatus ?? null,
+        claimSet.assignmentPriority,
+        claimSet.assignmentClaim.guildId,
+        claimSet.assignmentClaim.roleId,
+        claimSet.rankClaim?.rankId ?? null
+      ]
+    );
+    applied.push(claimSet.membershipKind === "primary" ? "unit_primary" : "unit_secondary");
+    await auditChange(
+      null,
+      playerUid,
+      discordUserId,
+      "apply",
+      claimSet.membershipKind === "primary" ? "unit_primary" : "unit_secondary",
+      currentRows.find((row) => row.unit_id === claimSet.unitId) ?? null,
+      { unit_id: claimSet.unitId, rank_id: claimSet.rankClaim?.rankId ?? null },
+      claimSet.assignmentClaim,
+      [],
+      source
+    );
+  }
+
+  const staleParams: unknown[] = [playerUid];
+  const staleUnitFilter =
+    claimedUnitIds.size > 0
+      ? `AND unit_id <> ALL($2::uuid[])`
+      : "AND assignment_source = 'discord'";
+
+  if (claimedUnitIds.size > 0) {
+    staleParams.push(Array.from(claimedUnitIds));
+  }
+
+  const staleResult = await queryDb<{ unit_id: string }>(
+    `
+    UPDATE unit_players
+    SET is_active = false,
+        roster_status = 'inactive',
+        left_unit_at = COALESCE(left_unit_at, now()),
+        updated_at = now()
+    WHERE player_uid = $1
+      AND assignment_source IN ('discord', 'auth-default')
+      AND assignment_locked = false
+      AND is_active = true
+      ${staleUnitFilter}
+    RETURNING unit_id::text
+    `,
+    staleParams
+  );
+
+  return {
+    manualLocked,
+    deactivatedUnitIds: staleResult.rows.map((row) => row.unit_id),
+    applied
+  };
+}
+
+async function repairRepresentedUnitPreference(input: {
+  playerUid: string;
+  preferredUnitId: string | null;
+  actorUserId: string | null;
+  source: string;
+}): Promise<{ changed: boolean; represented_unit_id: string | null }> {
+  const activeResult = await queryDb<{ unit_id: string; assignment_priority: number }>(
+    `
+    SELECT unit_id::text, assignment_priority
+    FROM unit_players
+    WHERE player_uid = $1
+      AND is_active = true
+      AND roster_status <> 'inactive'
+    ORDER BY assignment_priority DESC, updated_at DESC, unit_id
+    `,
+    [input.playerUid]
+  );
+  const activeUnitIds = new Set(activeResult.rows.map((row) => row.unit_id));
+  const preferenceResult = await queryDb<{ represented_unit_id: string | null }>(
+    "SELECT represented_unit_id::text FROM player_unit_preferences WHERE player_uid = $1",
+    [input.playerUid]
+  );
+  const current = preferenceResult.rows[0]?.represented_unit_id ?? null;
+
+  if (current && activeUnitIds.has(current)) {
+    return { changed: false, represented_unit_id: current };
+  }
+
+  const next = input.preferredUnitId && activeUnitIds.has(input.preferredUnitId)
+    ? input.preferredUnitId
+    : (activeResult.rows[0]?.unit_id ?? null);
+
+  await queryDb(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id, updated_by_user_id)
+    VALUES ($1, $2::uuid, $3::uuid)
+    ON CONFLICT (player_uid) DO UPDATE
+    SET represented_unit_id = EXCLUDED.represented_unit_id,
+        updated_by_user_id = EXCLUDED.updated_by_user_id,
+        updated_at = now()
+    `,
+    [input.playerUid, next, input.actorUserId]
+  );
+
+  if (current !== next) {
+    await queryDb(
+      `
+      INSERT INTO admin_audit_events (actor_user_id, actor_label, action, details)
+      VALUES ($1::uuid, $2, 'repair_represented_unit', $3::jsonb)
+      `,
+      [
+        input.actorUserId,
+        input.source,
+        JSON.stringify({
+          player_uid: input.playerUid,
+          previous_unit_id: current,
+          represented_unit_id: next
+        })
+      ]
+    );
+  }
+
+  return { changed: current !== next, represented_unit_id: next };
 }
 
 async function auditChange(
@@ -442,29 +732,40 @@ export async function reconcileDiscordMembership(
   const targetUserId = options.userId ?? identity.user_id;
   const claims = await loadClaims(options, identity.discord_user_id);
   const denyClaims = claims.filter((claim) => claim.claimType === "deny_login");
-  const unitClaims = claims.filter((claim) => claim.claimType === "unit_primary" && claim.unitId);
+  const assignmentClaims = claims.filter(
+    (claim) => (claim.claimType === "unit_primary" || claim.claimType === "unit_secondary") && claim.unitId
+  );
   const rankClaims = claims.filter((claim) => claim.claimType === "rank" && claim.rankId);
   const rosterStatusClaims = claims.filter((claim) => claim.claimType === "roster_status" && claim.rosterStatus);
   const unitRoleClaims = claims
     .filter((claim) => claim.claimType === "unit_role" && claim.unitId && claim.unitRole && allowedUnitRoles.has(claim.unitRole))
     .sort(compareClaims);
   const appRoleClaims = filterAppRoleClaims(claims.filter((claim) => claim.claimType === "app_role")).sort(compareClaims);
-  const unitWinner = pickWinner(unitClaims);
-  const rankWinner = pickWinner(
-    rankClaims.filter((claim) => !unitWinner || !claim.unitId || claim.unitId === unitWinner.unitId)
-  );
-  const rosterStatusWinner = pickWinner(rosterStatusClaims);
+  const unitMembershipClaimSets = buildUnitMembershipClaimSets(assignmentClaims, rankClaims, rosterStatusClaims, unitRoleClaims);
+  const unitWinner =
+    pickWinner(unitMembershipClaimSets.filter((claimSet) => claimSet.membershipKind === "primary").map((claimSet) => claimSet.assignmentClaim)) ??
+    pickWinner(unitMembershipClaimSets.map((claimSet) => claimSet.assignmentClaim));
+  const representedWinner =
+    unitMembershipClaimSets.find((claimSet) => claimSet.assignmentClaim === unitWinner) ??
+    unitMembershipClaimSets[0] ??
+    null;
+  const rankWinner = representedWinner?.rankClaim ?? pickWinner(rankClaims);
+  const rosterStatusWinner = representedWinner?.rosterStatusClaim ?? pickWinner(rosterStatusClaims);
   const ignored = [
-    ...ignoredClaims(unitClaims, unitWinner, "lower unit priority"),
+    ...ignoredClaims(assignmentClaims, unitWinner, "lower unit priority"),
     ...ignoredClaims(rankClaims, rankWinner, "lower rank priority"),
     ...ignoredClaims(rosterStatusClaims, rosterStatusWinner, "lower roster status priority")
   ];
   const applied: string[] = [];
   let manualLocked = false;
+  let representedUnitId: string | null = null;
+  let deactivatedUnitIds: string[] = [];
   const denyWinner = pickWinner(denyClaims);
 
   if (denyWinner) {
     if (!dryRun) {
+      deactivatedUnitIds = await deactivateDiscordGrantsForDeniedIdentity(targetUserId ?? null, identity.player_uid);
+      applied.push("discord_grants_revoked");
       await auditChange(
         targetUserId ?? null,
         identity.player_uid,
@@ -489,6 +790,7 @@ export async function reconcileDiscordMembership(
       manual_locked: false,
       winning_claims: {
         unit_primary: null,
+        unit_memberships: [],
         rank: null,
         roster_status: null,
         unit_roles: [],
@@ -498,108 +800,26 @@ export async function reconcileDiscordMembership(
         ...ignoredClaims(denyClaims, denyWinner, "lower deny priority"),
         ...claims.filter((claim) => claim.claimType !== "deny_login").map((claim) => ({ ...claim, reason: "login denied" }))
       ],
-      applied
+      applied,
+      represented_unit_id: null,
+      deactivated_unit_ids: deactivatedUnitIds
     };
   }
 
-  if (!dryRun && identity.player_uid && identity.discord_user_id && identity.player_uid === `discord:${identity.discord_user_id}`) {
-    await ensureDiscordPlaceholderPlayerForReconcile({
-      playerUid: identity.player_uid,
-      discordUserId: identity.discord_user_id,
-      createPlayerIfMissing: true,
-      rawMember: {
-        source: "discord_reconcile",
-        discord_user_id: identity.discord_user_id
-      }
-    });
-
-    const currentRows = await currentUnitRows(identity.player_uid);
-    manualLocked = currentRows.some((row) => row.assignment_locked);
-
-    if (unitWinner && !manualLocked) {
-      const currentPrimary = currentRows.find((row) => row.assignment_source === "discord") ?? currentRows[0] ?? null;
-      await queryDb(
-        `
-        UPDATE unit_players
-        SET is_active = false,
-            roster_status = 'inactive',
-            left_unit_at = COALESCE(left_unit_at, now()),
-            updated_at = now()
-        WHERE player_uid = $1
-          AND unit_id <> $2::uuid
-          AND assignment_source IN ('discord', 'auth-default')
-          AND assignment_locked = false
-          AND is_active = true
-        `,
-        [identity.player_uid, unitWinner.unitId]
-      );
-      await queryDb(
-        `
-        INSERT INTO unit_players (
-          unit_id,
-          player_uid,
-          roster_status,
-          assignment_source,
-          assignment_priority,
-          source_guild_id,
-          source_role_id,
-          rank_id,
-          is_active,
-          joined_unit_at
-        )
-        VALUES ($1::uuid, $2, COALESCE($3, 'active'), 'discord', $4, $5, $6, $7::uuid, true, now())
-        ON CONFLICT (unit_id, player_uid) DO UPDATE
-        SET
-          roster_status = COALESCE(EXCLUDED.roster_status, unit_players.roster_status),
-          assignment_source = 'discord',
-          assignment_priority = EXCLUDED.assignment_priority,
-          source_guild_id = EXCLUDED.source_guild_id,
-          source_role_id = EXCLUDED.source_role_id,
-          rank_id = COALESCE(EXCLUDED.rank_id, unit_players.rank_id),
-          is_active = true,
-          left_unit_at = null,
-          updated_at = now()
-        WHERE unit_players.assignment_locked = false
-        `,
-        [
-          unitWinner.unitId,
-          identity.player_uid,
-          rosterStatusWinner?.rosterStatus ?? null,
-          unitWinner.guildPriority,
-          unitWinner.guildId,
-          unitWinner.roleId,
-          rankWinner?.rankId ?? null
-        ]
-      );
-      applied.push("unit_primary");
-      if (!currentPrimary || currentPrimary.unit_id !== unitWinner.unitId || currentPrimary.rank_id !== (rankWinner?.rankId ?? null)) {
-        await auditChange(
-          targetUserId ?? null,
-          identity.player_uid,
-          identity.discord_user_id,
-          "apply",
-          "unit_primary",
-          currentPrimary,
-          { unit_id: unitWinner.unitId, rank_id: rankWinner?.rankId ?? null },
-          unitWinner,
-          ignored,
-          source
-        );
-      }
-    }
+  if (!dryRun && identity.player_uid && identity.discord_user_id) {
+    const unitApplyResult = await applyDiscordUnitMemberships(identity.player_uid, identity.discord_user_id, unitMembershipClaimSets, source);
+    manualLocked = unitApplyResult.manualLocked;
+    deactivatedUnitIds = unitApplyResult.deactivatedUnitIds;
+    applied.push(...unitApplyResult.applied);
   }
 
   if (!dryRun && targetUserId) {
     const unitRoleRows = [
-      ...(unitWinner
-        ? [
-            {
-              unit_id: unitWinner.unitId,
-              role: "member",
-              claim: unitWinner
-            }
-          ]
-        : []),
+      ...unitMembershipClaimSets.map((claimSet) => ({
+        unit_id: claimSet.unitId,
+        role: "member",
+        claim: claimSet.assignmentClaim
+      })),
       ...unitRoleClaims.map((claim) => ({
         unit_id: claim.unitId,
         role: claim.unitRole,
@@ -652,6 +872,20 @@ export async function reconcileDiscordMembership(
     }
   }
 
+  if (!dryRun && identity.player_uid) {
+    const repaired = await repairRepresentedUnitPreference({
+      playerUid: identity.player_uid,
+      preferredUnitId: representedWinner?.unitId ?? null,
+      actorUserId: targetUserId ?? null,
+      source: `system/${source}`
+    });
+    representedUnitId = repaired.represented_unit_id;
+
+    if (repaired.changed) {
+      applied.push("represented_unit_repaired");
+    }
+  }
+
   return {
     ok: true,
     dry_run: dryRun,
@@ -662,13 +896,16 @@ export async function reconcileDiscordMembership(
     manual_locked: manualLocked,
     winning_claims: {
       unit_primary: unitWinner,
+      unit_memberships: unitMembershipClaimSets.map(serializeUnitMembershipClaimSet),
       rank: rankWinner,
       roster_status: rosterStatusWinner,
       unit_roles: unitRoleClaims,
       app_roles: appRoleClaims
     },
     ignored_claims: ignored,
-    applied
+    applied,
+    represented_unit_id: representedUnitId,
+    deactivated_unit_ids: deactivatedUnitIds
   };
 }
 
