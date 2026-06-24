@@ -11,6 +11,7 @@ export type OperationIngestResponse = {
   outcome?: OperationOutcome;
   accepted: true;
   idempotent: boolean;
+  queued?: boolean;
   normalized?: NormalizationSummary;
   xp_award?: OperationXpAwardSummary;
   planet_progress_award?: OperationPlanetProgressAwardSummary;

@@ -36,6 +36,7 @@ export async function insertOperationPayload(
       payload
     )
     VALUES ($1, $2, $3, $4::jsonb)
+    ON CONFLICT (request_id) DO NOTHING
     `,
     [operationId, requestId, kind, JSON.stringify(payload)]
   );
@@ -61,5 +62,20 @@ export async function insertIngestRequest(
     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
     `,
     [requestId, operationId, endpoint, JSON.stringify(payload), JSON.stringify(response)]
+  );
+}
+
+export async function updateIngestRequestResponse(
+  tx: DbTransaction,
+  requestId: string,
+  response: unknown
+): Promise<void> {
+  await tx.query(
+    `
+    UPDATE ingest_requests
+    SET response = $2::jsonb
+    WHERE request_id = $1
+    `,
+    [requestId, JSON.stringify(response)]
   );
 }

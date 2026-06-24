@@ -4,7 +4,13 @@ import { persistOperationAttendance } from "../normalization/operationAttendance
 import { insertPrimaryOperationUnit, syncOperationUnitsForParticipants } from "../normalization/operationUnits.js";
 import { awardOperationPlanetProgress, awardOperationXp, findXpRewardTierForMission } from "../xp/operationXpAwards.js";
 import { getMissionField, type OperationFinishBody, type OperationStartBody } from "../routes/operations/schemas.js";
-import { getExistingIngestResponse, insertIngestRequest, insertOperationPayload, replayResponse } from "./ingestRequests.js";
+import {
+  getExistingIngestResponse,
+  insertIngestRequest,
+  insertOperationPayload,
+  replayResponse,
+  updateIngestRequestResponse
+} from "./ingestRequests.js";
 import { OperationRouteError, type OperationIngestResponse, type OperationOutcome, type OperationStatus } from "./types.js";
 
 export async function startOperationIngest(payload: OperationStartBody): Promise<OperationIngestResponse | unknown> {
@@ -48,23 +54,60 @@ export async function startOperationIngest(payload: OperationStartBody): Promise
       throw new Error("Operation start insert returned no rows.");
     }
 
-    await insertOperationPayload(tx, operation.id, payload.request_id, "start", payload);
-    await insertPrimaryOperationUnit(tx, operation.id, "server_key");
-    const normalized = await persistOperationAttendance(tx, operation.id, "start", payload);
-
-    const response: OperationIngestResponse = {
-      ok: true,
-      operation_id: operation.id,
-      status: operation.status,
-      accepted: true,
-      idempotent: false,
-      normalized
-    };
-
+    const response = await completeQueuedStartOperationIngestInTransaction(tx, operation.id, payload);
     await insertIngestRequest(tx, payload.request_id, operation.id, "/v1/operations/start", payload, response);
 
     return response;
   });
+}
+
+export async function completeQueuedStartOperationIngest(
+  operationId: string,
+  payload: OperationStartBody
+): Promise<OperationIngestResponse> {
+  return withDbTransaction(async (tx) => {
+    const response = await completeQueuedStartOperationIngestInTransaction(tx, operationId, payload);
+    await updateIngestRequestResponse(tx, payload.request_id, response);
+    return response;
+  });
+}
+
+async function completeQueuedStartOperationIngestInTransaction(
+  tx: DbTransaction,
+  operationId: string,
+  payload: OperationStartBody
+): Promise<OperationIngestResponse> {
+  const operationResult = await tx.query<{
+    id: string;
+    status: OperationStatus;
+  }>(
+    `
+    SELECT id, status
+    FROM operations
+    WHERE id = $1
+    FOR UPDATE
+    `,
+    [operationId]
+  );
+  const operation = operationResult.rows[0];
+
+  if (!operation) {
+    throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
+  }
+
+  await insertOperationPayload(tx, operation.id, payload.request_id, "start", payload);
+  await insertPrimaryOperationUnit(tx, operation.id, "server_key");
+  const normalized = await persistOperationAttendance(tx, operation.id, "start", payload);
+
+  return {
+    ok: true,
+    operation_id: operation.id,
+    status: "started",
+    accepted: true,
+    idempotent: false,
+    queued: false,
+    normalized
+  };
 }
 
 export async function finishOperationIngest(
@@ -89,6 +132,34 @@ async function finishOperationIngestInTransaction(
     return replayResponse(existingResponse);
   }
 
+  const existingOperation = await getFinishOperationForUpdate(tx, operationId);
+
+  if (!existingOperation) {
+    throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
+  }
+
+  if (existingOperation.server_key !== payload.server_key) {
+    throw new OperationRouteError(409, "server_key_mismatch", "Server key did not match operation.");
+  }
+
+  const response = await completeQueuedFinishOperationIngestInTransaction(tx, operationId, payload);
+
+  await insertIngestRequest(
+    tx,
+    payload.request_id,
+    operationId,
+    "/v1/operations/:operation_id/finish",
+    payload,
+    response
+  );
+
+  return response;
+}
+
+async function getFinishOperationForUpdate(
+  tx: DbTransaction,
+  operationId: string
+): Promise<{ id: string; server_key: string; status: OperationStatus } | undefined> {
   const existingOperationResult = await tx.query<{
     id: string;
     server_key: string;
@@ -103,16 +174,35 @@ async function finishOperationIngestInTransaction(
     [operationId]
   );
 
-  const existingOperation = existingOperationResult.rows[0];
+  return existingOperationResult.rows[0];
+}
 
-  if (!existingOperation) {
-    throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
-  }
+export async function completeQueuedFinishOperationIngest(
+  operationId: string,
+  payload: OperationFinishBody
+): Promise<OperationIngestResponse> {
+  return withDbTransaction(async (tx) => {
+    const existingOperation = await getFinishOperationForUpdate(tx, operationId);
 
-  if (existingOperation.server_key !== payload.server_key) {
-    throw new OperationRouteError(409, "server_key_mismatch", "Server key did not match operation.");
-  }
+    if (!existingOperation) {
+      throw new OperationRouteError(404, "operation_not_found", "Operation was not found.");
+    }
 
+    if (existingOperation.server_key !== payload.server_key) {
+      throw new OperationRouteError(409, "server_key_mismatch", "Server key did not match operation.");
+    }
+
+    const response = await completeQueuedFinishOperationIngestInTransaction(tx, operationId, payload);
+    await updateIngestRequestResponse(tx, payload.request_id, response);
+    return response;
+  });
+}
+
+async function completeQueuedFinishOperationIngestInTransaction(
+  tx: DbTransaction,
+  operationId: string,
+  payload: OperationFinishBody
+): Promise<OperationIngestResponse> {
   const finishStatus = statusForFinishOutcome(payload.outcome);
   const updateResult = await tx.query<{
     id: string;
@@ -189,19 +279,11 @@ async function finishOperationIngestInTransaction(
     outcome: payload.outcome,
     accepted: true,
     idempotent: false,
+    queued: false,
     normalized,
     xp_award: xpAward,
     planet_progress_award: planetProgressAward
   };
-
-  await insertIngestRequest(
-    tx,
-    payload.request_id,
-    operationId,
-    "/v1/operations/:operation_id/finish",
-    payload,
-    response
-  );
 
   return response;
 }
