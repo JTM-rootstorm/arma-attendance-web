@@ -171,10 +171,49 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
       SELECT
         au.unit_id,
         opu.operation_id,
-        opu.player_uid
+        COALESCE(
+          CASE
+            WHEN pdl.player_uid IS NOT NULL AND pdl.player_uid NOT LIKE 'discord:%' THEN pdl.player_uid
+            ELSE NULL
+          END,
+          opu.player_uid
+        ) AS canonical_player_uid
       FROM active_units au
       JOIN operation_player_units opu ON opu.unit_id = au.unit_id
+      LEFT JOIN player_discord_links pdl
+        ON opu.player_uid = ('discord:' || pdl.discord_user_id)
       JOIN operations o ON o.id = opu.operation_id ${operationWhereClause}
+    ),
+    normalized_stats AS (
+      SELECT
+        COALESCE(
+          CASE
+            WHEN pdl.player_uid IS NOT NULL AND pdl.player_uid NOT LIKE 'discord:%' THEN pdl.player_uid
+            ELSE NULL
+          END,
+          ops.player_uid
+        ) AS canonical_player_uid,
+        ops.operation_id,
+        ops.infantry_kills,
+        ops.soft_vehicle_kills,
+        ops.armor_kills,
+        ops.air_kills,
+        ops.deaths
+      FROM operation_player_stats ops
+      LEFT JOIN player_discord_links pdl
+        ON ops.player_uid = ('discord:' || pdl.discord_user_id)
+    ),
+    per_operation_stats AS (
+      SELECT
+        canonical_player_uid,
+        operation_id,
+        SUM(infantry_kills)::int AS infantry_kills,
+        SUM(soft_vehicle_kills)::int AS soft_vehicle_kills,
+        SUM(armor_kills)::int AS armor_kills,
+        SUM(air_kills)::int AS air_kills,
+        SUM(deaths)::int AS deaths
+      FROM normalized_stats
+      GROUP BY canonical_player_uid, operation_id
     ),
     member_counts AS (
       SELECT
@@ -199,9 +238,9 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
         COALESCE(SUM(ops.air_kills), 0)::int AS air_kills,
         COALESCE(SUM(ops.deaths), 0)::int AS deaths
       FROM eligible_unit_operations euo
-      JOIN operation_player_stats ops
+      JOIN per_operation_stats ops
         ON ops.operation_id = euo.operation_id
-        AND ops.player_uid = euo.player_uid
+        AND ops.canonical_player_uid = euo.canonical_player_uid
       GROUP BY euo.unit_id
     ),
     totals AS (
