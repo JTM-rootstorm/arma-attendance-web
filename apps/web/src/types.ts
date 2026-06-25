@@ -37,7 +37,7 @@ export type DbHealthResponse = {
   };
 };
 
-export type OperationStatus = "started" | "finished" | "abandoned";
+export type OperationStatus = "started" | "finished" | "failed" | "abandoned";
 
 export type OperationListItem = {
   id: string;
@@ -160,6 +160,7 @@ export type PlayersResponse = {
   players: Array<{
     player_uid: string | null;
     last_name: string | null;
+    xp_total: number;
     first_seen_at: string;
     last_seen_at: string;
     operation_count: number | null;
@@ -171,6 +172,7 @@ export type PlayerDetailResponse = {
   player: {
     player_uid: string | null;
     last_name: string | null;
+    xp_total: number;
     first_seen_at: string;
     last_seen_at: string;
   };
@@ -193,6 +195,7 @@ export type PlayerDetailResponse = {
 export type PlayerSummaryResponse = {
   ok: true;
   summary: {
+    xp_total: number;
     operation_count: number | null;
     present_at_start_count: number | null;
     present_at_end_count: number | null;
@@ -244,7 +247,7 @@ export type DiscordGuild = {
   created_at: string;
   updated_at: string;
   role_count?: number;
-  linked_player_count?: number;
+  linked_member_count?: number;
   enabled_rule_count?: number;
 };
 
@@ -509,6 +512,13 @@ export type MeResponse = {
   user: AuthUser;
 };
 
+export type DiscordRefreshStartResponse = {
+  ok: true;
+  mode: "cookie" | "jwt";
+  discord_refresh_url: string;
+  expires_at: string;
+};
+
 export type AdminUser = AuthUser & {
   disabled_at: string | null;
   created_at: string;
@@ -523,6 +533,7 @@ export type AdminUsersResponse = {
     limit: number;
     offset: number;
     count: number;
+    total: number;
   };
 };
 
@@ -530,7 +541,9 @@ export type MyPlayerResponse = {
   ok: true;
   linked_player: {
     display_name: string | null;
+    xp_total: number;
     rank: string | null;
+    represented_unit_id: string | null;
     first_seen_at?: string;
     last_seen_at?: string;
   } | null;
@@ -542,10 +555,24 @@ export type MyPlayerResponse = {
     rank: string | null;
     roster_name: string | null;
     roster_status: string;
+    is_represented: boolean;
   }>;
   summary?: PlayerSummaryResponse["summary"];
   scoreboard_totals?: ScoreboardStats;
   message?: string;
+};
+
+export type RepresentedUnitResponse = {
+  ok: true;
+  represented_unit: {
+    unit_id: string;
+    unit_key: string;
+    name: string;
+    callsign: string | null;
+    rank: string | null;
+    roster_name: string | null;
+    roster_status: string;
+  };
 };
 
 export type MyOperationsResponse = {
@@ -586,6 +613,7 @@ export type MachineTokenRecord = {
   name: string;
   token_kind: MachineTokenKind;
   token_prefix: string;
+  token_available: boolean;
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -606,6 +634,64 @@ export type CreateMachineTokenResponse = {
   ok: true;
   token: string;
   token_record: MachineTokenRecord;
+};
+
+export type MachineTokenSecretResponse = {
+  ok: true;
+  token: string;
+  token_record: MachineTokenRecord;
+};
+
+export type XpRewardTier = {
+  id: string;
+  mission_name_match: string;
+  xp_amount: number;
+  planet_progress_percent: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type XpRewardTiersResponse = {
+  ok: true;
+  tiers: XpRewardTier[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type XpRewardTierResponse = {
+  ok: true;
+  tier: XpRewardTier;
+};
+
+export type Planet = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  completion_percent: string;
+  display_order: number;
+  is_active: boolean;
+  world_name_matches: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlanetsResponse = {
+  ok: true;
+  planets: Planet[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type PlanetResponse = {
+  ok: true;
+  planet: Planet;
 };
 
 export type UnitRole = "member" | "officer" | "admin" | "tcw_admin";
@@ -725,6 +811,28 @@ export type UnitLeaderboardResponse = {
     offset: number;
     count: number;
   };
+};
+
+export type PlayerLeaderboardResponse = {
+  ok: true;
+  leaderboard: Array<{
+    rank: number;
+    player_uid: null;
+    name: string;
+    operation_count: number;
+    total_kills: number;
+    infantry_kills: number;
+    soft_vehicle_kills: number;
+    armor_kills: number;
+    air_kills: number;
+    deaths: number;
+  }>;
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+  empty_reason?: "no_scored_players";
 };
 
 export type ViewName =

@@ -1,6 +1,6 @@
-import { randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
@@ -13,10 +13,19 @@ import { machineTokens } from "../db/schema/machineTokens.js";
 import { tokenPreview } from "../privacy/redaction.js";
 
 const tokenKinds = ["api", "bot", "arma_server", "base44_integration"] as const satisfies readonly MachineTokenKind[];
+const machineTokenScopes = [
+  "discord:guilds:sync",
+  "discord:members:sync",
+  "discord:assignments:write",
+  "discord:role-actions:write",
+  "arma:ingest",
+  "base44:sync"
+] as const;
 
 const createMachineTokenSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  token_kind: z.enum(tokenKinds)
+  token_kind: z.enum(tokenKinds),
+  scopes: z.array(z.enum(machineTokenScopes)).optional()
 });
 
 const tokenParamsSchema = z.object({
@@ -28,7 +37,9 @@ type MachineTokenRow = {
   name: string;
   token_kind: string;
   token_prefix: string;
+  token_ciphertext: string | null;
   is_active: boolean;
+  scopes: string[];
   created_at: Date;
   last_used_at: Date | null;
   revoked_at: Date | null;
@@ -62,13 +73,58 @@ function tokenPrefix(token: string): string {
   return token.slice(0, 18);
 }
 
+function defaultScopesForKind(kind: MachineTokenKind): string[] {
+  switch (kind) {
+    case "api":
+      return [...machineTokenScopes];
+    case "bot":
+      return ["discord:guilds:sync", "discord:members:sync", "discord:assignments:write", "discord:role-actions:write"];
+    case "arma_server":
+      return ["arma:ingest"];
+    case "base44_integration":
+      return ["base44:sync"];
+  }
+}
+
+function getMachineTokenSecretKey(): Buffer {
+  return createHash("sha256").update(`machine-token-secret:${config.apiToken}`).digest();
+}
+
+function encryptMachineTokenSecret(token: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", getMachineTokenSecretKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return ["v1", iv.toString("base64url"), tag.toString("base64url"), ciphertext.toString("base64url")].join(".");
+}
+
+function decryptMachineTokenSecret(value: string): string | null {
+  const [version, iv, tag, ciphertext] = value.split(".");
+
+  if (version !== "v1" || !iv || !tag || !ciphertext) {
+    return null;
+  }
+
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", getMachineTokenSecretKey(), Buffer.from(iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+
+    return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
 function serializeMachineToken(row: MachineTokenRow) {
   return {
     id: row.id,
     name: row.name,
     token_kind: row.token_kind,
     token_prefix: row.token_prefix,
+    token_available: Boolean(row.token_ciphertext),
     is_active: row.is_active,
+    scopes: row.scopes,
     created_at: row.created_at,
     last_used_at: row.last_used_at,
     revoked_at: row.revoked_at
@@ -118,12 +174,15 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             name: machineTokens.name,
             token_kind: machineTokens.tokenKind,
             token_prefix: machineTokens.tokenPrefix,
+            token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt
           })
           .from(machineTokens)
+          .where(and(eq(machineTokens.isActive, true), isNull(machineTokens.revokedAt)))
           .orderBy(desc(machineTokens.createdAt));
 
         await tx.insert(adminAuditEvents).values({
@@ -174,8 +233,10 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
           .values({
             name: parsedBody.data.name,
             tokenHash: hashMachineToken(token),
+            tokenCiphertext: encryptMachineTokenSecret(token),
             tokenPrefix: tokenPrefix(token),
             tokenKind: parsedBody.data.token_kind,
+            scopes: parsedBody.data.scopes ?? defaultScopesForKind(parsedBody.data.token_kind),
             createdByUserId: actor.id
           })
           .returning({
@@ -183,7 +244,9 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
             name: machineTokens.name,
             token_kind: machineTokens.tokenKind,
             token_prefix: machineTokens.tokenPrefix,
+            token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt
@@ -200,6 +263,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
           details: {
             token_id: row.id,
             token_kind: row.token_kind,
+            scopes: row.scopes,
             token_prefix: row.token_prefix
           }
         });
@@ -214,6 +278,90 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create machine token");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
+  app.post("/v1/system/machine-tokens/:token_id/secret", { preHandler: requireRole(["owner"]) }, async (request, reply) => {
+    const parsedParams = tokenParamsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const actor = await requireUser(request, reply);
+
+    if (!actor) {
+      return;
+    }
+
+    try {
+      const db = getDrizzleDb();
+      const secret = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({
+            id: machineTokens.id,
+            name: machineTokens.name,
+            token_kind: machineTokens.tokenKind,
+            token_prefix: machineTokens.tokenPrefix,
+            token_ciphertext: machineTokens.tokenCiphertext,
+            is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
+            created_at: machineTokens.createdAt,
+            last_used_at: machineTokens.lastUsedAt,
+            revoked_at: machineTokens.revokedAt
+          })
+          .from(machineTokens)
+          .where(and(eq(machineTokens.id, parsedParams.data.token_id), eq(machineTokens.isActive, true), isNull(machineTokens.revokedAt)));
+
+        if (!row) {
+          return null;
+        }
+
+        await tx.insert(adminAuditEvents).values({
+          actorUserId: actor.id,
+          actorLabel: actor.display_name ?? actor.id,
+          action: "machine_token_secret_viewed",
+          details: {
+            token_id: row.id,
+            token_kind: row.token_kind,
+            token_prefix: row.token_prefix
+          }
+        });
+
+        return {
+          row,
+          token: row.token_ciphertext ? decryptMachineTokenSecret(row.token_ciphertext) : null
+        };
+      });
+
+      if (!secret) {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "machine_token_not_found",
+            message: "Machine token was not found."
+          }
+        });
+      }
+
+      if (!secret.token) {
+        return reply.code(409).send({
+          ok: false,
+          error: {
+            code: "machine_token_secret_unavailable",
+            message: "This machine token was created before downloadable configs were enabled."
+          }
+        });
+      }
+
+      return {
+        ok: true,
+        token: secret.token,
+        token_record: serializeMachineToken(secret.row)
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to reveal machine token secret");
       return sendDatabaseUnavailable(reply);
     }
   });
@@ -233,21 +381,18 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
 
     try {
       const db = getDrizzleDb();
-      const revoked = await db.transaction(async (tx) => {
+      const deleted = await db.transaction(async (tx) => {
         const [row] = await tx
-          .update(machineTokens)
-          .set({
-            isActive: false,
-            revokedAt: sql`COALESCE(${machineTokens.revokedAt}, now())`,
-            revokedByUserId: actor.id
-          })
+          .delete(machineTokens)
           .where(eq(machineTokens.id, parsedParams.data.token_id))
           .returning({
             id: machineTokens.id,
             name: machineTokens.name,
             token_kind: machineTokens.tokenKind,
             token_prefix: machineTokens.tokenPrefix,
+            token_ciphertext: machineTokens.tokenCiphertext,
             is_active: machineTokens.isActive,
+            scopes: machineTokens.scopes,
             created_at: machineTokens.createdAt,
             last_used_at: machineTokens.lastUsedAt,
             revoked_at: machineTokens.revokedAt
@@ -260,7 +405,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
         await tx.insert(adminAuditEvents).values({
           actorUserId: actor.id,
           actorLabel: actor.display_name ?? actor.id,
-          action: "machine_token_revoked",
+          action: "machine_token_deleted",
           details: {
             token_id: row.id,
             token_kind: row.token_kind,
@@ -271,7 +416,7 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
         return row;
       });
 
-      if (!revoked) {
+      if (!deleted) {
         return reply.code(404).send({
           ok: false,
           error: {
@@ -281,9 +426,9 @@ export async function registerOwnerRoutes(app: FastifyInstance) {
         });
       }
 
-      return { ok: true, token_record: serializeMachineToken(revoked) };
+      return { ok: true, token_record: serializeMachineToken(deleted) };
     } catch (error) {
-      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to revoke machine token");
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to delete machine token");
       return sendDatabaseUnavailable(reply);
     }
   });

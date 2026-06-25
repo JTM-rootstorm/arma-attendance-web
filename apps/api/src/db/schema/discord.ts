@@ -1,4 +1,16 @@
-import { boolean, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid
+} from "drizzle-orm/pg-core";
 
 import { appUsers } from "./auth.js";
 import { players } from "./players.js";
@@ -63,7 +75,11 @@ export const playerDiscordLinks = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [primaryKey({ columns: [table.playerUid, table.discordUserId] })]
+  (table) => [
+    primaryKey({ columns: [table.playerUid, table.discordUserId] }),
+    uniqueIndex("idx_player_discord_links_discord_user_id_unique").on(table.discordUserId),
+    index("idx_player_discord_links_player_uid").on(table.playerUid)
+  ]
 );
 
 export const discordAttendanceRules = pgTable("discord_attendance_rules", {

@@ -35,7 +35,7 @@ type RecentOperationRow = {
   id: string;
   unit_id: string | null;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;
@@ -60,7 +60,7 @@ type OperationIdentityRow = {
   id: string;
   unit_id: string | null;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;
@@ -100,11 +100,13 @@ type PayloadSummaryRow = {
 type PlayerIdentityRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   first_seen_at: Date;
   last_seen_at: Date;
 };
 
 type PlayerSummaryRow = StatsSummaryRow & {
+  xp_total: number;
   operation_count: number;
   present_at_start_count: number;
   present_at_end_count: number;
@@ -113,7 +115,7 @@ type PlayerSummaryRow = StatsSummaryRow & {
 type PlayerRecentOperationRow = {
   operation_id: string;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;
@@ -226,12 +228,13 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COUNT(*)::int AS operations_total,
           COUNT(*) FILTER (WHERE status = 'started')::int AS operations_started,
           COUNT(*) FILTER (WHERE status = 'finished')::int AS operations_finished,
-          COUNT(DISTINCT op.player_uid)::int AS players_total,
+          COUNT(DISTINCT p_summary.player_uid)::int AS players_total,
           COUNT(op.player_uid)::int AS attendance_rows_total,
           COUNT(ops.player_uid)::int AS stats_rows_total,
           MAX(fo.started_at) AS last_operation_at
         FROM filtered_operations fo
         LEFT JOIN operation_players op ON op.operation_id = fo.id
+        LEFT JOIN players p_summary ON p_summary.player_uid = op.player_uid AND p_summary.deleted_at IS NULL
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
           AND ops.player_uid = op.player_uid
@@ -271,7 +274,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         FROM operation_players op
         JOIN operations o ON o.id = op.operation_id
         JOIN players p ON p.player_uid = op.player_uid
-        ${whereClause ? whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at") : ""}
+        ${whereClause ? `${whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at")} AND p.deleted_at IS NULL` : "WHERE p.deleted_at IS NULL"}
         GROUP BY p.player_uid
         ORDER BY operation_count DESC, p.last_seen_at DESC, p.player_uid
         LIMIT 10
@@ -288,7 +291,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         FROM operation_player_stats ops
         JOIN operations o ON o.id = ops.operation_id
         JOIN players p ON p.player_uid = ops.player_uid
-        ${whereClause ? whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at") : ""}
+        ${whereClause ? `${whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at")} AND p.deleted_at IS NULL` : "WHERE p.deleted_at IS NULL"}
         GROUP BY p.player_uid
         ORDER BY ai_kills DESC, p.last_seen_at DESC, p.player_uid
         LIMIT 10
@@ -469,9 +472,10 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
     try {
       const playerResult = await queryDb<PlayerIdentityRow>(
         `
-        SELECT player_uid, last_name, first_seen_at, last_seen_at
+        SELECT player_uid, last_name, xp_total, first_seen_at, last_seen_at
         FROM players
         WHERE player_uid = $1
+          AND deleted_at IS NULL
         `,
         [playerUid]
       );
@@ -514,6 +518,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         `
         SELECT
           COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          $2::int AS xp_total,
           COUNT(*) FILTER (WHERE op.present_at_start = true)::int AS present_at_start_count,
           COUNT(*) FILTER (WHERE op.present_at_end = true)::int AS present_at_end_count,
           COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
@@ -534,7 +539,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           AND ops.player_uid = op.player_uid
         WHERE op.player_uid = $1
         `,
-        [playerUid]
+        [playerUid, player.xp_total]
       );
 
       const recentOperationsResult = await queryDb<PlayerRecentOperationRow>(
@@ -561,6 +566,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
 
       const summary = summaryResult.rows[0] ?? {
         operation_count: 0,
+        xp_total: player.xp_total,
         present_at_start_count: 0,
         present_at_end_count: 0,
         infantry_kills: 0,

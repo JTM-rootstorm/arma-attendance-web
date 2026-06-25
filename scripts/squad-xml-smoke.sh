@@ -29,6 +29,8 @@ XML_FILE="$TMP_DIR/squad.xml"
 DTD_FILE="$TMP_DIR/squad.dtd"
 XML_HEADERS="$TMP_DIR/squad-xml.headers"
 DTD_HEADERS="$TMP_DIR/squad-dtd.headers"
+TCWA3_XML_FILE="$TMP_DIR/tcwa3-squad.xml"
+TCWA3_XML_HEADERS="$TMP_DIR/tcwa3-squad-xml.headers"
 
 if [[ ! "$PICTURE_FILENAME" =~ ^[A-Za-z0-9._-]+\.paa$ ]]; then
   echo "[squad-xml-smoke] SQUAD_XML_DEFAULT_PICTURE must be a simple .paa filename." >&2
@@ -141,6 +143,7 @@ SQL
 echo "[squad-xml-smoke] Fetching DTD and XML..."
 curl -fsS -D "$DTD_HEADERS" "$BASE_URL/public/squads/$UNIT_SLUG/squad.dtd" -o "$DTD_FILE"
 curl -fsS -D "$XML_HEADERS" "$BASE_URL/public/squads/$UNIT_SLUG/squad.xml" -o "$XML_FILE"
+curl -fsS -D "$TCWA3_XML_HEADERS" "$BASE_URL/public/squads/tcwa3/squad.xml" -o "$TCWA3_XML_FILE"
 
 if ! grep -i '^content-type: .*xml' "$DTD_HEADERS" >/dev/null; then
   echo "[squad-xml-smoke] DTD response content type is not XML-ish." >&2
@@ -151,6 +154,12 @@ fi
 if ! grep -i '^content-type: .*xml' "$XML_HEADERS" >/dev/null; then
   echo "[squad-xml-smoke] squad.xml response content type is not XML-ish." >&2
   cat "$XML_HEADERS" >&2
+  exit 1
+fi
+
+if ! grep -i '^content-type: .*xml' "$TCWA3_XML_HEADERS" >/dev/null; then
+  echo "[squad-xml-smoke] TCWA3 squad.xml response content type is not XML-ish." >&2
+  cat "$TCWA3_XML_HEADERS" >&2
   exit 1
 fi
 
@@ -227,10 +236,37 @@ for member in members:
         raise SystemExit("member/icq must be N/A")
     if not (member.find("remark").text or "").strip():
         raise SystemExit("member/remark must not be empty")
-    if member.find("remark").text != "CPL,3":
-        raise SystemExit(f"member/remark must be RANK,SPECIALIZATION, got {member.find('remark').text!r}")
+    if member.find("remark").text != "SXML,CPL,3":
+        raise SystemExit(f"member/remark must be BATTALION_CALLSIGN,RANK,SPECIALIZATION, got {member.find('remark').text!r}")
 
 print("[squad-xml-smoke] strict XML shape OK")
+PY
+
+python3 - "$TCWA3_XML_FILE" "$PLAYER_UID" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+xml_path = Path(sys.argv[1])
+player_uid = sys.argv[2]
+raw = xml_path.read_text(encoding="utf-8")
+
+if not raw.startswith('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE squad SYSTEM "squad.dtd">\n'):
+    raise SystemExit("TCWA3 squad.xml does not begin with the required XML declaration and DOCTYPE")
+
+root = ET.fromstring(raw)
+if root.attrib.get("nick") != "TCWA3":
+    raise SystemExit(f"TCWA3 squad nick must be TCWA3, got {root.attrib.get('nick')!r}")
+if root.find("name") is None or root.find("name").text != "The Clone Wars ARMA 3":
+    raise SystemExit("TCWA3 squad/name must be The Clone Wars ARMA 3")
+
+member = next((candidate for candidate in root.findall("member") if candidate.attrib.get("id") == player_uid), None)
+if member is None:
+    raise SystemExit("TCWA3 squad.xml does not include the seeded member")
+if member.find("remark") is None or member.find("remark").text != "SXML,CPL,3":
+    raise SystemExit(f"TCWA3 member/remark must preserve battalion callsign, got {member.find('remark').text if member.find('remark') is not None else None!r}")
+
+print("[squad-xml-smoke] TCWA3 aggregate XML shape OK")
 PY
 
 picture="$(python3 - "$XML_FILE" <<'PY'

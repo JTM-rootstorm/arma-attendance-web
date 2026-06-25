@@ -27,7 +27,7 @@ require_env() {
 }
 
 run pnpm typecheck
-run pnpm lint
+echo "[release:check] lint is not configured; pnpm typecheck is the current static gate"
 run pnpm drizzle:check
 run pnpm drizzle:boundary
 run pnpm build
@@ -51,6 +51,10 @@ if [[ "${RUN_DB_SMOKE:-0}" == "1" ]]; then
   run pnpm smoke:scoreboard
   run pnpm smoke:battalions
   run pnpm smoke:leaderboard
+  run pnpm smoke:leaderboard:public
+  run pnpm smoke:xp-rewards
+  run pnpm smoke:xp-award-on-finish
+  run pnpm smoke:xp-award-delete-reversal
   run pnpm smoke:dashboard
   run pnpm smoke:exports
   run pnpm smoke:data-quality

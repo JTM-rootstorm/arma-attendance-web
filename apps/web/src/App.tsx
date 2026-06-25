@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiClientError, apiFetch, fetchCsv } from "./api";
 import {
   canDeleteOperations,
+  canDeletePlayers,
   canExport,
   canOpenBattalion,
   canOpenComms,
@@ -14,21 +15,13 @@ import {
   canManageMachineTokens,
   canResetPlayerNames,
   canSeeSensitiveIds,
+  canViewSignalDetail,
   isOwner
 } from "./authz";
 import { CommandShell } from "./components/CommandShell";
 import { PayloadInspector } from "./components/PayloadInspector";
 import { StatusChip } from "./components/StatusChip";
 import { emptyResult, resultError, statusLabel } from "./format";
-import { DashboardPage } from "./pages/DashboardPage";
-import { BattalionPage } from "./pages/BattalionPage";
-import { DiscordPage } from "./pages/DiscordPage";
-import { IdentityPage } from "./pages/IdentityPage";
-import { LeaderboardPage } from "./pages/LeaderboardPage";
-import { MyStatsPage } from "./pages/MyStatsPage";
-import { OperationsPage } from "./pages/OperationsPage";
-import { PlayersPage } from "./pages/PlayersPage";
-import { SystemPage } from "./pages/SystemPage";
 import type {
   AdminUsersResponse,
   ApiResult,
@@ -36,7 +29,9 @@ import type {
   DashboardSummaryResponse,
   DataQualityResponse,
   DbHealthResponse,
+  DiscordRefreshStartResponse,
   HealthResponse,
+  MachineTokenSecretResponse,
   MachineTokensResponse,
   MachineTokenKind,
   MeResponse,
@@ -46,11 +41,29 @@ import type {
   OperationDetailResponse,
   OperationsResponse,
   OperationSummaryResponse,
+  PlanetResponse,
+  PlanetsResponse,
   PlayerDetailResponse,
   PlayersResponse,
   PlayerSummaryResponse,
-  ViewName
+  RepresentedUnitResponse,
+  ViewName,
+  XpRewardTierResponse,
+  XpRewardTiersResponse
 } from "./types";
+
+const adminUsersPageSize = 50;
+const autoRefreshMs = 60_000;
+
+const BattalionPage = lazy(() => import("./pages/BattalionPage").then((module) => ({ default: module.BattalionPage })));
+const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
+const DiscordPage = lazy(() => import("./pages/DiscordPage").then((module) => ({ default: module.DiscordPage })));
+const IdentityPage = lazy(() => import("./pages/IdentityPage").then((module) => ({ default: module.IdentityPage })));
+const LeaderboardPage = lazy(() => import("./pages/LeaderboardPage").then((module) => ({ default: module.LeaderboardPage })));
+const MyStatsPage = lazy(() => import("./pages/MyStatsPage").then((module) => ({ default: module.MyStatsPage })));
+const OperationsPage = lazy(() => import("./pages/OperationsPage").then((module) => ({ default: module.OperationsPage })));
+const PlayersPage = lazy(() => import("./pages/PlayersPage").then((module) => ({ default: module.PlayersPage })));
+const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
 
 function errorResult<T>(error: unknown, fallback: string): ApiResult<T> {
   const parsed = resultError(error, fallback);
@@ -80,8 +93,11 @@ export function App() {
   const [dbHealth, setDbHealth] = useState<ApiResult<DbHealthResponse>>(emptyResult);
   const [me, setMe] = useState<ApiResult<MeResponse>>(emptyResult);
   const [adminUsers, setAdminUsers] = useState<ApiResult<AdminUsersResponse>>(emptyResult);
+  const [adminUsersOffset, setAdminUsersOffset] = useState(0);
   const [machineTokens, setMachineTokens] = useState<ApiResult<MachineTokensResponse>>(emptyResult);
   const [createdMachineToken, setCreatedMachineToken] = useState<CreateMachineTokenResponse | null>(null);
+  const [xpRewardTiers, setXpRewardTiers] = useState<ApiResult<XpRewardTiersResponse>>(emptyResult);
+  const [planets, setPlanets] = useState<ApiResult<PlanetsResponse>>(emptyResult);
   const [myPlayer, setMyPlayer] = useState<ApiResult<MyPlayerResponse>>(emptyResult);
   const [myOperations, setMyOperations] = useState<ApiResult<MyOperationsResponse>>(emptyResult);
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
@@ -98,6 +114,7 @@ export function App() {
   const [selectedOperationId, setSelectedOperationId] = useState("");
   const [selectedPlayerUid, setSelectedPlayerUid] = useState("");
   const [exportMessage, setExportMessage] = useState("");
+  const [discordRefreshNotice, setDiscordRefreshNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
   const sessionUser = me.status === "ready" ? me.data.user : null;
   const canAdmin = canOpenIdentityAdmin(sessionUser);
@@ -110,7 +127,9 @@ export function App() {
   const canViewComms = canOpenComms(sessionUser);
   const canExportViews = canExport(sessionUser);
   const canResetRosterNames = canResetPlayerNames(sessionUser);
+  const canDeleteRosterPlayers = canDeletePlayers(sessionUser);
   const canDeleteOperationRows = canDeleteOperations(sessionUser);
+  const canInspectSignals = canViewSignalDetail(sessionUser);
 
   const selectedOperationDetail = useMemo(
     () => (operationDetail.status === "ready" ? operationDetail.data : null),
@@ -174,13 +193,18 @@ export function App() {
     try {
       setAdminUsers({
         status: "ready",
-        data: await apiFetch<AdminUsersResponse>("/v1/admin/users"),
+        data: await apiFetch<AdminUsersResponse>("/v1/admin/users", {
+          params: {
+            limit: String(adminUsersPageSize),
+            offset: String(adminUsersOffset)
+          }
+        }),
         error: null
       });
     } catch (error) {
       setAdminUsers(errorResult(error, "Admin users failed."));
     }
-  }, [canAdmin]);
+  }, [adminUsersOffset, canAdmin]);
 
   const loadMachineTokens = useCallback(async () => {
     if (!canManageSystem) {
@@ -199,6 +223,48 @@ export function App() {
       });
     } catch (error) {
       setMachineTokens(errorResult(error, "Machine tokens failed."));
+    }
+  }, [canManageSystem]);
+
+  const loadXpRewardTiers = useCallback(async () => {
+    if (!canManageSystem) {
+      setXpRewardTiers(emptyResult);
+      return;
+    }
+
+    setXpRewardTiers({ status: "loading", data: null, error: null });
+
+    try {
+      setXpRewardTiers({
+        status: "ready",
+        data: await apiFetch<XpRewardTiersResponse>("/v1/system/xp-reward-tiers", {
+          params: { limit: "200" }
+        }),
+        error: null
+      });
+    } catch (error) {
+      setXpRewardTiers(errorResult(error, "XP reward tiers failed."));
+    }
+  }, [canManageSystem]);
+
+  const loadPlanets = useCallback(async () => {
+    if (!canManageSystem) {
+      setPlanets(emptyResult);
+      return;
+    }
+
+    setPlanets({ status: "loading", data: null, error: null });
+
+    try {
+      setPlanets({
+        status: "ready",
+        data: await apiFetch<PlanetsResponse>("/v1/system/planets", {
+          params: { include_inactive: "true", limit: "200" }
+        }),
+        error: null
+      });
+    } catch (error) {
+      setPlanets(errorResult(error, "Planets failed."));
     }
   }, [canManageSystem]);
 
@@ -369,6 +435,26 @@ export function App() {
   }, [loadHealth, loadMe]);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const refreshed = url.searchParams.get("discord_refreshed");
+    const refreshError = url.searchParams.get("discord_refresh_error");
+
+    if (!refreshed && !refreshError) {
+      return;
+    }
+
+    if (refreshed === "1") {
+      setDiscordRefreshNotice({ tone: "success", message: "Discord memberships refreshed." });
+    } else {
+      setDiscordRefreshNotice({ tone: "error", message: "Discord refresh failed. Try again in a moment." });
+    }
+
+    url.searchParams.delete("discord_refreshed");
+    url.searchParams.delete("discord_refresh_error");
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  useEffect(() => {
     void loadDbHealth();
     void loadSummary();
     void loadDataQuality();
@@ -383,6 +469,14 @@ export function App() {
   useEffect(() => {
     void loadMachineTokens();
   }, [loadMachineTokens]);
+
+  useEffect(() => {
+    void loadXpRewardTiers();
+  }, [loadXpRewardTiers]);
+
+  useEffect(() => {
+    void loadPlanets();
+  }, [loadPlanets]);
 
   useEffect(() => {
     void loadMyStats();
@@ -432,6 +526,53 @@ export function App() {
     }
   }, [loadPlayerDetail, selectedPlayerUid]);
 
+  useEffect(() => {
+    if (!sessionUser) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      if (view === "me") {
+        void loadMyStats();
+      } else if (view === "dashboard") {
+        void loadSummary();
+        void loadDataQuality();
+      } else if (view === "operations") {
+        void loadOperations();
+        if (selectedOperationId) {
+          void loadOperationDetail(selectedOperationId);
+        }
+      } else if (view === "players") {
+        void refreshRoster();
+      } else if (view === "admin") {
+        void loadAdminUsers();
+      } else if (view === "system") {
+        void loadMachineTokens();
+        void loadXpRewardTiers();
+        void loadPlanets();
+      }
+    }, autoRefreshMs);
+
+    return () => window.clearInterval(interval);
+  }, [
+    loadAdminUsers,
+    loadDataQuality,
+    loadMachineTokens,
+    loadMyStats,
+    loadOperationDetail,
+    loadOperations,
+    loadPlanets,
+    loadSummary,
+    loadXpRewardTiers,
+    selectedOperationId,
+    sessionUser,
+    view
+  ]);
+
   async function logout() {
     try {
       await apiFetch("/auth/logout", { method: "POST" });
@@ -442,6 +583,8 @@ export function App() {
     setMe(emptyResult);
     setAdminUsers(emptyResult);
     setMachineTokens(emptyResult);
+    setXpRewardTiers(emptyResult);
+    setPlanets(emptyResult);
     setView("me");
   }
 
@@ -496,6 +639,89 @@ export function App() {
     await loadMachineTokens();
   }
 
+  async function revealMachineToken(tokenId: string) {
+    return apiFetch<MachineTokenSecretResponse>(`/v1/system/machine-tokens/${tokenId}/secret`, { method: "POST" });
+  }
+
+  async function createXpRewardTier(input: {
+    mission_name_match: string;
+    xp_amount: number;
+    planet_progress_percent?: string;
+  }) {
+    await apiFetch<XpRewardTierResponse>("/v1/system/xp-reward-tiers", {
+      method: "POST",
+      body: input
+    });
+    await loadXpRewardTiers();
+  }
+
+  async function updateXpRewardTier(
+    tierId: string,
+    input: {
+      mission_name_match?: string;
+      xp_amount?: number;
+      planet_progress_percent?: string;
+    }
+  ) {
+    await apiFetch<XpRewardTierResponse>(`/v1/system/xp-reward-tiers/${tierId}`, {
+      method: "PATCH",
+      body: input
+    });
+    await loadXpRewardTiers();
+  }
+
+  async function deleteXpRewardTier(tierId: string) {
+    await apiFetch<XpRewardTierResponse>(`/v1/system/xp-reward-tiers/${tierId}`, {
+      method: "DELETE"
+    });
+    await loadXpRewardTiers();
+  }
+
+  async function createPlanet(input: {
+    slug: string;
+    name: string;
+    description?: string | null;
+    completion_percent: string;
+    display_order: number;
+    is_active: boolean;
+    world_name_matches?: string[];
+  }) {
+    await apiFetch<PlanetResponse>("/v1/system/planets", {
+      method: "POST",
+      body: input
+    });
+    await loadPlanets();
+    await loadXpRewardTiers();
+  }
+
+  async function updatePlanet(
+    planetId: string,
+    input: {
+      slug?: string;
+      name?: string;
+      description?: string | null;
+      completion_percent?: string;
+      display_order?: number;
+      is_active?: boolean;
+      world_name_matches?: string[];
+    }
+  ) {
+    await apiFetch<PlanetResponse>(`/v1/system/planets/${planetId}`, {
+      method: "PATCH",
+      body: input
+    });
+    await loadPlanets();
+    await loadXpRewardTiers();
+  }
+
+  async function deletePlanet(planetId: string) {
+    await apiFetch<PlanetResponse>(`/v1/system/planets/${planetId}`, {
+      method: "DELETE"
+    });
+    await loadPlanets();
+    await loadXpRewardTiers();
+  }
+
   async function updatePlayerName(displayName: string) {
     await apiFetch<MyPlayerResponse>("/v1/me/player", {
       method: "PATCH",
@@ -505,10 +731,36 @@ export function App() {
     await loadPlayers();
   }
 
+  async function updateRepresentedUnit(unitId: string) {
+    await apiFetch<RepresentedUnitResponse>("/v1/me/player/represented-unit", {
+      method: "PATCH",
+      body: { unit_id: unitId }
+    });
+    await loadMyStats();
+    await loadPlayers();
+  }
+
+  async function startDiscordRefresh() {
+    const response = await apiFetch<DiscordRefreshStartResponse>("/v1/me/discord/refresh", {
+      method: "POST",
+      body: { return_to: `${window.location.pathname}${window.location.search}${window.location.hash}` }
+    });
+    window.location.href = response.discord_refresh_url;
+  }
+
   async function resetPlayerName(playerUid: string) {
     await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}/reset-name`, { method: "POST" });
     await loadPlayers();
     await loadPlayerDetail(playerUid);
+  }
+
+  async function deletePlayer(playerUid: string) {
+    await apiFetch(`/v1/admin/players/${encodeURIComponent(playerUid)}`, { method: "DELETE" });
+    setSelectedPlayerUid("");
+    setPlayerDetail(emptyResult);
+    setPlayerSummary(emptyResult);
+    await loadMe();
+    await loadPlayers();
   }
 
   async function deleteOperation(operationId: string) {
@@ -542,7 +794,10 @@ export function App() {
         myPlayer={myPlayer}
         myOperations={myOperations}
         onRefresh={() => void loadMyStats()}
+        discordRefreshNotice={discordRefreshNotice}
         onUpdatePlayerName={updatePlayerName}
+        onUpdateRepresentedUnit={updateRepresentedUnit}
+        onRefreshDiscord={startDiscordRefresh}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}
@@ -596,7 +851,9 @@ export function App() {
         onSelectPlayer={setSelectedPlayerUid}
         canExport={canExportViews}
         canResetPlayerNames={canResetRosterNames}
+        canDeletePlayers={canDeleteRosterPlayers}
         onResetPlayerName={resetPlayerName}
+        onDeletePlayer={deletePlayer}
         onExportPlayers={() => void exportCsv(`/v1/players.csv?q=${encodeURIComponent(playerSearch)}`, "players.csv")}
       />
     ) : view === "discord" && canViewComms ? (
@@ -609,6 +866,7 @@ export function App() {
         onLogout={() => void logout()}
         onRefreshMe={() => void loadMe()}
         onRefreshAdminUsers={() => void loadAdminUsers()}
+        onAdminUsersPageChange={(offset) => setAdminUsersOffset(offset)}
       />
     ) : view === "system" && canManageSystem ? (
       <SystemPage
@@ -616,7 +874,18 @@ export function App() {
         createdToken={createdMachineToken}
         onCreateToken={createMachineToken}
         onRevokeToken={revokeMachineToken}
+        onRevealToken={revealMachineToken}
         onRefresh={() => void loadMachineTokens()}
+        xpRewardTiers={xpRewardTiers}
+        planets={planets}
+        onRefreshXpRewardTiers={() => void loadXpRewardTiers()}
+        onCreateXpRewardTier={createXpRewardTier}
+        onUpdateXpRewardTier={updateXpRewardTier}
+        onDeleteXpRewardTier={deleteXpRewardTier}
+        onRefreshPlanets={loadPlanets}
+        onCreatePlanet={createPlanet}
+        onUpdatePlanet={updatePlanet}
+        onDeletePlanet={deletePlanet}
       />
     ) : sessionUser ? (
       <MyStatsPage
@@ -624,7 +893,10 @@ export function App() {
         myPlayer={myPlayer}
         myOperations={myOperations}
         onRefresh={() => void loadMyStats()}
+        discordRefreshNotice={discordRefreshNotice}
         onUpdatePlayerName={updatePlayerName}
+        onUpdateRepresentedUnit={updateRepresentedUnit}
+        onRefreshDiscord={startDiscordRefresh}
         onLinkSteam={() => {
           window.location.href = `/auth/steam/start?redirect_after=${encodeURIComponent(window.location.pathname)}`;
         }}
@@ -668,9 +940,21 @@ export function App() {
       sessionUser={sessionUser}
       onViewChange={setView}
       onLogout={() => void logout()}
-      inspector={<PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />}
+      inspector={
+        canInspectSignals ? (
+          <PayloadInspector operationDetail={selectedOperationDetail} playerDetail={selectedPlayerDetail} exportMessage={exportMessage} />
+        ) : null
+      }
     >
-      {content}
+      <Suspense
+        fallback={
+          <section className="command-panel">
+            <p className="empty-copy">Loading console...</p>
+          </section>
+        }
+      >
+        {content}
+      </Suspense>
     </CommandShell>
   );
 }

@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
@@ -9,20 +9,44 @@ import {
   clearSessionCookie,
   createUserSession,
   hasRole,
+  loadCurrentUserById,
   requireUser,
   revokeCurrentSession,
   setSessionCookie,
   type CurrentUser
 } from "../auth.js";
 import { createCsrfToken } from "../auth/csrf.js";
+import {
+  consumeJwtHandoffCode,
+  createJwtHandoffCode,
+  isJwtAuthEnabled,
+  issueAccessJwt,
+  issueRefreshToken,
+  revokeRefreshToken,
+  rotateRefreshToken
+} from "../auth/jwt.js";
 import { getSafeReturnTo } from "../auth/redirects.js";
 import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
-import { getLoginGrantGuildIds } from "../config/discordAuth.js";
-import { fetchCurrentUserGuildMember, type DiscordCurrentGuildMember, type DiscordOAuthToken } from "../discord/client.js";
+import {
+  DiscordAuthPolicyError,
+  getAuthGuilds,
+  getDiscordDisplayNamePolicy,
+  getLoginGrantGuildIds,
+  getLoginGuildDisplayNameOrder
+} from "../config/discordAuth.js";
+import {
+  DiscordRateLimitError,
+  fetchCurrentUserGuildMember,
+  type DiscordCurrentGuildMember,
+  type DiscordOAuthToken
+} from "../discord/client.js";
+import {
+  choosePreferredDiscordDisplayName,
+  type PreferredDiscordDisplayName
+} from "../discord/displayName.js";
 import {
   reconcileDiscordMembership,
-  syncDiscordAuthPolicyToDb,
   upsertDiscordMemberSnapshot
 } from "../discord/membershipResolver.js";
 import { getDrizzleDb } from "../db/drizzle.js";
@@ -31,10 +55,13 @@ import { queryDb } from "../db/pool.js";
 import { playerDiscordLinks } from "../db/schema/discord.js";
 import { operations } from "../db/schema/operations.js";
 import { operationPlayers, players } from "../db/schema/players.js";
-import { unitPlayers, unitRanks, units } from "../db/schema/units.js";
+import { playerUnitPreferences, unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
+import { canonicalizeDiscordLinkedPlayer, isDiscordPlaceholderUid } from "../identity/playerCanonicalization.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const discordStartQuerySchema = z.object({
+  mode: z.enum(["cookie", "jwt"]).default("cookie"),
   return_to: z.string().max(1000).optional(),
   redirect_after: z.string().max(500).optional()
 });
@@ -47,6 +74,15 @@ const discordCallbackQuerySchema = z.object({
 const steamStartQuerySchema = z.object({
   return_to: z.string().max(1000).optional(),
   redirect_after: z.string().max(500).optional()
+});
+
+const steamLinkTicketBodySchema = z.object({
+  return_to: z.string().max(1000).optional(),
+  redirect_after: z.string().max(500).optional()
+});
+
+const steamStartTicketQuerySchema = z.object({
+  ticket: z.string().min(32).max(256)
 });
 
 const steamCallbackQuerySchema = z.record(z.string(), z.string());
@@ -62,8 +98,33 @@ const testSteamLinkBodySchema = z.object({
   provider_user_id: z.string().min(1).max(64)
 });
 
+const jwtExchangeCodeFieldsSchema = z.object({
+  handoff_code: z.string().min(1).max(256).optional(),
+  auth_handoff: z.string().min(1).max(256).optional(),
+  code: z.string().min(1).max(256).optional()
+});
+
+const jwtExchangeBodySchema = jwtExchangeCodeFieldsSchema;
+const jwtExchangeQuerySchema = jwtExchangeCodeFieldsSchema;
+
+const jwtRefreshBodySchema = z.object({
+  refresh_token: z.string().min(32).max(512)
+});
+
+const testJwtHandoffBodySchema = z.object({
+  return_to: z.string().max(1000).optional()
+});
+
 const selfPlayerBodySchema = z.object({
   display_name: z.string().trim().min(1).max(200)
+});
+
+const representedUnitBodySchema = z.object({
+  unit_id: z.string().uuid()
+});
+
+const discordRefreshBodySchema = z.object({
+  return_to: z.string().max(1000).optional()
 });
 
 type OAuthStateRow = {
@@ -71,11 +132,24 @@ type OAuthStateRow = {
   provider: "discord" | "steam";
   redirect_after: string | null;
   code_verifier: string | null;
+  flow_mode: "cookie" | "jwt";
+  purpose: "login" | "discord_refresh";
+  user_id: string | null;
   expires_at: Date;
   consumed_at: Date | null;
 };
 
+type AuthLinkTicketRow = {
+  user_id: string;
+  return_to: string;
+};
+
 type DiscordTokenResponse = DiscordOAuthToken;
+
+type OAuthStateInsertResult = {
+  state: string;
+  expires_at: Date;
+};
 
 type DiscordProfile = {
   id: string;
@@ -83,6 +157,34 @@ type DiscordProfile = {
   global_name?: string | null;
   avatar?: string | null;
 };
+
+type DiscordFetchedMembership = {
+  guildId: string;
+  member: DiscordCurrentGuildMember | null;
+  fetched_live: boolean;
+  used_cache: boolean;
+};
+
+class DiscordTokenExchangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordTokenExchangeError";
+  }
+}
+
+class DiscordProfileFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordProfileFetchError";
+  }
+}
+
+class DiscordMembershipFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscordMembershipFetchError";
+  }
+}
 
 type UserIdentityRow = {
   user_id: string;
@@ -102,10 +204,27 @@ type AuthUserProfileRow = {
 type LinkedPlayerRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   rank: string | null;
   roster_name: string | null;
+  represented_unit_id: string | null;
   first_seen_at: Date;
   last_seen_at: Date;
+};
+
+type LinkedPlayerReason =
+  | "no_steam_or_discord_identity"
+  | "steam_identity_linked_but_player_missing"
+  | "discord_identity_linked_but_player_missing"
+  | "linked_player_found";
+
+type LinkedPlayerState = {
+  steam_linked: boolean;
+  steam_id: string | null;
+  discord_linked: boolean;
+  discord_id: string | null;
+  has_discord_player_link: boolean;
+  reason: LinkedPlayerReason;
 };
 
 type SelfUnitMembershipRow = {
@@ -117,11 +236,12 @@ type SelfUnitMembershipRow = {
   rank: string | null;
   roster_name: string | null;
   roster_status: string;
+  is_represented: boolean;
 };
 
 type SelfOperationRow = {
   operation_id: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_name: string | null;
   world_name: string | null;
   started_at: Date;
@@ -131,6 +251,7 @@ type SelfOperationRow = {
 };
 
 type SelfSummaryRow = {
+  xp_total: number;
   operation_count: number;
   present_at_start_count: number;
   present_at_end_count: number;
@@ -193,6 +314,67 @@ function sendConflict(reply: FastifyReply, message: string) {
   });
 }
 
+function sendForbidden(reply: FastifyReply, message = "The authenticated user does not have permission for this action.") {
+  return reply.code(403).send({
+    ok: false,
+    error: {
+      code: "forbidden",
+      message
+    }
+  });
+}
+
+function sendJwtAuthDisabled(reply: FastifyReply) {
+  return reply.code(503).send({
+    ok: false,
+    error: {
+      code: "jwt_auth_disabled",
+      message: "JWT authentication is not enabled."
+    }
+  });
+}
+
+function sendJwtUnauthorized(reply: FastifyReply, message = "JWT credentials are invalid or expired.") {
+  return reply.code(401).send({
+    ok: false,
+    error: {
+      code: "jwt_unauthorized",
+      message
+    }
+  });
+}
+
+function sendInvalidHandoffRequest(reply: FastifyReply) {
+  return reply.code(400).send({
+    ok: false,
+    error: {
+      code: "invalid_handoff_request",
+      message: "Expected JSON body containing handoff_code, auth_handoff, or code."
+    }
+  });
+}
+
+function sendExpiredOrConsumedHandoff(reply: FastifyReply) {
+  return reply.code(401).send({
+    ok: false,
+    error: {
+      code: "handoff_code_expired_or_consumed",
+      message: "The authentication handoff code is expired, invalid, or already used."
+    }
+  });
+}
+
+function sendDiscordRateLimited(reply: FastifyReply, retryAfterSeconds: number) {
+  return reply.code(429).send({
+    ok: false,
+    error: {
+      code: "discord_rate_limited",
+      message: "Discord is rate-limiting login verification. Please try again shortly.",
+      retry_after_seconds: retryAfterSeconds
+    }
+  });
+}
+
 function randomState(): string {
   return randomBytes(24).toString("base64url");
 }
@@ -205,11 +387,54 @@ function discordAvatarUrl(profile: DiscordProfile): string | null {
   return `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`;
 }
 
+function objectKeys(value: unknown): string[] {
+  return typeof value === "object" && value !== null ? Object.keys(value as Record<string, unknown>) : [];
+}
+
+function getHandoffCode(body: unknown, query: unknown): string | null {
+  const parsedBody = jwtExchangeBodySchema.safeParse(body);
+
+  if (parsedBody.success) {
+    const bodyCode = parsedBody.data.handoff_code ?? parsedBody.data.auth_handoff ?? parsedBody.data.code ?? null;
+
+    if (bodyCode) {
+      return bodyCode;
+    }
+  }
+
+  const parsedQuery = jwtExchangeQuerySchema.safeParse(query);
+
+  if (parsedQuery.success) {
+    return parsedQuery.data.handoff_code ?? parsedQuery.data.auth_handoff ?? parsedQuery.data.code ?? null;
+  }
+
+  return null;
+}
+
+function linkedIdentities(user: CurrentUser) {
+  const discord = user.identities.find((identity) => identity.provider === "discord") ?? null;
+  const steam = user.identities.find((identity) => identity.provider === "steam") ?? null;
+
+  return {
+    discord: {
+      linked: Boolean(discord),
+      id: discord?.provider_user_id ?? null,
+      display_name: discord?.display_name ?? null
+    },
+    steam: {
+      linked: Boolean(steam),
+      steam_id: steam?.provider_user_id ?? null,
+      display_name: steam?.display_name ?? null
+    }
+  };
+}
+
 async function serializeUser(user: CurrentUser) {
   const unitMemberships = await getUserUnitRoles(user.id);
   const selfPlayerUids = await getSelfPlayerUids(user);
   const unitAdmin = unitMemberships.some((membership) => membership.role === "admin" || membership.role === "tcw_admin");
   const canViewSensitiveIdentifiers = hasRole(user, ["tcw_admin"]);
+  const linked = linkedIdentities(user);
 
   return {
     id: user.id,
@@ -224,6 +449,9 @@ async function serializeUser(user: CurrentUser) {
       roles: [membership.role]
     })),
     self_player_uids: selfPlayerUids,
+    linked_identities: linked,
+    steam_linked: linked.steam.linked,
+    discord_linked: linked.discord.linked,
     is_owner: user.roles.includes("owner"),
     is_tcw_admin: user.roles.includes("tcw_admin"),
     capabilities: {
@@ -241,6 +469,13 @@ async function serializeUser(user: CurrentUser) {
   };
 }
 
+function getIdentityIds(user: CurrentUser): { steamId: string | null; discordId: string | null } {
+  return {
+    steamId: user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null,
+    discordId: user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null
+  };
+}
+
 async function getSelfPlayerUids(user: CurrentUser): Promise<string[]> {
   const steamId = user.identities.find((identity) => identity.provider === "steam")?.provider_user_id ?? null;
   const discordId = user.identities.find((identity) => identity.provider === "discord")?.provider_user_id ?? null;
@@ -249,8 +484,11 @@ async function getSelfPlayerUids(user: CurrentUser): Promise<string[]> {
     SELECT DISTINCT p.player_uid
     FROM players p
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
-    WHERE (${steamId}::text IS NOT NULL AND p.player_uid = ${steamId})
-       OR (${discordId}::text IS NOT NULL AND pdl.discord_user_id = ${discordId})
+    WHERE p.deleted_at IS NULL
+      AND (
+        (${steamId}::text IS NOT NULL AND p.player_uid = ${steamId})
+        OR (${discordId}::text IS NOT NULL AND pdl.discord_user_id = ${discordId})
+      )
     ORDER BY p.player_uid
   `);
 
@@ -264,12 +502,15 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
     .select({
       player_uid: players.playerUid,
       last_name: players.lastName,
+      xp_total: players.xpTotal,
       rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
       roster_name: unitPlayers.rosterName,
+      represented_unit_id: playerUnitPreferences.representedUnitId,
       first_seen_at: players.firstSeenAt,
       last_seen_at: players.lastSeenAt
     })
     .from(players)
+    .leftJoin(playerUnitPreferences, eq(playerUnitPreferences.playerUid, players.playerUid))
     .leftJoin(
       unitPlayers,
       and(eq(unitPlayers.playerUid, players.playerUid), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"))
@@ -277,12 +518,18 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
     .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
     .leftJoin(playerDiscordLinks, eq(playerDiscordLinks.playerUid, players.playerUid))
     .where(
-      or(
-        and(sql`${steamId}::text IS NOT NULL`, eq(players.playerUid, steamId ?? "")),
-        and(sql`${discordId}::text IS NOT NULL`, eq(playerDiscordLinks.discordUserId, discordId ?? ""))
+      and(
+        isNull(players.deletedAt),
+        or(
+          and(sql`${steamId}::text IS NOT NULL`, eq(players.playerUid, steamId ?? "")),
+          and(sql`${discordId}::text IS NOT NULL`, eq(playerDiscordLinks.discordUserId, discordId ?? ""))
+        )
       )
     )
-    .orderBy(desc(players.lastSeenAt))
+    .orderBy(
+      sql`CASE WHEN ${playerUnitPreferences.representedUnitId} = ${unitPlayers.unitId} THEN 0 ELSE 1 END`,
+      desc(players.lastSeenAt)
+    )
     .limit(1);
 
   return rows[0] ?? null;
@@ -297,26 +544,81 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
     SELECT
       p.player_uid,
       p.last_name,
+      p.xp_total,
       COALESCE(ur.name, up.rank) AS rank,
       up.roster_name,
+      pup.represented_unit_id,
       p.first_seen_at,
       p.last_seen_at
     FROM players p
+    LEFT JOIN player_unit_preferences pup ON pup.player_uid = p.player_uid
     LEFT JOIN unit_players up
       ON up.player_uid = p.player_uid
       AND up.is_active = true
       AND up.roster_status <> 'inactive'
     LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
     LEFT JOIN player_discord_links pdl ON pdl.player_uid = p.player_uid
-    WHERE ($1::text IS NOT NULL AND p.player_uid = $1)
-       OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
-    ORDER BY p.last_seen_at DESC
+    WHERE p.deleted_at IS NULL
+      AND (
+        ($1::text IS NOT NULL AND p.player_uid = $1)
+        OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
+      )
+    ORDER BY CASE WHEN pup.represented_unit_id = up.unit_id THEN 0 ELSE 1 END, p.last_seen_at DESC
     LIMIT 1
     `,
     [steamId, discordId]
   );
 
   return result.rows[0] ?? null;
+}
+
+async function hasDiscordPlayerLink(discordId: string | null): Promise<boolean> {
+  if (!discordId) {
+    return false;
+  }
+
+  const result = await queryDb<{ exists: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM player_discord_links WHERE discord_user_id = $1) AS exists",
+    [discordId]
+  );
+
+  return result.rows[0]?.exists ?? false;
+}
+
+async function getLinkedPlayerState(user: CurrentUser, player: LinkedPlayerRow | null): Promise<LinkedPlayerState> {
+  const { steamId, discordId } = getIdentityIds(user);
+  const hasDiscordLink = await hasDiscordPlayerLink(discordId);
+  const reason: LinkedPlayerReason = player
+    ? "linked_player_found"
+    : steamId
+      ? "steam_identity_linked_but_player_missing"
+      : discordId
+        ? "discord_identity_linked_but_player_missing"
+        : "no_steam_or_discord_identity";
+
+  return {
+    steam_linked: Boolean(steamId),
+    steam_id: steamId,
+    discord_linked: Boolean(discordId),
+    discord_id: discordId,
+    has_discord_player_link: hasDiscordLink,
+    reason
+  };
+}
+
+async function findLinkedPlayerWithRepair(user: CurrentUser): Promise<{ player: LinkedPlayerRow | null; linkState: LinkedPlayerState }> {
+  let player = await findLinkedPlayer(user);
+  const { steamId } = getIdentityIds(user);
+
+  if (!player && steamId) {
+    await withDbTransaction((tx) => ensureAuthenticatedUserRosterEntry(tx, user.id));
+    player = await findLinkedPlayer(user);
+  }
+
+  return {
+    player,
+    linkState: await getLinkedPlayerState(user, player)
+  };
 }
 
 async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displayName: string): Promise<LinkedPlayerRow | null> {
@@ -360,18 +662,222 @@ async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displa
   };
 }
 
-async function insertOAuthState(provider: "discord" | "steam", redirectAfter: string | null, codeVerifier: string | null) {
-  const state = randomState();
+async function updateSelfRepresentedUnit(
+  tx: DbTransaction,
+  user: CurrentUser,
+  unitId: string
+): Promise<(SelfUnitMembershipRow & { player_uid: string }) | "not_linked" | "not_member"> {
+  await ensureAuthenticatedUserRosterEntry(tx, user.id);
+  const player = await findLinkedPlayerWithClient(tx, user);
 
-  await queryDb(
+  if (!player) {
+    return "not_linked";
+  }
+
+  const membershipResult = await tx.query<SelfUnitMembershipRow & { player_uid: string }>(
     `
-    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, expires_at)
-    VALUES ($1, $2, $3, $4, now() + interval '10 minutes')
+    SELECT
+      up.player_uid,
+      u.id AS unit_id,
+      u.unit_key,
+      u.name,
+      u.display_name,
+      u.callsign,
+      COALESCE(ur.name, up.rank) AS rank,
+      up.roster_name,
+      up.roster_status,
+      true AS is_represented
+    FROM unit_players up
+    JOIN units u ON u.id = up.unit_id
+    LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
+    WHERE up.unit_id = $2
+      AND up.is_active = true
+      AND up.roster_status <> 'inactive'
+      AND u.is_active = true
+      AND u.deleted_at IS NULL
+      AND (
+        up.player_uid = $1
+        OR EXISTS (
+          SELECT 1
+          FROM player_discord_links pdl
+          WHERE up.player_uid = ('discord:' || pdl.discord_user_id)
+            AND pdl.player_uid = $1
+        )
+      )
+    LIMIT 1
     `,
-    [state, provider, redirectAfter, codeVerifier]
+    [player.player_uid, unitId]
+  );
+  const membership = membershipResult.rows[0];
+
+  if (!membership) {
+    return "not_member";
+  }
+
+  await tx.query(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id, updated_by_user_id)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (player_uid) DO UPDATE
+    SET represented_unit_id = EXCLUDED.represented_unit_id,
+        updated_by_user_id = EXCLUDED.updated_by_user_id,
+        updated_at = now()
+    `,
+    [player.player_uid, unitId, user.id]
+  );
+  await tx.query(
+    `
+    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
+    VALUES ($1, 'self', 'update_represented_unit', $1, $2::jsonb)
+    `,
+    [user.id, JSON.stringify({ player_uid: player.player_uid, unit_id: unitId })]
   );
 
-  return state;
+  return membership;
+}
+
+function requestUserAgent(request: FastifyRequest): string | null {
+  const userAgent = request.headers["user-agent"];
+  return Array.isArray(userAgent) ? (userAgent[0] ?? null) : (userAgent ?? null);
+}
+
+function hashOpaqueToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function generateLinkTicket(): string {
+  return `aat_link_${randomBytes(32).toString("base64url")}`;
+}
+
+async function createSteamLinkTicket(userId: string, returnTo: string, request: FastifyRequest): Promise<{ ticket: string; expires_at: Date }> {
+  const ticket = generateLinkTicket();
+  const result = await queryDb<{ expires_at: Date }>(
+    `
+    INSERT INTO auth_link_tickets (ticket_hash, user_id, purpose, return_to, expires_at, ip_address, user_agent)
+    VALUES ($1, $2, 'steam_link', $3, now() + ($4::int * interval '1 second'), $5, $6)
+    RETURNING expires_at
+    `,
+    [hashOpaqueToken(ticket), userId, returnTo, config.jwtHandoffTtlSeconds, request.ip, requestUserAgent(request)]
+  );
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new Error("Steam link ticket insert returned no row.");
+  }
+
+  return { ticket, expires_at: row.expires_at };
+}
+
+async function consumeSteamLinkTicket(tx: DbTransaction, ticket: string): Promise<AuthLinkTicketRow | null> {
+  const result = await tx.query<AuthLinkTicketRow>(
+    `
+    UPDATE auth_link_tickets
+    SET consumed_at = now()
+    WHERE ticket_hash = $1
+      AND purpose = 'steam_link'
+      AND consumed_at IS NULL
+      AND expires_at > now()
+    RETURNING user_id, return_to
+    `,
+    [hashOpaqueToken(ticket)]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+function steamStartTicketUrl(ticket: string): string {
+  const url = new URL("/auth/steam/start-ticket", config.publicBaseUrl);
+  url.searchParams.set("ticket", ticket);
+  return url.toString();
+}
+
+function steamLinkedReturnTo(returnTo: string | null): string {
+  const url = new URL(getSafeReturnTo(returnTo), config.publicBaseUrl);
+  url.searchParams.set("steam_linked", "1");
+  return url.toString();
+}
+
+function steamOpenIdUrl(state: string): string {
+  if (!config.steamReturnUrl || !config.steamRealm) {
+    throw new Error("steam_openid_not_configured");
+  }
+
+  const steamUrl = new URL("https://steamcommunity.com/openid/login");
+  steamUrl.searchParams.set("openid.ns", "http://specs.openid.net/auth/2.0");
+  steamUrl.searchParams.set("openid.mode", "checkid_setup");
+  steamUrl.searchParams.set("openid.return_to", `${config.steamReturnUrl}?state=${encodeURIComponent(state)}`);
+  steamUrl.searchParams.set("openid.realm", config.steamRealm);
+  steamUrl.searchParams.set("openid.identity", "http://specs.openid.net/auth/2.0/identifier_select");
+  steamUrl.searchParams.set("openid.claimed_id", "http://specs.openid.net/auth/2.0/identifier_select");
+
+  return steamUrl.toString();
+}
+
+async function insertOAuthState(
+  provider: "discord" | "steam",
+  redirectAfter: string | null,
+  codeVerifier: string | null,
+  flowMode: "cookie" | "jwt" = "cookie",
+  purpose: "login" | "discord_refresh" = "login",
+  userId: string | null = null
+): Promise<OAuthStateInsertResult> {
+  const state = randomState();
+
+  const result = await queryDb<{ expires_at: Date }>(
+    `
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, purpose, user_id, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, now() + interval '10 minutes')
+    RETURNING expires_at
+    `,
+    [state, provider, redirectAfter, codeVerifier, flowMode, purpose, userId]
+  );
+
+  const expiresAt = result.rows[0]?.expires_at;
+  if (!expiresAt) {
+    throw new Error("OAuth state insert returned no expiration.");
+  }
+
+  return { state, expires_at: expiresAt };
+}
+
+async function insertOAuthStateWithClient(
+  tx: DbTransaction,
+  provider: "discord" | "steam",
+  redirectAfter: string | null,
+  codeVerifier: string | null,
+  flowMode: "cookie" | "jwt" = "cookie",
+  purpose: "login" | "discord_refresh" = "login",
+  userId: string | null = null
+): Promise<OAuthStateInsertResult> {
+  const state = randomState();
+
+  const result = await tx.query<{ expires_at: Date }>(
+    `
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, purpose, user_id, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, now() + interval '10 minutes')
+    RETURNING expires_at
+    `,
+    [state, provider, redirectAfter, codeVerifier, flowMode, purpose, userId]
+  );
+
+  const expiresAt = result.rows[0]?.expires_at;
+  if (!expiresAt) {
+    throw new Error("OAuth state insert returned no expiration.");
+  }
+
+  return { state, expires_at: expiresAt };
+}
+
+function appendAuthHandoff(returnTo: string, handoffCode: string): string {
+  const redirectUrl = new URL(returnTo, config.publicBaseUrl);
+  redirectUrl.searchParams.set("auth_handoff", handoffCode);
+  return redirectUrl.toString();
+}
+
+function appendQueryFlag(returnTo: string, key: string, value: string): string {
+  const redirectUrl = new URL(returnTo, config.publicBaseUrl);
+  redirectUrl.searchParams.set(key, value);
+  return redirectUrl.toString();
 }
 
 async function consumeOAuthState(provider: "discord" | "steam", state: string): Promise<OAuthStateRow | null> {
@@ -419,7 +925,7 @@ async function exchangeDiscordCode(code: string): Promise<DiscordTokenResponse> 
   });
 
   if (!response.ok) {
-    throw new Error(`Discord token exchange failed with HTTP ${response.status}.`);
+    throw new DiscordTokenExchangeError(`Discord token exchange failed with HTTP ${response.status}.`);
   }
 
   return (await response.json()) as DiscordTokenResponse;
@@ -433,29 +939,182 @@ async function fetchDiscordProfile(token: DiscordTokenResponse): Promise<Discord
   });
 
   if (!response.ok) {
-    throw new Error(`Discord profile fetch failed with HTTP ${response.status}.`);
+    throw new DiscordProfileFetchError(`Discord profile fetch failed with HTTP ${response.status}.`);
   }
 
   return (await response.json()) as DiscordProfile;
 }
 
-async function fetchDiscordLoginGuildMemberships(token: DiscordTokenResponse): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchCurrentUserGuildMemberWithRetry(
+  token: DiscordTokenResponse,
+  guildId: string
+): Promise<DiscordCurrentGuildMember | null> {
+  try {
+    return await fetchCurrentUserGuildMember(token, guildId);
+  } catch (error) {
+    if (error instanceof DiscordRateLimitError && error.retryAfterSeconds <= 3) {
+      await sleep(error.retryAfterSeconds * 1000);
+      return fetchCurrentUserGuildMember(token, guildId);
+    }
+
+    throw error;
+  }
+}
+
+function cachedMemberFromRow(row: {
+  role_ids: unknown;
+  nick: string | null;
+  joined_at: Date | string | null;
+  member_payload: unknown;
+}): DiscordCurrentGuildMember {
+  const payload =
+    typeof row.member_payload === "object" && row.member_payload !== null
+      ? (row.member_payload as Partial<DiscordCurrentGuildMember>)
+      : {};
+  const roles = Array.isArray(row.role_ids) ? row.role_ids.filter((role): role is string => typeof role === "string") : [];
+
+  return {
+    ...payload,
+    roles: Array.isArray(payload.roles) ? payload.roles : roles,
+    nick: payload.nick ?? row.nick,
+    joined_at: payload.joined_at ?? (row.joined_at instanceof Date ? row.joined_at.toISOString() : row.joined_at)
+  };
+}
+
+async function getCachedDiscordGuildMember(
+  discordUserId: string,
+  guildId: string
+): Promise<DiscordCurrentGuildMember | null> {
+  const result = await queryDb<{
+    role_ids: unknown;
+    nick: string | null;
+    joined_at: Date | null;
+    member_payload: unknown;
+  }>(
+    `
+    SELECT role_ids, nick, joined_at, member_payload
+    FROM discord_member_snapshots
+    WHERE discord_user_id = $1
+      AND guild_id = $2
+      AND last_seen_at >= now() - ($3::int * interval '1 minute')
+    ORDER BY last_seen_at DESC
+    LIMIT 1
+    `,
+    [discordUserId, guildId, config.discordAuthReconcileStaleAfterMinutes]
+  );
+  const row = result.rows[0];
+
+  return row ? cachedMemberFromRow(row) : null;
+}
+
+async function fetchDiscordLoginGuildMemberships(
+  token: DiscordTokenResponse,
+  discordUserId: string,
+  request: FastifyRequest
+): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
+  return (await fetchDiscordConfiguredGuildMemberships(token, discordUserId, request, "login"))
+    .filter((membership): membership is DiscordFetchedMembership & { member: DiscordCurrentGuildMember } => membership.member !== null)
+    .map((membership) => ({ guildId: membership.guildId, member: membership.member }));
+}
+
+async function getRefreshGuildIds(): Promise<string[]> {
+  const policyGuildIds = getAuthGuilds()
+    .filter((guild) => guild.grantsLogin || guild.syncMembers)
+    .map((guild) => guild.guildId);
+  const mappedGuilds = await queryDb<{ guild_id: string }>(
+    `
+    SELECT DISTINCT guild_id
+    FROM discord_role_mappings
+    WHERE is_enabled = true
+    `
+  );
+
+  return Array.from(new Set([...policyGuildIds, ...mappedGuilds.rows.map((row) => row.guild_id)]));
+}
+
+async function fetchDiscordConfiguredGuildMemberships(
+  token: DiscordTokenResponse,
+  discordUserId: string,
+  request: FastifyRequest,
+  purpose: "login" | "refresh"
+): Promise<DiscordFetchedMembership[]> {
   if (!config.discordAuthEnabled) {
     return [];
   }
 
-  await syncDiscordAuthPolicyToDb();
-  const guildIds = getLoginGrantGuildIds();
-  const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
+  const guildIds = purpose === "refresh" ? await getRefreshGuildIds() : getLoginGrantGuildIds();
 
-  for (const guildId of guildIds) {
-    const member = await fetchCurrentUserGuildMember(token, guildId);
-    if (member) {
-      memberships.push({ guildId, member });
+  if (guildIds.length === 0) {
+    if (purpose === "login" && config.discordAuthRequireGuild) {
+      throw new DiscordAuthPolicyError("No Discord login guilds are configured.");
     }
+
+    return [];
   }
 
+  const memberships = await mapWithConcurrency(guildIds, config.discordFetchConcurrency, async (guildId) => {
+    try {
+      const member = await fetchCurrentUserGuildMemberWithRetry(token, guildId);
+      return { guildId, member, fetched_live: true, used_cache: false };
+    } catch (error) {
+      if (error instanceof DiscordRateLimitError) {
+        if (purpose === "refresh") {
+          throw error;
+        }
+
+        const cachedMember = await getCachedDiscordGuildMember(discordUserId, guildId);
+
+        if (cachedMember) {
+          request.log.warn(
+            { guildId, retryAfterSeconds: error.retryAfterSeconds },
+            "Using cached Discord membership snapshot after rate limit"
+          );
+          return { guildId, member: cachedMember, fetched_live: false, used_cache: true };
+        }
+      }
+
+      if (error instanceof DiscordRateLimitError || error instanceof DiscordMembershipFetchError) {
+        throw error;
+      }
+
+      throw new DiscordMembershipFetchError(error instanceof Error ? error.message : "Discord membership fetch failed.");
+    }
+  });
+
+  request.log.debug(
+    {
+      guildsChecked: memberships.length,
+      membershipsPresent: memberships.filter((membership) => membership.member !== null).length,
+      membershipsAbsent: memberships.filter((membership) => membership.member === null).length,
+      fetchConcurrency: config.discordFetchConcurrency,
+      purpose
+    },
+    "Fetched configured Discord guild memberships"
+  );
+
   return memberships;
+}
+
+async function upsertDiscordMemberAbsence(input: {
+  guildId: string;
+  discordUserId: string;
+  userId: string;
+  source: "oauth_refresh_absent";
+}): Promise<void> {
+  await upsertDiscordMemberSnapshot({
+    guildId: input.guildId,
+    discordUserId: input.discordUserId,
+    userId: input.userId,
+    roles: [],
+    nick: null,
+    joinedAt: null,
+    rawMember: { absent: true, source: input.source },
+    source: input.source
+  });
 }
 
 function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
@@ -468,9 +1127,25 @@ function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
   });
 }
 
-async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Promise<string> {
-  const displayName = profile.global_name ?? profile.username ?? `Discord ${profile.id}`;
+async function upsertDiscordUser(
+  tx: DbTransaction,
+  profile: DiscordProfile,
+  preferredName?: PreferredDiscordDisplayName
+): Promise<string> {
+  const displayName = preferredName?.displayName ?? profile.global_name ?? profile.username ?? `Discord ${profile.id}`;
   const avatarUrl = discordAvatarUrl(profile);
+  const rawProfile = {
+    ...profile,
+    ...(preferredName
+      ? {
+          preferred_display_name: {
+            display_name: preferredName.displayName,
+            source: preferredName.source,
+            guild_id: preferredName.guildId
+          }
+        }
+      : {})
+  };
   const existingIdentity = await tx.query<UserIdentityRow>(
     "SELECT user_id FROM user_identities WHERE provider = 'discord' AND provider_user_id = $1",
     [profile.id]
@@ -492,7 +1167,7 @@ async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Pr
       SET display_name = $3, avatar_url = $4, raw_profile = $5::jsonb, last_seen_at = now()
       WHERE provider = 'discord' AND provider_user_id = $1 AND user_id = $2
       `,
-      [profile.id, existingUserId, displayName, avatarUrl, JSON.stringify(profile)]
+      [profile.id, existingUserId, displayName, avatarUrl, JSON.stringify(rawProfile)]
     );
     await ensureAuthenticatedUserRosterEntry(tx, existingUserId);
     return existingUserId;
@@ -517,11 +1192,86 @@ async function upsertDiscordUser(tx: DbTransaction, profile: DiscordProfile): Pr
     INSERT INTO user_identities (user_id, provider, provider_user_id, display_name, avatar_url, raw_profile)
     VALUES ($1, 'discord', $2, $3, $4, $5::jsonb)
     `,
-    [userId, profile.id, displayName, avatarUrl, JSON.stringify(profile)]
+    [userId, profile.id, displayName, avatarUrl, JSON.stringify(rawProfile)]
   );
 
   await ensureAuthenticatedUserRosterEntry(tx, userId);
   return userId;
+}
+
+async function refreshDiscordSnapshotsAndAssignments(input: {
+  userId: string;
+  profile: DiscordProfile;
+  token: DiscordTokenResponse;
+  request: FastifyRequest;
+  source: "oauth_login" | "oauth_refresh";
+  purpose: "login" | "refresh";
+  memberships?: Array<{ guildId: string; member: DiscordCurrentGuildMember }>;
+  fetchedMemberships?: DiscordFetchedMembership[];
+}): Promise<{
+  memberships_checked: number;
+  memberships_present: number;
+  memberships_absent: number;
+  reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null;
+}> {
+  const fetched =
+    input.fetchedMemberships ?? input.memberships?.map((membership) => ({
+      guildId: membership.guildId,
+      member: membership.member,
+      fetched_live: true,
+      used_cache: false
+    })) ?? (await fetchDiscordConfiguredGuildMemberships(input.token, input.profile.id, input.request, input.purpose));
+
+  let present = 0;
+  let absent = 0;
+  let reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null = null;
+
+  await mapWithConcurrency(fetched, config.asyncDbReadConcurrency, async (membership) => {
+    if (membership.member) {
+      present += 1;
+      await upsertDiscordMemberSnapshot({
+        guildId: membership.guildId,
+        discordUserId: input.profile.id,
+        userId: input.userId,
+        roles: membership.member.roles,
+        nick: membership.member.nick ?? null,
+        joinedAt: membership.member.joined_at ?? null,
+        rawMember: {
+          ...(membership.member as unknown as Record<string, unknown>),
+          fetched_live: membership.fetched_live,
+          used_cache: membership.used_cache
+        },
+        source: input.source
+      });
+      return;
+    }
+
+    if (input.purpose === "refresh") {
+      absent += 1;
+      await upsertDiscordMemberAbsence({
+        guildId: membership.guildId,
+        discordUserId: input.profile.id,
+        userId: input.userId,
+        source: "oauth_refresh_absent"
+      });
+    }
+  });
+
+  if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
+    reconciliation = await reconcileDiscordMembership({
+      userId: input.userId,
+      discordUserId: input.profile.id,
+      dryRun: false,
+      source: input.source
+    });
+  }
+
+  return {
+    memberships_checked: fetched.length,
+    memberships_present: present,
+    memberships_absent: absent,
+    reconciliation
+  };
 }
 
 function getAuthPlayerUid(identity: AuthIdentityRow): string {
@@ -530,6 +1280,28 @@ function getAuthPlayerUid(identity: AuthIdentityRow): string {
   }
 
   return `discord:${identity.provider_user_id}`;
+}
+
+async function resolveAuthPlayerUid(identities: AuthIdentityRow[]): Promise<string | null> {
+  const steamIdentity = identities.find((identity) => identity.provider === "steam");
+
+  if (steamIdentity) {
+    return steamIdentity.provider_user_id;
+  }
+
+  const discordIdentity = identities.find((identity) => identity.provider === "discord");
+
+  if (!discordIdentity) {
+    return null;
+  }
+
+  const rows = await getDrizzleDb()
+    .select({ player_uid: playerDiscordLinks.playerUid })
+    .from(playerDiscordLinks)
+    .where(eq(playerDiscordLinks.discordUserId, discordIdentity.provider_user_id))
+    .limit(1);
+
+  return rows[0]?.player_uid ?? getAuthPlayerUid(discordIdentity);
 }
 
 function getAuthPlayerDisplayName(identities: AuthIdentityRow[], user: AuthUserProfileRow, chosenIdentity: AuthIdentityRow): string {
@@ -569,7 +1341,12 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     return null;
   }
 
-  const playerUid = getAuthPlayerUid(chosenIdentity);
+  const playerUid = await resolveAuthPlayerUid(identities);
+
+  if (!playerUid) {
+    return null;
+  }
+
   const displayName = getAuthPlayerDisplayName(identities, user, chosenIdentity);
   const unitResult = await tx.query<{ id: string }>(
     `
@@ -591,7 +1368,14 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     VALUES ($1, $2, $3::jsonb)
     ON CONFLICT (player_uid) DO UPDATE
     SET
-      last_name = COALESCE(players.last_name, EXCLUDED.last_name),
+      last_name = CASE
+        WHEN players.raw_last_player->>'source' = 'auth'
+          OR players.last_name IS NULL
+          OR btrim(players.last_name) = ''
+        THEN EXCLUDED.last_name
+        ELSE players.last_name
+      END,
+      deleted_at = NULL,
       updated_at = now()
     `,
     [
@@ -616,15 +1400,33 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
   );
   await tx.query(
     `
-    INSERT INTO unit_players (unit_id, player_uid, roster_name)
-    VALUES ($1, $2, $3)
+    INSERT INTO unit_players (unit_id, player_uid, roster_name, assignment_source)
+    VALUES ($1, $2, $3, 'auth-default')
     ON CONFLICT (unit_id, player_uid) DO UPDATE
     SET
-      roster_name = COALESCE(unit_players.roster_name, EXCLUDED.roster_name),
+      roster_name = CASE
+        WHEN unit_players.roster_name IS NULL
+          OR btrim(unit_players.roster_name) = ''
+          OR unit_players.assignment_source IN ('auth', 'auth-default')
+        THEN EXCLUDED.roster_name
+        ELSE unit_players.roster_name
+      END,
       is_active = true,
+      assignment_source = CASE
+        WHEN unit_players.assignment_source = 'manual' THEN unit_players.assignment_source
+        ELSE EXCLUDED.assignment_source
+      END,
       updated_at = now()
     `,
     [unitId, playerUid, displayName]
+  );
+  await tx.query(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id)
+    VALUES ($1, $2)
+    ON CONFLICT (player_uid) DO NOTHING
+    `,
+    [playerUid, unitId]
   );
 
   const discordIdentity = identities.find((identity) => identity.provider === "discord");
@@ -638,13 +1440,29 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
       VALUES ($1, $2, $3, 'auth', now(), $4::jsonb)
       ON CONFLICT (discord_user_id) DO UPDATE
       SET
-        player_uid = EXCLUDED.player_uid,
-        discord_display_name = EXCLUDED.discord_display_name,
-        source = EXCLUDED.source,
+        player_uid = CASE
+          WHEN player_discord_links.player_uid = EXCLUDED.player_uid THEN player_discord_links.player_uid
+          WHEN player_discord_links.player_uid LIKE 'discord:%' THEN EXCLUDED.player_uid
+          WHEN player_discord_links.source = 'auth' THEN EXCLUDED.player_uid
+          WHEN player_discord_links.source = 'bot' THEN EXCLUDED.player_uid
+          ELSE player_discord_links.player_uid
+        END,
+        discord_display_name = CASE
+          WHEN player_discord_links.source = 'auth'
+            OR player_discord_links.discord_display_name IS NULL
+            OR btrim(player_discord_links.discord_display_name) = ''
+          THEN EXCLUDED.discord_display_name
+          ELSE player_discord_links.discord_display_name
+        END,
+        source = CASE
+          WHEN player_discord_links.source IN ('auth', 'bot')
+            OR player_discord_links.player_uid LIKE 'discord:%'
+          THEN EXCLUDED.source
+          ELSE player_discord_links.source
+        END,
         verified_at = COALESCE(player_discord_links.verified_at, EXCLUDED.verified_at),
-        raw_link = EXCLUDED.raw_link,
+        raw_link = player_discord_links.raw_link || EXCLUDED.raw_link,
         updated_at = now()
-      WHERE player_discord_links.source = 'auth'
       `,
       [
         playerUid,
@@ -653,6 +1471,16 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
         JSON.stringify({ source: "auth", user_id: userId })
       ]
     );
+
+    if (!isDiscordPlaceholderUid(playerUid)) {
+      await canonicalizeDiscordLinkedPlayer(tx, {
+        discordUserId: discordIdentity.provider_user_id,
+        canonicalPlayerUid: playerUid,
+        displayName,
+        actorUserId: userId,
+        source: "auth_roster_repair"
+      });
+    }
   }
 
   const staleAuthPlayerUids = identities
@@ -769,18 +1597,23 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return sendAuthUnavailable(reply, "Discord OAuth is not configured.");
     }
 
+    if (parsedQuery.data.mode === "jwt" && !isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
     try {
-      const state = await insertOAuthState(
+      const oauthState = await insertOAuthState(
         "discord",
         getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after),
-        null
+        null,
+        parsedQuery.data.mode
       );
       const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
       authorizeUrl.searchParams.set("client_id", config.discordClientId);
       authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
       authorizeUrl.searchParams.set("response_type", "code");
       authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
-      authorizeUrl.searchParams.set("state", state);
+      authorizeUrl.searchParams.set("state", oauthState.state);
 
       return reply.redirect(authorizeUrl.toString());
     } catch (error) {
@@ -805,57 +1638,350 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const token = await exchangeDiscordCode(parsedQuery.data.code);
       const profile = await fetchDiscordProfile(token);
-      const memberships = await fetchDiscordLoginGuildMemberships(token);
+
+      if (state.purpose === "discord_refresh") {
+        const returnTo = getSafeReturnTo(state.redirect_after);
+
+        if (!state.user_id) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "invalid_state"));
+        }
+
+        const user = await loadCurrentUserById(state.user_id);
+        const linkedDiscordIdentity = user?.identities.find((identity) => identity.provider === "discord") ?? null;
+
+        if (!user || !linkedDiscordIdentity) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "discord_identity_missing"));
+        }
+
+        if (linkedDiscordIdentity.provider_user_id !== profile.id) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "identity_mismatch"));
+        }
+
+        try {
+          const fetchedMemberships = await fetchDiscordConfiguredGuildMemberships(token, profile.id, request, "refresh");
+          const presentMemberships = fetchedMemberships
+            .filter((membership): membership is DiscordFetchedMembership & { member: DiscordCurrentGuildMember } => membership.member !== null)
+            .map((membership) => ({ guildId: membership.guildId, member: membership.member }));
+          const preferredName = choosePreferredDiscordDisplayName({
+            profile,
+            memberships: presentMemberships,
+            policy: getDiscordDisplayNamePolicy(),
+            guildOrder: getLoginGuildDisplayNameOrder()
+          });
+          const userId = await withDbTransaction(async (tx) => upsertDiscordUser(tx, profile, preferredName));
+
+          if (userId !== state.user_id) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "identity_mismatch"));
+          }
+
+          await refreshDiscordSnapshotsAndAssignments({
+            userId,
+            profile,
+            token,
+            request,
+            source: "oauth_refresh",
+            purpose: "refresh",
+            fetchedMemberships: fetchedMemberships
+          });
+
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refreshed", "1"));
+        } catch (error) {
+          request.log.error({ err: error }, "Discord refresh callback failed");
+
+          if (error instanceof DiscordRateLimitError) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "rate_limited"));
+          }
+
+          if (error instanceof DiscordMembershipFetchError) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "membership_fetch_failed"));
+          }
+
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "refresh_failed"));
+        }
+      }
+
+      const memberships = await fetchDiscordLoginGuildMemberships(token, profile.id, request);
+      const preferredName = choosePreferredDiscordDisplayName({
+        profile,
+        memberships,
+        policy: getDiscordDisplayNamePolicy(),
+        guildOrder: getLoginGuildDisplayNameOrder()
+      });
 
       if (config.discordAuthEnabled && config.discordAuthRequireGuild && memberships.length === 0) {
         return sendDiscordGuildMembershipRequired(reply);
       }
 
+      request.log.info(
+        {
+          discordUserId: profile.id,
+          preferredDisplayNameSource: preferredName.source,
+          preferredDisplayNameGuildId: preferredName.guildId
+        },
+        "Selected Discord display name"
+      );
+
       const userId = await withDbTransaction(async (tx) => {
-        const nextUserId = await upsertDiscordUser(tx, profile);
+        const nextUserId = await upsertDiscordUser(tx, profile, preferredName);
         await applyInitialAdminFallback(tx, nextUserId, profile.id, request);
         return nextUserId;
       });
 
-      for (const membership of memberships) {
-        await upsertDiscordMemberSnapshot({
-          guildId: membership.guildId,
-          discordUserId: profile.id,
+      if (config.discordAuthEnabled) {
+        const refreshResult = await refreshDiscordSnapshotsAndAssignments({
           userId,
-          roles: membership.member.roles,
-          nick: membership.member.nick ?? null,
-          joinedAt: membership.member.joined_at ?? null,
-          rawMember: membership.member as unknown as Record<string, unknown>,
-          source: "oauth_login"
-        });
-      }
-
-      if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
-        const reconciliation = await reconcileDiscordMembership({
-          userId,
-          discordUserId: profile.id,
-          dryRun: false,
-          source: "oauth_login"
+          profile,
+          token,
+          request,
+          source: "oauth_login",
+          purpose: "login",
+          memberships
         });
 
-        if (reconciliation.denied) {
+        if (config.discordAuthReconcileOnLogin && refreshResult.reconciliation?.denied) {
+          return sendDiscordGuildMembershipRequired(reply);
+        }
+
+        if (refreshResult.memberships_present === 0 && config.discordAuthRequireGuild) {
           return sendDiscordGuildMembershipRequired(reply);
         }
       }
 
+      if (state.flow_mode === "jwt") {
+        if (!isJwtAuthEnabled()) {
+          return sendJwtAuthDisabled(reply);
+        }
+
+        const returnTo = getSafeReturnTo(state.redirect_after);
+        const handoff = await createJwtHandoffCode(userId, returnTo, request);
+        return reply.redirect(appendAuthHandoff(returnTo, handoff.code));
+      }
+
       const session = await createUserSession(userId, request);
       setSessionCookie(reply, session.token, session.expires_at);
-
       return reply.redirect(getSafeReturnTo(state.redirect_after));
     } catch (error) {
       request.log.error({ err: error }, "Discord OAuth callback failed");
+
+      if (error instanceof DiscordRateLimitError) {
+        return sendDiscordRateLimited(reply, error.retryAfterSeconds);
+      }
+
+      if (error instanceof DiscordTokenExchangeError) {
+        return reply.code(502).send({
+          ok: false,
+          error: {
+            code: "discord_token_exchange_failed",
+            message: "Discord token exchange failed."
+          }
+        });
+      }
+
+      if (error instanceof DiscordProfileFetchError) {
+        return reply.code(502).send({
+          ok: false,
+          error: {
+            code: "discord_profile_fetch_failed",
+            message: "Discord profile fetch failed."
+          }
+        });
+      }
+
+      if (error instanceof DiscordAuthPolicyError) {
+        return reply.code(503).send({
+          ok: false,
+          error: {
+            code: "discord_auth_policy_unavailable",
+            message: "Discord auth policy is not configured."
+          }
+        });
+      }
+
+      if (error instanceof DiscordMembershipFetchError) {
+        return reply.code(502).send({
+          ok: false,
+          error: {
+            code: "discord_membership_fetch_failed",
+            message: "Discord guild membership verification failed."
+          }
+        });
+      }
+
       return sendProviderFailure(reply);
+    }
+  });
+
+  app.post("/v1/me/discord/refresh", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = discordRefreshBodySchema.safeParse(request.body ?? {});
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
+
+    if (!discordIdentity) {
+      return reply.code(409).send({
+        ok: false,
+        error: {
+          code: "discord_identity_missing",
+          message: "Link Discord before refreshing Discord roles."
+        }
+      });
+    }
+
+    if (!config.discordClientId || !config.discordRedirectUri) {
+      return sendAuthUnavailable(reply, "Discord OAuth is not configured.");
+    }
+
+    try {
+      const flowMode = user.session_id === "jwt" ? "jwt" : "cookie";
+      const oauthState = await insertOAuthState(
+        "discord",
+        getSafeReturnTo(parsedBody.data.return_to),
+        null,
+        flowMode,
+        "discord_refresh",
+        user.id
+      );
+      const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
+      authorizeUrl.searchParams.set("client_id", config.discordClientId);
+      authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
+      authorizeUrl.searchParams.set("state", oauthState.state);
+
+      return {
+        ok: true,
+        mode: flowMode,
+        discord_refresh_url: authorizeUrl.toString(),
+        expires_at: oauthState.expires_at
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Discord refresh OAuth");
+      return sendAuthUnavailable(reply);
     }
   });
 
   app.post("/auth/logout", async (request, reply) => {
     await revokeCurrentSession(request);
     clearSessionCookie(reply);
+    return { ok: true };
+  });
+
+  app.post("/auth/jwt/exchange", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const handoffCode = getHandoffCode(request.body, request.query);
+
+    if (!handoffCode) {
+      request.log.warn(
+        {
+          hasBody: Boolean(request.body),
+          bodyKeys: objectKeys(request.body),
+          queryKeys: objectKeys(request.query)
+        },
+        "JWT handoff exchange request missing supported code field"
+      );
+      return sendInvalidHandoffRequest(reply);
+    }
+
+    try {
+      const handoff = await consumeJwtHandoffCode(handoffCode);
+
+      if (!handoff) {
+        return sendExpiredOrConsumedHandoff(reply);
+      }
+
+      const user = await loadCurrentUserById(handoff.user_id);
+
+      if (!user) {
+        return sendJwtUnauthorized(reply);
+      }
+
+      const [accessToken, refreshToken] = await Promise.all([
+        issueAccessJwt(user.id),
+        issueRefreshToken(user.id, request)
+      ]);
+
+      return {
+        ok: true,
+        token_type: "Bearer",
+        access_token: accessToken,
+        expires_in: config.jwtAccessTtlSeconds,
+        refresh_token: refreshToken.token,
+        user: await serializeUser(user)
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to exchange JWT handoff");
+      return reply.code(502).send({
+        ok: false,
+        error: {
+          code: "jwt_handoff_failed",
+          message: "JWT handoff exchange failed."
+        }
+      });
+    }
+  });
+
+  app.post("/auth/jwt/refresh", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const parsedBody = jwtRefreshBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const rotated = await rotateRefreshToken(parsedBody.data.refresh_token, request);
+
+      if (!rotated) {
+        return sendJwtUnauthorized(reply, "Refresh token is invalid or expired.");
+      }
+
+      const user = await loadCurrentUserById(rotated.user_id);
+
+      if (!user) {
+        await revokeRefreshToken(rotated.refresh_token.token);
+        return sendJwtUnauthorized(reply);
+      }
+
+      return {
+        ok: true,
+        token_type: "Bearer",
+        access_token: await issueAccessJwt(user.id),
+        expires_in: config.jwtAccessTtlSeconds,
+        refresh_token: rotated.refresh_token.token,
+        user: await serializeUser(user)
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to refresh JWT auth");
+      return sendProviderFailure(reply, "JWT refresh failed.");
+    }
+  });
+
+  app.post("/auth/jwt/logout", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const parsedBody = jwtRefreshBodySchema.safeParse(request.body);
+
+    if (parsedBody.success) {
+      await revokeRefreshToken(parsedBody.data.refresh_token);
+    }
+
     return { ok: true };
   });
 
@@ -874,6 +2000,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
     if (!user) {
       return;
+    }
+
+    if (user.session_id === "jwt") {
+      return {
+        ok: true,
+        csrf_required: false
+      };
     }
 
     try {
@@ -900,13 +2033,21 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     try {
-      const player = await findLinkedPlayer(user);
+      const { player, linkState } = await findLinkedPlayerWithRepair(user);
 
       if (!player) {
+        const message =
+          linkState.reason === "steam_identity_linked_but_player_missing"
+            ? "Steam is linked, but no player stats record exists yet."
+            : linkState.reason === "discord_identity_linked_but_player_missing"
+              ? "Discord is linked, but no player stats record exists yet."
+              : "Link Steam or ask an admin to link your player record.";
+
         return {
           ok: true,
           linked_player: null,
-          message: "Link Steam or ask an admin to link your player record."
+          link_state: linkState,
+          message
         };
       }
 
@@ -914,6 +2055,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         `
         SELECT
           COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          $2::int AS xp_total,
           COUNT(*) FILTER (WHERE op.present_at_start = true)::int AS present_at_start_count,
           COUNT(*) FILTER (WHERE op.present_at_end = true)::int AS present_at_end_count,
           COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
@@ -931,10 +2073,11 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           AND ops.player_uid = op.player_uid
         WHERE op.player_uid = $1
         `,
-        [player.player_uid]
+        [player.player_uid, player.xp_total]
       );
 
       const summary = summaryResult.rows[0] ?? {
+        xp_total: player.xp_total,
         operation_count: 0,
         present_at_start_count: 0,
         present_at_end_count: 0,
@@ -957,11 +2100,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           callsign: units.callsign,
           rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
           roster_name: unitPlayers.rosterName,
-          roster_status: unitPlayers.rosterStatus
+          roster_status: unitPlayers.rosterStatus,
+          is_represented: sql<boolean>`COALESCE(${playerUnitPreferences.representedUnitId} = ${unitPlayers.unitId}, false)`
         })
         .from(unitPlayers)
         .innerJoin(units, eq(units.id, unitPlayers.unitId))
         .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+        .leftJoin(playerUnitPreferences, eq(playerUnitPreferences.playerUid, unitPlayers.playerUid))
         .where(
           and(
             eq(unitPlayers.playerUid, player.player_uid),
@@ -975,9 +2120,12 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       return {
         ok: true,
+        link_state: linkState,
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
+          xp_total: player.xp_total,
           rank: membershipRows[0]?.rank ?? player.rank,
+          represented_unit_id: membershipRows.find((membership) => membership.is_represented)?.unit_id ?? null,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         },
@@ -988,7 +2136,8 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           callsign: membership.callsign,
           rank: membership.rank,
           roster_name: membership.roster_name,
-          roster_status: membership.roster_status
+          roster_status: membership.roster_status,
+          is_represented: membership.is_represented
         })),
         summary,
         scoreboard_totals: {
@@ -1039,12 +2188,64 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
           rank: player.rank,
+          represented_unit_id: player.represented_unit_id,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         }
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update self player");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.patch("/v1/me/player/represented-unit", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = representedUnitBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const membership = await withDbTransaction((tx) => updateSelfRepresentedUnit(tx, user, parsedBody.data.unit_id));
+
+      if (membership === "not_linked") {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "player_not_found",
+            message: "Player was not found."
+          }
+        });
+      }
+
+      if (membership === "not_member") {
+        return sendForbidden(reply, "You can only represent an active battalion membership.");
+      }
+
+      return {
+        ok: true,
+        represented_unit: {
+          unit_id: membership.unit_id,
+          unit_key: membership.unit_key,
+          name: membership.display_name ?? membership.name,
+          callsign: membership.callsign,
+          rank: membership.rank,
+          roster_name: membership.roster_name,
+          roster_status: membership.roster_status
+        }
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update represented unit");
       return reply.code(503).send({
         ok: false,
         error: { code: "database_unavailable", message: "Database is not available." }
@@ -1288,15 +2489,81 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     const state = await insertOAuthState("steam", getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after), user.id);
-    const steamUrl = new URL("https://steamcommunity.com/openid/login");
-    steamUrl.searchParams.set("openid.ns", "http://specs.openid.net/auth/2.0");
-    steamUrl.searchParams.set("openid.mode", "checkid_setup");
-    steamUrl.searchParams.set("openid.return_to", `${config.steamReturnUrl}?state=${encodeURIComponent(state)}`);
-    steamUrl.searchParams.set("openid.realm", config.steamRealm);
-    steamUrl.searchParams.set("openid.identity", "http://specs.openid.net/auth/2.0/identifier_select");
-    steamUrl.searchParams.set("openid.claimed_id", "http://specs.openid.net/auth/2.0/identifier_select");
+    return reply.redirect(steamOpenIdUrl(state.state));
+  });
 
-    return reply.redirect(steamUrl.toString());
+  app.post("/auth/steam/link-ticket", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = steamLinkTicketBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    if (!config.steamReturnUrl || !config.steamRealm) {
+      return sendAuthUnavailable(reply, "Steam OpenID is not configured.");
+    }
+
+    try {
+      const returnTo = getSafeReturnTo(parsedBody.data.return_to ?? parsedBody.data.redirect_after);
+      const ticket = await createSteamLinkTicket(user.id, returnTo, request);
+
+      return {
+        ok: true,
+        steam_start_url: steamStartTicketUrl(ticket.ticket),
+        expires_at: ticket.expires_at
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to create Steam link ticket");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.get("/auth/steam/start-ticket", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const parsedQuery = steamStartTicketQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return sendValidationFailed(reply);
+    }
+
+    if (!config.steamReturnUrl || !config.steamRealm) {
+      return sendAuthUnavailable(reply, "Steam OpenID is not configured.");
+    }
+
+    try {
+      const state = await withDbTransaction(async (tx) => {
+        const ticket = await consumeSteamLinkTicket(tx, parsedQuery.data.ticket);
+
+        if (!ticket) {
+          return null;
+        }
+
+        return insertOAuthStateWithClient(tx, "steam", ticket.return_to, ticket.user_id);
+      });
+
+      if (!state) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: "invalid_link_ticket", message: "Steam link ticket is invalid, expired, or already used." }
+        });
+      }
+
+      return reply.redirect(steamOpenIdUrl(state.state));
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Steam ticket link");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
   });
 
   app.get("/auth/steam/callback", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -1327,7 +2594,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       await withDbTransaction(async (tx) => {
         await upsertSteamIdentity(tx, state.code_verifier ?? "", steamId);
       });
-      return reply.redirect(getSafeReturnTo(state.redirect_after));
+      return reply.redirect(steamLinkedReturnTo(state.redirect_after));
     } catch (error) {
       if (error instanceof Error && error.message === "steam_identity_conflict") {
         return sendConflict(reply, "That Steam identity is already linked to another user.");
@@ -1397,6 +2664,38 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     setSessionCookie(reply, session.token, session.expires_at);
 
     return { ok: true, user_id: userId };
+  });
+
+  app.post("/auth/test/jwt-handoff", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (config.nodeEnv === "production" && !config.enableTestAuth) {
+      return reply.code(404).send({ ok: false, error: { code: "not_found", message: "Route not found." } });
+    }
+
+    if (!isJwtAuthEnabled()) {
+      return sendJwtAuthDisabled(reply);
+    }
+
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = testJwtHandoffBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const returnTo = getSafeReturnTo(parsedBody.data.return_to);
+    const handoff = await createJwtHandoffCode(user.id, returnTo, request);
+
+    return {
+      ok: true,
+      handoff_code: handoff.code,
+      expires_at: handoff.expires_at,
+      return_to: returnTo
+    };
   });
 
   app.post("/auth/test/link-steam", async (request, reply) => {

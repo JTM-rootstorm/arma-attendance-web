@@ -44,10 +44,10 @@ export function CommandShell({
   onViewChange: (view: ViewName) => void;
   onLogout: () => void;
   children: ReactNode;
-  inspector: ReactNode;
+  inspector: ReactNode | null;
 }) {
   return (
-    <main className="console-shell">
+    <main className={`console-shell ${inspector ? "" : "no-inspector"}`.trim()}>
       <header className="command-bar">
         <div>
           <p className="console-glyphs" aria-hidden="true">
@@ -93,7 +93,7 @@ export function CommandShell({
           {children}
         </div>
       </section>
-      <aside className="inspection-pane">{inspector}</aside>
+      {inspector ? <aside className="inspection-pane">{inspector}</aside> : null}
     </main>
   );
 }

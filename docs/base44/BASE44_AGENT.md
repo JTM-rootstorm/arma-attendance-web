@@ -6,10 +6,10 @@ Do not store API keys, bearer tokens, machine tokens, Discord bot tokens, or pro
 
 ## Login Flow
 
-Send users to the API Discord login start route with an allowlisted absolute return URL:
+For Base44 and other external frontends, prefer JWT handoff mode so the UI does not depend on third-party cookies. Send users to the API Discord login start route with `mode=jwt` and an allowlisted absolute return URL:
 
 ```text
-https://arma-stats.root-storm.com/auth/discord/start?return_to=https%3A%2F%2Ftcwa3-galaxy-map.base44.app%2F
+https://arma-stats.root-storm.com/auth/discord/start?mode=jwt&return_to=https%3A%2F%2Ftcwa3-galaxy-map.base44.app%2F
 ```
 
 The Discord Developer Portal redirect URI remains on the API domain:
@@ -18,17 +18,83 @@ The Discord Developer Portal redirect URI remains on the API domain:
 https://arma-stats.root-storm.com/auth/discord/callback
 ```
 
-After Discord login, the API sets an HttpOnly session cookie and redirects back to the `return_to` URL if its origin is allowlisted.
+After Discord login, the API verifies the Discord profile and guild membership, reconciles local roles and unit membership, creates a short-lived one-time handoff code, and redirects back to the `return_to` URL if its origin is allowlisted:
 
-Steam linking uses the same pattern for logged-in users:
+```text
+https://tcwa3-galaxy-map.base44.app/?auth_handoff=<code>
+```
+
+Do not expect or accept real access tokens, refresh tokens, JWTs, API keys, role payloads, or Discord IDs in the URL.
+
+Exchange the handoff code for app tokens:
+
+```js
+const response = await fetch("https://arma-stats.root-storm.com/auth/jwt/exchange", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ handoff_code: authHandoff })
+});
+const data = await response.json();
+```
+
+Use the returned access token for API calls:
+
+```js
+const response = await fetch("https://arma-stats.root-storm.com/v1/me", {
+  headers: {
+    Authorization: `Bearer ${accessToken}`
+  }
+});
+```
+
+Use `POST /auth/jwt/refresh` with the opaque refresh token when the access token expires, and `POST /auth/jwt/logout` to revoke the refresh token on logout. Store tokens only in frontend storage appropriate for the Base44 app's risk model; do not put them in URLs.
+
+Cookie session mode is still available for the hosted dashboard and same-site browser flows:
+
+```text
+https://arma-stats.root-storm.com/auth/discord/start?return_to=https%3A%2F%2Ftcwa3-galaxy-map.base44.app%2F
+```
+
+In cookie mode, the API sets an HttpOnly session cookie and redirects back to the `return_to` URL if its origin is allowlisted.
+
+Steam linking with cookie sessions can use the browser redirect start route:
 
 ```text
 https://arma-stats.root-storm.com/auth/steam/start?return_to=https%3A%2F%2Ftcwa3-galaxy-map.base44.app%2F
 ```
 
+JWT-authenticated Base44 users cannot navigate directly to `/auth/steam/start` because browser redirects cannot attach the `Authorization` header. Instead, request a short-lived Steam link ticket, then redirect the browser to the returned URL:
+
+```js
+const response = await fetch("https://arma-stats.root-storm.com/auth/steam/link-ticket", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${accessToken}`
+  },
+  body: JSON.stringify({
+    return_to: "https://tcwa3-galaxy-map.base44.app/ArmaStats"
+  })
+});
+const data = await response.json();
+window.location.assign(data.steam_start_url);
+```
+
+After Steam returns to Base44, the URL may include `steam_linked=1`. It is only a hint; it contains no token or SteamID. Re-fetch `/v1/me` and `/v1/me/player` with the existing bearer access token to refresh linked identity and player state.
+
 ## Fetch Pattern
 
-All authenticated Base44 API requests must include browser credentials:
+JWT-authenticated Base44 API requests use bearer tokens:
+
+```js
+const response = await fetch("https://arma-stats.root-storm.com/v1/me", {
+  headers: {
+    Authorization: `Bearer ${accessToken}`
+  }
+});
+```
+
+Cookie-session requests must include browser credentials:
 
 ```js
 const response = await fetch("https://arma-stats.root-storm.com/v1/me", {
@@ -67,7 +133,7 @@ Do not build public drilldown links from anonymous operation rows because operat
 
 ## CSRF For Writes
 
-Before unsafe session-authenticated requests, fetch a CSRF token:
+JWT-authenticated unsafe requests do not need cookie-session CSRF. Before unsafe cookie-session requests, fetch a CSRF token:
 
 ```js
 const csrfResponse = await fetch("https://arma-stats.root-storm.com/auth/csrf", {
@@ -102,11 +168,16 @@ Public:
 - `GET /auth/discord/start?return_to=...`
 - `GET /auth/discord/callback`
 - `GET /auth/steam/start?return_to=...`
+- `GET /auth/steam/start-ticket?ticket=...`
 - `GET /auth/steam/callback`
+- `POST /auth/jwt/exchange`
+- `POST /auth/jwt/refresh`
+- `POST /auth/jwt/logout`
 
 Session user:
 
 - `GET /v1/me`
+- `POST /auth/steam/link-ticket`
 - `GET /v1/me/player`
 - `PATCH /v1/me/player`
 - `GET /v1/me/operations`
@@ -140,6 +211,7 @@ Owner-only machine token endpoints:
 
 - `GET /v1/system/machine-tokens`
 - `POST /v1/system/machine-tokens`
+- `POST /v1/system/machine-tokens/:token_id/secret`
 - `DELETE /v1/system/machine-tokens/:token_id`
 
 Sensitive identifiers and fields may be `null` or redacted depending on the current user's roles. Build UI states that tolerate missing IDs and hidden operational detail.

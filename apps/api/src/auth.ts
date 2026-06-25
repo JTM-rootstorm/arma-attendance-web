@@ -4,6 +4,8 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 
 import { config } from "./config.js";
+import { isLikelyJwt, verifyAccessJwt } from "./auth/jwt.js";
+import { machineTokenKindSets } from "./auth/machineTokenKinds.js";
 import { getDrizzleDb } from "./db/drizzle.js";
 import { appUsers, userIdentities, userRoles, userSessions } from "./db/schema/auth.js";
 import { machineTokens } from "./db/schema/machineTokens.js";
@@ -195,31 +197,17 @@ export async function revokeCurrentSession(request: FastifyRequest): Promise<voi
     .where(and(eq(userSessions.sessionTokenHash, hashSessionToken(token)), isNull(userSessions.revokedAt)));
 }
 
-export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {
-  const token = getSessionToken(request);
-
-  if (!token) {
-    return null;
-  }
-
+export async function loadCurrentUserById(userId: string, sessionId = "jwt"): Promise<CurrentUser | null> {
   const db = getDrizzleDb();
   const [row] = await db
     .select({
-      session_id: userSessions.id,
       user_id: appUsers.id,
       display_name: appUsers.displayName,
       avatar_url: appUsers.avatarUrl,
       disabled_at: appUsers.disabledAt
     })
-    .from(userSessions)
-    .innerJoin(appUsers, eq(appUsers.id, userSessions.userId))
-    .where(
-      and(
-        eq(userSessions.sessionTokenHash, hashSessionToken(token)),
-        isNull(userSessions.revokedAt),
-        gt(userSessions.expiresAt, sql<Date>`now()`)
-      )
-    )
+    .from(appUsers)
+    .where(eq(appUsers.id, userId))
     .limit(1);
 
   if (!row || row.disabled_at) {
@@ -239,8 +227,6 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
       .where(eq(userIdentities.userId, row.user_id))
   ]);
 
-  await db.update(userSessions).set({ lastSeenAt: sql`now()` }).where(eq(userSessions.id, row.session_id));
-
   return {
     id: row.user_id,
     display_name: row.display_name,
@@ -257,11 +243,66 @@ export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUs
         display_name: identity.display_name,
         avatar_url: identity.avatar_url
       })),
-    session_id: row.session_id
+    session_id: sessionId
   };
 }
 
-async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {
+export async function getCurrentUserFromCookie(request: FastifyRequest): Promise<CurrentUser | null> {
+  const token = getSessionToken(request);
+
+  if (!token) {
+    return null;
+  }
+
+  const db = getDrizzleDb();
+  const [row] = (await db
+    .select({
+      session_id: userSessions.id,
+      user_id: appUsers.id,
+      display_name: appUsers.displayName,
+      avatar_url: appUsers.avatarUrl,
+      disabled_at: appUsers.disabledAt
+    })
+    .from(userSessions)
+    .innerJoin(appUsers, eq(appUsers.id, userSessions.userId))
+    .where(
+      and(
+        eq(userSessions.sessionTokenHash, hashSessionToken(token)),
+        isNull(userSessions.revokedAt),
+        gt(userSessions.expiresAt, sql<Date>`now()`)
+      )
+    )
+    .limit(1)) as SessionUserRow[];
+
+  if (!row || row.disabled_at) {
+    return null;
+  }
+
+  await db.update(userSessions).set({ lastSeenAt: sql`now()` }).where(eq(userSessions.id, row.session_id));
+  return loadCurrentUserById(row.user_id, row.session_id);
+}
+
+export async function getCurrentUserFromJwt(request: FastifyRequest): Promise<CurrentUser | null> {
+  const token = getBearerToken(request);
+
+  if (!token || !isLikelyJwt(token)) {
+    return null;
+  }
+
+  const verified = await verifyAccessJwt(token);
+
+  if (!verified) {
+    return null;
+  }
+
+  return loadCurrentUserById(verified.user_id);
+}
+
+export async function getCurrentUser(request: FastifyRequest): Promise<CurrentUser | null> {
+  return (await getCurrentUserFromJwt(request)) ?? getCurrentUserFromCookie(request);
+}
+
+async function findActiveDbMachineToken(request: FastifyRequest, kinds: readonly MachineTokenKind[]): Promise<MachineTokenKind | null> {
   const token = getBearerToken(request);
 
   if (!token || !config.databaseUrl) {
@@ -302,7 +343,7 @@ async function findActiveDbMachineToken(request: FastifyRequest, kinds: MachineT
   return row.token_kind;
 }
 
-export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds: MachineTokenKind[]): Promise<MachineTokenKind | null> {
+export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds: readonly MachineTokenKind[]): Promise<MachineTokenKind | null> {
   const token = getBearerToken(request);
 
   if (!token) {
@@ -321,21 +362,21 @@ export async function getAcceptedMachineTokenKind(request: FastifyRequest, kinds
 }
 
 export async function requireBearerToken(request: FastifyRequest, reply: FastifyReply) {
-  if (!(await getAcceptedMachineTokenKind(request, ["api", "arma_server"]))) {
+  if (!(await getAcceptedMachineTokenKind(request, machineTokenKindSets.ingest))) {
     return unauthorized(reply);
   }
 }
 
 export async function isMachineTokenRequest(request: FastifyRequest): Promise<boolean> {
-  return Boolean(await getAcceptedMachineTokenKind(request, ["api", "arma_server"]));
+  return Boolean(await getAcceptedMachineTokenKind(request, machineTokenKindSets.ingest));
 }
 
 export async function isAdminOrBotTokenRequest(request: FastifyRequest): Promise<boolean> {
-  return Boolean(await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server"]));
+  return Boolean(await getAcceptedMachineTokenKind(request, machineTokenKindSets.adminOrBotOrIngest));
 }
 
 export async function isBase44TokenRequest(request: FastifyRequest): Promise<boolean> {
-  return Boolean(await getAcceptedMachineTokenKind(request, ["base44_integration"]));
+  return Boolean(await getAcceptedMachineTokenKind(request, machineTokenKindSets.base44));
 }
 
 export async function requireAdminOrBotToken(request: FastifyRequest, reply: FastifyReply) {

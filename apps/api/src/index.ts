@@ -5,7 +5,10 @@ import rateLimit from "@fastify/rate-limit";
 
 import { requireCsrfForUnsafeSessionRequest } from "./auth/csrf.js";
 import { config, loadedEnvFiles } from "./config.js";
+import { getDiscordAuthPolicyDetails } from "./config/discordAuth.js";
 import { closeDbPool } from "./db/pool.js";
+import { scheduleOperationIngestQueue } from "./operations/operationIngestQueue.js";
+import { scheduleStaleOperationCleanup } from "./operations/staleOperationCleanup.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
@@ -19,16 +22,22 @@ import { registerLeaderboardRoutes } from "./routes/leaderboards.js";
 import { registerOperationRoutes } from "./routes/operations.js";
 import { registerOwnerRoutes } from "./routes/owner.js";
 import { registerPlayerRoutes } from "./routes/players.js";
+import { registerPlanetRoutes } from "./routes/planets.js";
 import { registerSquadXmlRoutes } from "./routes/squadXml.js";
 import { registerSummaryRoutes } from "./routes/summaries.js";
 import { registerUnitRoutes } from "./routes/units.js";
 import { registerWebRoutes } from "./routes/web.js";
+import { registerXpRewardTierRoutes } from "./routes/xpRewardTiers.js";
 
 const app = Fastify({
   logger: {
     level: config.logLevel
   }
 });
+const stopStaleOperationCleanup = config.databaseUrl ? scheduleStaleOperationCleanup(app.log) : () => undefined;
+const stopOperationIngestQueue = config.databaseUrl ? scheduleOperationIngestQueue(app.log) : () => undefined;
+
+const discordAuthPolicyDetails = getDiscordAuthPolicyDetails();
 
 app.log.info(
   {
@@ -43,6 +52,13 @@ app.log.info(
     corsAllowedOrigins: config.corsAllowedOrigins,
     corsAllowCredentials: config.corsAllowCredentials,
     oauthAllowedReturnOrigins: config.oauthAllowedReturnOrigins,
+    jwtAuthEnabled: config.jwtAuthEnabled,
+    discordAuthConfigPath: discordAuthPolicyDetails.configPath,
+    discordAuthConfiguredLoginGuildCount: discordAuthPolicyDetails.configuredLoginGuildIds.length,
+    discordAuthFallbackAllowed: discordAuthPolicyDetails.fallbackAllowed,
+    discordAuthRequireConfigFile: discordAuthPolicyDetails.requireConfigFile,
+    discordAuthFallbackGuildCount: discordAuthPolicyDetails.fallbackGuildIds.length,
+    discordGuildPolicySource: discordAuthPolicyDetails.source,
     csrfEnabled: config.csrfEnabled,
     initialAdminFallbackActive: config.initialAdminDiscordIds.length > 0,
     testAuthEnabled: config.enableTestAuth,
@@ -87,6 +103,8 @@ app.setNotFoundHandler((_request, reply) =>
 );
 
 app.addHook("onClose", async () => {
+  stopOperationIngestQueue();
+  stopStaleOperationCleanup();
   await closeDbPool();
 });
 
@@ -135,9 +153,11 @@ await registerOperationRoutes(app);
 await registerOwnerRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
+await registerPlanetRoutes(app);
 await registerUnitRoutes(app);
 await registerLeaderboardRoutes(app);
 await registerSquadXmlRoutes(app);
+await registerXpRewardTierRoutes(app);
 await registerWebRoutes(app);
 
 try {

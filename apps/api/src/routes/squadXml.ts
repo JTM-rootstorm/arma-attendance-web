@@ -35,6 +35,16 @@ const SQUAD_DTD = `<!ELEMENT squad (name,email,web,picture,title,member*)>
 `;
 
 const bundledSquadAssetRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "squad-assets");
+const TCWA3_SQUAD_SLUG = "tcwa3";
+const TCWA3_SQUAD_UNIT: StrictSquadUnit = {
+  unit_key: TCWA3_SQUAD_SLUG,
+  name: "The Clone Wars ARMA 3",
+  display_name: "The Clone Wars ARMA 3",
+  callsign: "TCWA3",
+  squad_xml_title: "The Clone Wars ARMA 3",
+  squad_xml_web_url: null,
+  squad_xml_picture_filename: "logo.paa"
+};
 
 type StrictSquadUnit = {
   unit_key: string;
@@ -53,6 +63,7 @@ type StrictSquadMember = {
   rank: string | null;
   rank_name: string | null;
   rank_short_name: string | null;
+  battalion_callsign?: string | null;
   specialization: number;
 };
 
@@ -101,9 +112,12 @@ function simplePaaFilename(value: string | null | undefined, fallback: string): 
   return /^[A-Za-z0-9._-]+\.paa$/.test(candidate) ? candidate : fallback;
 }
 
-function memberRemark(row: StrictSquadMember): string {
+function memberRemark(unit: StrictSquadUnit, row: StrictSquadMember): string {
+  const callsign = fallbackText(row.battalion_callsign ?? unit.callsign);
   const rank = fallbackText(row.rank_short_name ?? row.rank_name ?? row.rank);
-  return `${rank},${row.specialization}`;
+  const specialization = Number.isInteger(row.specialization) ? row.specialization : 0;
+
+  return `${callsign},${rank},${specialization}`;
 }
 
 function buildStrictSquadXml(input: { unit: StrictSquadUnit; members: StrictSquadMember[] }): string {
@@ -132,7 +146,7 @@ function buildStrictSquadXml(input: { unit: StrictSquadUnit; members: StrictSqua
       `    <name>N/A</name>`,
       `    <email>N/A</email>`,
       `    <icq>N/A</icq>`,
-      `    <remark>${xmlEscapeText(memberRemark(member))}</remark>`,
+      `    <remark>${xmlEscapeText(memberRemark(input.unit, member))}</remark>`,
       `  </member>`
     );
   }
@@ -221,7 +235,7 @@ async function listPublicMembers(unitId: string): Promise<StrictSquadMember[]> {
       )
     )
     .leftJoin(unitSquads, eq(unitSquads.id, unitRosterAssignments.squadId))
-    .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive")))
+    .where(and(eq(unitPlayers.unitId, unitId), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"), isNull(players.deletedAt)))
     .orderBy(
       asc(unitPlayers.rankSort),
       asc(unitRanks.sortOrder),
@@ -232,7 +246,73 @@ async function listPublicMembers(unitId: string): Promise<StrictSquadMember[]> {
     );
 }
 
+async function listTcwa3Members(): Promise<StrictSquadMember[]> {
+  const db = getDrizzleDb();
+
+  return db
+    .select({
+      player_uid: unitPlayers.playerUid,
+      last_name: players.lastName,
+      roster_name: unitPlayers.rosterName,
+      rank: unitPlayers.rank,
+      rank_name: unitRanks.name,
+      rank_short_name: unitRanks.shortName,
+      battalion_callsign: units.callsign,
+      specialization: players.specialization
+    })
+    .from(unitPlayers)
+    .innerJoin(units, eq(units.id, unitPlayers.unitId))
+    .innerJoin(players, eq(players.playerUid, unitPlayers.playerUid))
+    .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+    .leftJoin(
+      unitRosterAssignments,
+      and(
+        eq(unitRosterAssignments.unitId, unitPlayers.unitId),
+        eq(unitRosterAssignments.playerUid, unitPlayers.playerUid),
+        isNull(unitRosterAssignments.endedAt),
+        eq(unitRosterAssignments.isPrimary, true)
+      )
+    )
+    .where(
+      and(
+        isNull(units.deletedAt),
+        eq(units.isActive, true),
+        eq(unitPlayers.isActive, true),
+        ne(unitPlayers.rosterStatus, "inactive"),
+        isNull(players.deletedAt)
+      )
+    )
+    .orderBy(
+      asc(units.sortOrder),
+      asc(units.callsign),
+      asc(units.name),
+      asc(unitPlayers.rankSort),
+      asc(unitRanks.sortOrder),
+      asc(unitRosterAssignments.sortOrder),
+      asc(unitPlayers.rosterName),
+      asc(players.lastName),
+      asc(unitPlayers.playerUid)
+    );
+}
+
 export async function registerSquadXmlRoutes(app: FastifyInstance) {
+  app.get(`/public/squads/${TCWA3_SQUAD_SLUG}/squad.dtd`, async (_request, reply) =>
+    reply.type("application/xml-dtd; charset=utf-8").send(SQUAD_DTD)
+  );
+
+  app.get(`/public/squads/${TCWA3_SQUAD_SLUG}/squad.xml`, async (request, reply) => {
+    try {
+      const members = await listTcwa3Members();
+      return reply
+        .type("application/xml; charset=utf-8")
+        .header("Cache-Control", "public, max-age=300")
+        .send(buildStrictSquadXml({ unit: TCWA3_SQUAD_UNIT, members }));
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to generate TCWA3 squad XML");
+      return sendDatabaseUnavailable(reply);
+    }
+  });
+
   app.get("/public/squads/:unit_slug/squad.dtd", async (request, reply) => {
     const parsed = publicSquadParamsSchema.safeParse(request.params);
     if (!parsed.success) {

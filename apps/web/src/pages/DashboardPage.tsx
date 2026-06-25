@@ -1,8 +1,8 @@
 import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
-import { OperationStatusChip, StatusChip } from "../components/StatusChip";
+import { OperationLifecycleChip, OperationOutcomeChip, StatusChip } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate } from "../format";
+import { displayPlayerName, displayValue, formatDate } from "../format";
 import type { ApiResult, DashboardSummaryResponse, DataQualityResponse, OperationListItem } from "../types";
 
 function DataMessage({ result }: { result: ApiResult<unknown> }) {
@@ -39,7 +39,8 @@ function RecentOperationsTable({
           <th>Mission</th>
           <th>World</th>
           <th>Server</th>
-          <th>Status</th>
+          <th>Lifecycle</th>
+          <th>Outcome</th>
           <th>Attendance</th>
           <th>Started</th>
         </tr>
@@ -51,7 +52,10 @@ function RecentOperationsTable({
             <td>{displayValue(operation.world_name)}</td>
             <td className="mono">{operation.server_key}</td>
             <td>
-              <OperationStatusChip status={operation.status} />
+              <OperationLifecycleChip status={operation.status} />
+            </td>
+            <td>
+              <OperationOutcomeChip status={operation.status} />
             </td>
             <td>{displayValue(operation.attendance_count ?? operation.payload_count)}</td>
             <td>{formatDate(operation.started_at)}</td>
@@ -93,7 +97,7 @@ export function DashboardPage({
       <CommandPanel title="Command Overview" eyebrow="Operational registry">
         <div className="metric-grid">
           <MetricTile label="Operations" value={summaryData?.summary.operations_total} detail="all recorded" />
-          <MetricTile label="Finished" value={summaryData?.summary.operations_finished} detail="closed signals" />
+          <MetricTile label="Mission success" value={summaryData?.summary.operations_finished} detail="successful closes" />
           <MetricTile label="Started" value={summaryData?.summary.operations_started} detail="active status" />
           <MetricTile label="Players" value={summaryData?.summary.players_total} detail="registry count" />
           <MetricTile label="Attendance" value={summaryData?.summary.attendance_rows_total} detail="normalized rows" />
@@ -146,7 +150,7 @@ export function DashboardPage({
           <tbody>
             {summaryData?.top_players_by_attendance.map((player) => (
               <tr key={player.player_uid}>
-                <td>{displayValue(player.last_name) !== "n/a" ? displayValue(player.last_name) : player.player_uid}</td>
+                <td>{displayPlayerName(player.last_name) !== "n/a" ? displayPlayerName(player.last_name) : player.player_uid}</td>
                 <td>{player.operation_count}</td>
               </tr>
             ))}

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "guilds": [
+    {
+      "guildId": "guild-login-low",
+      "label": "Lower Priority Login",
+      "type": "partner",
+      "grantsLogin": true,
+      "syncMembers": true,
+      "unitPriority": 10,
+      "rankPriority": 10,
+      "permissionPriority": 10,
+      "configOrder": 20
+    },
+    {
+      "guildId": "guild-login-high",
+      "label": "Higher Priority Login",
+      "type": "partner",
+      "grantsLogin": true,
+      "syncMembers": true,
+      "unitPriority": 100,
+      "rankPriority": 100,
+      "permissionPriority": 20,
+      "configOrder": 10
+    },
+    {
+      "guildId": "guild-login-high",
+      "label": "Duplicate Higher Priority Login",
+      "type": "partner",
+      "grantsLogin": true,
+      "syncMembers": true,
+      "unitPriority": 100,
+      "rankPriority": 100,
+      "permissionPriority": 20,
+      "configOrder": 10
+    }
+  ],
+  "permissions": {
+    "partnerGuildsMayGrantGlobalAdmin": false
+  }
+}

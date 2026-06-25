@@ -6,6 +6,7 @@ export const machineTokens = pgTable("machine_tokens", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
+  tokenCiphertext: text("token_ciphertext"),
   tokenPrefix: text("token_prefix").notNull(),
   tokenKind: text("token_kind").notNull(),
   isActive: boolean("is_active").notNull().default(true),

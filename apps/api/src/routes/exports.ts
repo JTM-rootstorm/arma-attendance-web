@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { canExportData, deny, getAuthContext, getReadableUnitFilter } from "../auth/authorization.js";
+import { canReadOperation } from "../auth/operationAccess.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 
@@ -130,6 +131,10 @@ export async function registerExportRoutes(app: FastifyInstance) {
 
       const operation = operationResult.rows[0];
 
+      if (auth.user && !(await canReadOperation(auth.user, operation.id, operation.unit_id))) {
+        return deny(reply);
+      }
+
       if (!(await canExportData(auth.user, operation.unit_id))) {
         return deny(reply);
       }
@@ -219,7 +224,7 @@ export async function registerExportRoutes(app: FastifyInstance) {
 
     const query = parsedQuery.data;
     const values: unknown[] = [];
-    const where: string[] = [];
+    const where: string[] = ["p.deleted_at IS NULL"];
     const unitFilter = await getReadableUnitFilter(auth.user);
 
     if (!unitFilter.all) {

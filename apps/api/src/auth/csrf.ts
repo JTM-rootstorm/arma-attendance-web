@@ -2,11 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import { getAcceptedMachineTokenKind, getCurrentUser, type CurrentUser } from "../auth.js";
+import { getAcceptedMachineTokenKind, getCurrentUserFromCookie, type CurrentUser } from "../auth.js";
 import { config } from "../config.js";
 import { queryDb } from "../db/pool.js";
 
 const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const csrfExemptPaths = new Set(["/auth/jwt/exchange", "/auth/jwt/refresh", "/auth/jwt/logout"]);
 
 type CsrfTokenRow = {
   expires_at: Date;
@@ -98,11 +99,15 @@ export async function requireCsrfForUnsafeSessionRequest(
     return true;
   }
 
+  if (csrfExemptPaths.has(request.url.split("?")[0] ?? request.url)) {
+    return true;
+  }
+
   if (await getAcceptedMachineTokenKind(request, ["api", "bot", "arma_server", "base44_integration"])) {
     return true;
   }
 
-  const user = await getCurrentUser(request);
+  const user = await getCurrentUserFromCookie(request);
 
   if (!user) {
     return true;

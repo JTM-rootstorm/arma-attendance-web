@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "defaultFallbackGuildIds": ["fallback-from-file"],
+  "guilds": [
+    {
+      "guildId": "guild-login-1",
+      "label": "Login Guild",
+      "type": "partner",
+      "grantsLogin": true,
+      "syncMembers": true,
+      "unitPriority": 100,
+      "rankPriority": 100,
+      "permissionPriority": 20,
+      "configOrder": 10
+    },
+    {
+      "guildId": "guild-role-only",
+      "label": "Role Mapping Only",
+      "type": "partner",
+      "grantsLogin": false,
+      "syncMembers": true,
+      "unitPriority": 50,
+      "rankPriority": 50,
+      "permissionPriority": 10,
+      "configOrder": 20
+    }
+  ],
+  "permissions": {
+    "partnerGuildsMayGrantGlobalAdmin": false
+  }
+}

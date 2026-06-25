@@ -51,6 +51,10 @@ export function canSeeSensitiveIds(user: AuthUser | null): boolean {
   return Boolean(user?.capabilities?.can_view_sensitive_identifiers) || isTcwAdmin(user);
 }
 
+export function canViewSignalDetail(user: AuthUser | null): boolean {
+  return isOwner(user) || isTcwAdmin(user);
+}
+
 export function canExport(user: AuthUser | null): boolean {
   return Boolean(user?.capabilities?.can_export) || isTcwAdmin(user) || hasGlobalRole(user, "admin") || hasUnitRole(user, "admin");
 }
@@ -61,6 +65,10 @@ export function canManageMachineTokens(user: AuthUser | null): boolean {
 
 export function canResetPlayerNames(user: AuthUser | null): boolean {
   return isTcwAdmin(user) || hasGlobalRole(user, "admin") || hasUnitRole(user, "admin");
+}
+
+export function canDeletePlayers(user: AuthUser | null): boolean {
+  return isTcwAdmin(user) || hasGlobalRole(user, "admin");
 }
 
 export function canDeleteOperations(user: AuthUser | null): boolean {

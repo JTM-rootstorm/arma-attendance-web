@@ -6,11 +6,13 @@ export const players = pgTable("players", {
   playerUid: text("player_uid").primaryKey(),
   lastName: text("last_name"),
   specialization: integer("specialization").notNull().default(0),
+  xpTotal: integer("xp_total").notNull().default(0),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   rawLastPlayer: jsonb("raw_last_player").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true })
 });
 
 export const operationPlayers = pgTable(

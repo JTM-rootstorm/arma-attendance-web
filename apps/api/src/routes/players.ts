@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { hasRole, type CurrentUser, type MachineTokenKind } from "../auth.js";
@@ -24,6 +24,7 @@ const playerParamsSchema = z.object({
 type PlayerRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   first_seen_at: Date;
   last_seen_at: Date;
   raw_last_player: unknown;
@@ -33,6 +34,7 @@ type PlayerRow = {
 type PlayerDetailRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   first_seen_at: Date;
   last_seen_at: Date;
   raw_last_player: unknown;
@@ -43,7 +45,7 @@ type PlayerDetailRow = {
 type PlayerOperationRow = {
   operation_id: string;
   server_key: string;
-  status: "started" | "finished" | "abandoned";
+  status: "started" | "finished" | "failed" | "abandoned";
   mission_uid: string | null;
   mission_name: string | null;
   world_name: string | null;
@@ -120,7 +122,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
     }
 
     const query = parsedQuery.data;
-    const where: string[] = [];
+    const where: string[] = ["p.deleted_at IS NULL"];
     const values: unknown[] = [];
     const unitFilter = await getReadableUnitFilter(auth.user);
     const revealOperationalDetails = canSeeRosterOperationalDetails(auth.user, auth.machineTokenKind);
@@ -157,6 +159,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         SELECT
           p.player_uid,
           p.last_name,
+          p.xp_total,
           p.first_seen_at,
           p.last_seen_at,
           p.raw_last_player,
@@ -206,6 +209,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
         .select({
           player_uid: players.playerUid,
           last_name: players.lastName,
+          xp_total: players.xpTotal,
           first_seen_at: players.firstSeenAt,
           last_seen_at: players.lastSeenAt,
           raw_last_player: players.rawLastPlayer,
@@ -213,7 +217,7 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
           updated_at: players.updatedAt
         })
         .from(players)
-        .where(eq(players.playerUid, playerUid))
+        .where(and(eq(players.playerUid, playerUid), isNull(players.deletedAt)))
         .limit(1);
 
       if (!player) {

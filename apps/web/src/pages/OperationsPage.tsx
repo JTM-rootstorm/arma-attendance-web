@@ -1,8 +1,8 @@
 import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
-import { OperationStatusChip, StatusChip } from "../components/StatusChip";
+import { OperationLifecycleChip, OperationOutcomeChip, OperationStatusPair } from "../components/StatusChip";
 import { TacticalTable } from "../components/TacticalTable";
-import { displayValue, formatDate } from "../format";
+import { displayPlayerName, displayValue, formatDate } from "../format";
 import type {
   ApiResult,
   OperationAttendanceResponse,
@@ -25,22 +25,27 @@ function DataMessage({ result }: { result: ApiResult<unknown> }) {
 }
 
 function OperationsTable({
+  label,
   operations,
+  emptyMessage,
   selectedId,
   onSelect
 }: {
+  label: string;
   operations: OperationListItem[];
+  emptyMessage: string;
   selectedId: string;
   onSelect: (operationId: string) => void;
 }) {
   return (
-    <TacticalTable label="Operations">
+    <TacticalTable label={label}>
       <thead>
         <tr>
           <th>Mission</th>
           <th>World</th>
           <th>Server</th>
-          <th>Status</th>
+          <th>Lifecycle</th>
+          <th>Outcome</th>
           <th>Started</th>
           <th>Payloads</th>
         </tr>
@@ -56,12 +61,20 @@ function OperationsTable({
             <td>{displayValue(operation.world_name)}</td>
             <td className="mono">{operation.server_key}</td>
             <td>
-              <OperationStatusChip status={operation.status} />
+              <OperationLifecycleChip status={operation.status} />
+            </td>
+            <td>
+              <OperationOutcomeChip status={operation.status} />
             </td>
             <td>{formatDate(operation.started_at)}</td>
             <td>{displayValue(operation.payload_count)}</td>
           </tr>
         ))}
+        {operations.length === 0 ? (
+          <tr>
+            <td colSpan={7}>{emptyMessage}</td>
+          </tr>
+        ) : null}
       </tbody>
     </TacticalTable>
   );
@@ -91,7 +104,7 @@ function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendan
         {rows.map((row, index) => (
           <tr key={row.player_uid ?? `${row.name_at_end ?? row.name_at_start ?? "player"}-${index}`}>
             {showPlayerId ? <td className="mono">{displayValue(row.player_uid)}</td> : null}
-            <td>{displayValue(row.name_at_end ?? row.name_at_start)}</td>
+            <td>{displayPlayerName(row.name_at_end ?? row.name_at_start)}</td>
             <td>{displayValue(statValue(row, "infantry_kills"))}</td>
             <td>{displayValue(statValue(row, "soft_vehicle_kills"))}</td>
             <td>{displayValue(statValue(row, "armor_kills"))}</td>
@@ -137,6 +150,9 @@ export function OperationsPage({
   const summary = operationSummary.status === "ready" ? operationSummary.data : null;
   const attendance = operationAttendance.status === "ready" ? operationAttendance.data : null;
   const isDetailOpen = selectedOperationId.length > 0;
+  const operationRows = operations.status === "ready" ? operations.data.operations : [];
+  const inProgressOperations = operationRows.filter((operation) => operation.status === "started");
+  const finishedOperations = operationRows.filter((operation) => operation.status !== "started");
 
   return (
     <div className="view-grid">
@@ -155,9 +171,10 @@ export function OperationsPage({
                 onChange={(event) => onFiltersChange({ ...operationFilters, status: event.target.value })}
                 aria-label="Status filter"
               >
-                <option value="">any status</option>
+                <option value="">any lifecycle</option>
                 <option value="started">started</option>
-                <option value="finished">finished</option>
+                <option value="finished">finished / mission success</option>
+                <option value="failed">finished / mission failed</option>
                 <option value="abandoned">abandoned</option>
               </select>
               <input
@@ -169,7 +186,32 @@ export function OperationsPage({
             </form>
             <DataMessage result={operations} />
             {operations.status === "ready" ? (
-              <OperationsTable operations={operations.data.operations} selectedId={selectedOperationId} onSelect={onSelectOperation} />
+              <div className="operations-table-stack">
+                <section>
+                  <div className="panel-heading slim">
+                    <h3>In-Progress Operations</h3>
+                  </div>
+                  <OperationsTable
+                    label="In-progress operations"
+                    operations={inProgressOperations}
+                    emptyMessage="No in-progress operations."
+                    selectedId={selectedOperationId}
+                    onSelect={onSelectOperation}
+                  />
+                </section>
+                <section>
+                  <div className="panel-heading slim">
+                    <h3>Finished Operations</h3>
+                  </div>
+                  <OperationsTable
+                    label="Finished operations"
+                    operations={finishedOperations}
+                    emptyMessage="No finished operations."
+                    selectedId={selectedOperationId}
+                    onSelect={onSelectOperation}
+                  />
+                </section>
+              </div>
             ) : null}
           </div>
 
@@ -214,7 +256,7 @@ export function OperationsPage({
                     <h3>{displayValue(detail.operation.mission_name)}</h3>
                     <p className="mono">{detail.operation.id}</p>
                     <div className="detail-meta">
-                      <StatusChip label={detail.operation.status} tone={detail.operation.status === "abandoned" ? "danger" : "info"} />
+                      <OperationStatusPair status={detail.operation.status} />
                       <span>{displayValue(detail.operation.world_name)}</span>
                       <span>{formatDate(detail.operation.started_at)}</span>
                     </div>
