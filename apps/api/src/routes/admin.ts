@@ -46,6 +46,10 @@ type AdminUserRow = {
   identities: Array<{ provider: string; provider_user_id: string; display_name: string | null }> | null;
 };
 
+type CountRow = {
+  total: number;
+};
+
 type PlayerNameResetRow = {
   player_uid: string;
   reset_name: string | null;
@@ -482,12 +486,23 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       where.push(`EXISTS (SELECT 1 FROM user_roles urr WHERE urr.user_id = au.id AND urr.role = $${values.length})`);
     }
 
+    const filterValues = [...values];
+    const filterWhereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+
     values.push(parsedQuery.data.limit);
     const limitParam = values.length;
     values.push(parsedQuery.data.offset);
     const offsetParam = values.length;
 
     try {
+      const countResult = await queryDb<CountRow>(
+        `
+        SELECT COUNT(*)::int AS total
+        FROM app_users au
+        ${filterWhereClause}
+        `,
+        filterValues
+      );
       const result = await queryDb<AdminUserRow>(
         `
         SELECT
@@ -504,7 +519,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         FROM app_users au
         LEFT JOIN user_roles ur ON ur.user_id = au.id
         LEFT JOIN user_identities ui ON ui.user_id = au.id
-        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+        ${filterWhereClause}
         GROUP BY au.id
         ORDER BY au.created_at DESC
         LIMIT $${limitParam} OFFSET $${offsetParam}
@@ -512,7 +527,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         values
       );
 
-      return { ok: true, users: result.rows.map(serializeUser), pagination: { limit: parsedQuery.data.limit, offset: parsedQuery.data.offset, count: result.rows.length } };
+      return {
+        ok: true,
+        users: result.rows.map(serializeUser),
+        pagination: {
+          limit: parsedQuery.data.limit,
+          offset: parsedQuery.data.offset,
+          count: result.rows.length,
+          total: countResult.rows[0]?.total ?? 0
+        }
+      };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to list admin users");
       return sendDatabaseUnavailable(reply);

@@ -4,6 +4,7 @@ import { apiFetch } from "../api";
 import { CommandPanel } from "../components/CommandPanel";
 import { MetricTile } from "../components/MetricTile";
 import { TacticalTable } from "../components/TacticalTable";
+import { displayPlayerName } from "../format";
 import type { ApiResult, PlayerLeaderboardResponse, UnitLeaderboardResponse } from "../types";
 
 const emptyLeaderboard: ApiResult<UnitLeaderboardResponse> = { status: "idle", data: null, error: null };
@@ -102,6 +103,7 @@ export function LeaderboardPage() {
   const playerRows = playerLeaderboard.status === "ready" ? playerLeaderboard.data.leaderboard : [];
   const rows = activeBoard === "units" ? unitRows : playerRows;
   const topThree = rows.slice(0, 3);
+  const displayEntryName = (name: string) => (activeBoard === "players" ? displayPlayerName(name) : name);
 
   return (
     <div className="view-grid leaderboard-view">
@@ -147,7 +149,7 @@ export function LeaderboardPage() {
         {topThree.length > 0 ? (
           <div className="leaderboard-podium">
             {topThree.map((entry) => (
-              <MetricTile key={`${entry.rank}-${entry.name}`} label={`#${entry.rank} ${topLabel(entry.rank)}`} value={entry.name} detail={`${entry.total_kills} kills`} />
+              <MetricTile key={`${entry.rank}-${entry.name}`} label={`#${entry.rank} ${topLabel(entry.rank)}`} value={displayEntryName(entry.name)} detail={`${entry.total_kills} kills`} />
             ))}
           </div>
         ) : activeBoard === "units" && leaderboard.status === "ready" ? (
@@ -218,7 +220,7 @@ export function LeaderboardPage() {
                   <tr key={`${entry.rank}-${entry.name}`}>
                     <td>#{entry.rank}</td>
                     <td>
-                      <strong>{entry.name}</strong>
+                      <strong>{displayPlayerName(entry.name)}</strong>
                     </td>
                     <td>{entry.total_kills}</td>
                     <td>{entry.infantry_kills}</td>

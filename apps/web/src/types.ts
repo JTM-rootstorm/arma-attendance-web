@@ -160,6 +160,7 @@ export type PlayersResponse = {
   players: Array<{
     player_uid: string | null;
     last_name: string | null;
+    xp_total: number;
     first_seen_at: string;
     last_seen_at: string;
     operation_count: number | null;
@@ -171,6 +172,7 @@ export type PlayerDetailResponse = {
   player: {
     player_uid: string | null;
     last_name: string | null;
+    xp_total: number;
     first_seen_at: string;
     last_seen_at: string;
   };
@@ -193,6 +195,7 @@ export type PlayerDetailResponse = {
 export type PlayerSummaryResponse = {
   ok: true;
   summary: {
+    xp_total: number;
     operation_count: number | null;
     present_at_start_count: number | null;
     present_at_end_count: number | null;
@@ -509,6 +512,13 @@ export type MeResponse = {
   user: AuthUser;
 };
 
+export type DiscordRefreshStartResponse = {
+  ok: true;
+  mode: "cookie" | "jwt";
+  discord_refresh_url: string;
+  expires_at: string;
+};
+
 export type AdminUser = AuthUser & {
   disabled_at: string | null;
   created_at: string;
@@ -523,6 +533,7 @@ export type AdminUsersResponse = {
     limit: number;
     offset: number;
     count: number;
+    total: number;
   };
 };
 
@@ -530,7 +541,9 @@ export type MyPlayerResponse = {
   ok: true;
   linked_player: {
     display_name: string | null;
+    xp_total: number;
     rank: string | null;
+    represented_unit_id: string | null;
     first_seen_at?: string;
     last_seen_at?: string;
   } | null;
@@ -542,10 +555,24 @@ export type MyPlayerResponse = {
     rank: string | null;
     roster_name: string | null;
     roster_status: string;
+    is_represented: boolean;
   }>;
   summary?: PlayerSummaryResponse["summary"];
   scoreboard_totals?: ScoreboardStats;
   message?: string;
+};
+
+export type RepresentedUnitResponse = {
+  ok: true;
+  represented_unit: {
+    unit_id: string;
+    unit_key: string;
+    name: string;
+    callsign: string | null;
+    rank: string | null;
+    roster_name: string | null;
+    roster_status: string;
+  };
 };
 
 export type MyOperationsResponse = {
@@ -619,6 +646,7 @@ export type XpRewardTier = {
   id: string;
   mission_name_match: string;
   xp_amount: number;
+  planet_progress_percent: string;
   created_at: string;
   updated_at: string;
 };
@@ -636,6 +664,34 @@ export type XpRewardTiersResponse = {
 export type XpRewardTierResponse = {
   ok: true;
   tier: XpRewardTier;
+};
+
+export type Planet = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  completion_percent: string;
+  display_order: number;
+  is_active: boolean;
+  world_name_matches: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlanetsResponse = {
+  ok: true;
+  planets: Planet[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
+};
+
+export type PlanetResponse = {
+  ok: true;
+  planet: Planet;
 };
 
 export type UnitRole = "member" | "officer" | "admin" | "tcw_admin";

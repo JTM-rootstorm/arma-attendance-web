@@ -63,13 +63,17 @@ csrf_token() {
 }
 
 unit_key="unit-stat-alpha-$STAMP"
+represented_unit_key="unit-stat-beta-$STAMP"
 server_key="unit-stat-alpha-server-$STAMP"
 discord_id="123456789$STAMP"
 placeholder_uid="discord:$discord_id"
 steam_uid="76561198$STAMP"
 start_request_id="unit-stat:$STAMP:start"
 finish_request_id="unit-stat:$STAMP:finish"
+placeholder_start_request_id="unit-stat:$STAMP:placeholder-start"
+placeholder_finish_request_id="unit-stat:$STAMP:placeholder-finish"
 mission_uid="unit-stat-$STAMP"
+placeholder_mission_uid="unit-stat-placeholder-$STAMP"
 
 echo "[smoke:unit-stat-totals] Seeding unit, server key, and placeholder Discord roster..."
 unit_id="$(
@@ -189,6 +193,49 @@ if [[ "$canonical_checks" != "1|1|1" ]]; then
   exit 1
 fi
 
+echo "[smoke:unit-stat-totals] Adding a second active unit and selecting it as represented..."
+represented_unit_id="$(
+  psql "$DATABASE_URL" -q -tA -v ON_ERROR_STOP=1 \
+    -v represented_unit_key="$represented_unit_key" \
+    -v steam_uid="$steam_uid" <<'SQL'
+WITH represented_unit_seed AS (
+  INSERT INTO units (unit_key, slug, name, display_name, callsign, sort_order)
+  VALUES (:'represented_unit_key', :'represented_unit_key', 'Unit Stat Beta', 'Unit Stat Beta', 'Beta', 20)
+  RETURNING id
+)
+INSERT INTO unit_players (
+  unit_id,
+  player_uid,
+  roster_name,
+  roster_status,
+  assignment_source,
+  assignment_priority
+)
+SELECT id, :'steam_uid', 'Placeholder Trooper', 'active', 'manual', 100
+FROM represented_unit_seed
+ON CONFLICT (unit_id, player_uid) DO UPDATE
+SET is_active = true,
+    roster_status = 'active',
+    assignment_source = 'manual',
+    assignment_priority = 100,
+    updated_at = now()
+RETURNING unit_id;
+SQL
+)"
+
+curl -fsS -b "$COOKIE_JAR" -X PATCH "$BASE_URL/v1/me/player/represented-unit" \
+  -H "Origin: $BASE_URL" \
+  -H "X-CSRF-Token: $(csrf_token)" \
+  -H "Content-Type: application/json" \
+  -d "{\"unit_id\":\"$represented_unit_id\"}" |
+  assert_json "data.ok === true && data.represented_unit.unit_id === '$represented_unit_id'"
+
+curl -fsS -b "$COOKIE_JAR" "$BASE_URL/v1/me/player" |
+  assert_json "data.ok === true
+    && data.linked_player.represented_unit_id === '$represented_unit_id'
+    && data.battalion_memberships.some((membership) => membership.unit_id === '$unit_id')
+    && data.battalion_memberships.some((membership) => membership.unit_id === '$represented_unit_id' && membership.is_represented === true)"
+
 echo "[smoke:unit-stat-totals] Starting operation through server-key unit mapping..."
 start_response="$(
   curl -fsS -X POST "$BASE_URL/v1/operations/start" \
@@ -287,6 +334,16 @@ curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$unit_id&limit=10" \
   assert_json "data.ok === true
     && data.leaderboard.length === 1
     && data.leaderboard[0].unit_id === '$unit_id'
+    && data.leaderboard[0].operation_count === 0
+    && data.leaderboard[0].infantry_kills === 0
+    && data.leaderboard[0].total_kills === 0
+    && data.leaderboard[0].deaths === 0"
+
+curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$represented_unit_id&limit=10" \
+  -H "Authorization: Bearer $API_TOKEN" |
+  assert_json "data.ok === true
+    && data.leaderboard.length === 1
+    && data.leaderboard[0].unit_id === '$represented_unit_id'
     && data.leaderboard[0].operation_count === 1
     && data.leaderboard[0].infantry_kills === 7
     && data.leaderboard[0].total_kills === 10
@@ -295,6 +352,7 @@ curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$unit_id&limit=10" \
 operation_checks="$(
   psql "$DATABASE_URL" -tA -F '|' -v ON_ERROR_STOP=1 \
   -v unit_id="$unit_id" \
+  -v represented_unit_id="$represented_unit_id" \
   -v operation_id="$operation_id" \
   -v discord_id="$discord_id" \
   -v steam_uid="$steam_uid" <<'SQL'
@@ -306,6 +364,21 @@ SELECT
       AND unit_id = :'unit_id'::uuid
       AND source IN ('server_key', 'import')
   ) THEN 1 ELSE 0 END,
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM operation_player_units
+    WHERE operation_id = :'operation_id'::uuid
+      AND player_uid = :'steam_uid'
+      AND unit_id = :'represented_unit_id'::uuid
+      AND source = 'represented_unit'
+  ) THEN 1 ELSE 0 END,
+  CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM operation_player_units
+    WHERE operation_id = :'operation_id'::uuid
+      AND player_uid = :'steam_uid'
+      AND unit_id = :'unit_id'::uuid
+  ) THEN 1 ELSE 0 END,
   (
     SELECT COUNT(*)
     FROM unit_players
@@ -315,7 +388,7 @@ SELECT
 SQL
 )"
 
-if [[ "$operation_checks" != "1|1" ]]; then
+if [[ "$operation_checks" != "1|1|1|1" ]]; then
   echo "[smoke:unit-stat-totals] Operation unit or roster count checks failed: $operation_checks" >&2
   exit 1
 fi
@@ -328,11 +401,128 @@ curl -fsS -b "$COOKIE_JAR" -X POST "$BASE_URL/auth/test/link-steam" \
   -d "{\"provider_user_id\":\"$steam_uid\"}" |
   assert_json "data.ok === true"
 
-curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$unit_id&limit=10" \
+curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$represented_unit_id&limit=10" \
   -H "Authorization: Bearer $API_TOKEN" |
   assert_json "data.ok === true
     && data.leaderboard.length === 1
     && data.leaderboard[0].operation_count === 1
     && data.leaderboard[0].total_kills === 10"
+
+echo "[smoke:unit-stat-totals] Checking Discord placeholder operation stats use represented unit..."
+placeholder_start_response="$(
+  curl -fsS -X POST "$BASE_URL/v1/operations/start" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"request_id\": \"$placeholder_start_request_id\",
+      \"server_key\": \"$server_key\",
+      \"payload_version\": 1,
+      \"mission\": {
+        \"mission_uid\": \"$placeholder_mission_uid\",
+        \"mission_name\": \"Unit Stat Placeholder Smoke\",
+        \"world_name\": \"VR\"
+      },
+      \"players\": [
+        {
+          \"player_uid\": \"$placeholder_uid\",
+          \"name\": \"Placeholder Trooper\",
+          \"side\": \"WEST\",
+          \"group\": \"Alpha\",
+          \"role\": \"Rifleman\"
+        }
+      ]
+    }"
+)"
+placeholder_operation_id="$(printf "%s" "$placeholder_start_response" | json_value ".operation_id")"
+
+if [[ -z "$placeholder_operation_id" || "$placeholder_operation_id" == "null" ]]; then
+  echo "[smoke:unit-stat-totals] Missing placeholder operation_id from start response." >&2
+  exit 1
+fi
+
+placeholder_finish_body="{
+  \"request_id\": \"$placeholder_finish_request_id\",
+  \"server_key\": \"$server_key\",
+  \"payload_version\": 1,
+  \"mission\": {
+    \"mission_uid\": \"$placeholder_mission_uid\",
+    \"mission_name\": \"Unit Stat Placeholder Smoke\",
+    \"world_name\": \"VR\"
+  },
+  \"attendance_records\": [
+    {
+      \"player_uid\": \"$placeholder_uid\",
+      \"name\": \"Placeholder Trooper\",
+      \"side\": \"WEST\",
+      \"group\": \"Alpha\",
+      \"role\": \"Rifleman\",
+      \"stats\": {
+        \"infantry_kills\": 4,
+        \"vehicle_kills\": 2,
+        \"player_kills\": 0,
+        \"ai_kills\": 4,
+        \"friendly_kills\": 0,
+        \"deaths\": 1
+      },
+      \"scoreboard_stats\": {
+        \"stats_source\": \"unit_stat_placeholder_smoke\",
+        \"infantry_kills\": 4,
+        \"soft_vehicle_kills\": 2,
+        \"armor_kills\": 0,
+        \"ground_vehicle_kills\": 2,
+        \"air_kills\": 0,
+        \"all_vehicle_kills\": 2,
+        \"deaths\": 1,
+        \"score\": 60,
+        \"baseline\": [],
+        \"latest\": []
+      }
+    }
+  ]
+}"
+
+curl -fsS -X POST "$BASE_URL/v1/operations/$placeholder_operation_id/finish" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$placeholder_finish_body" |
+  assert_json "data.ok === true && data.idempotent === false && data.normalized.stats_seen === 1"
+
+placeholder_operation_checks="$(
+  psql "$DATABASE_URL" -tA -F '|' -v ON_ERROR_STOP=1 \
+  -v represented_unit_id="$represented_unit_id" \
+  -v placeholder_operation_id="$placeholder_operation_id" \
+  -v placeholder_uid="$placeholder_uid" <<'SQL'
+SELECT
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM operation_player_units
+    WHERE operation_id = :'placeholder_operation_id'::uuid
+      AND player_uid = :'placeholder_uid'
+      AND unit_id = :'represented_unit_id'::uuid
+      AND source = 'represented_unit'
+  ) THEN 1 ELSE 0 END,
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM operation_player_stats
+    WHERE operation_id = :'placeholder_operation_id'::uuid
+      AND player_uid = :'placeholder_uid'
+      AND infantry_kills = 4
+  ) THEN 1 ELSE 0 END;
+SQL
+)"
+
+if [[ "$placeholder_operation_checks" != "1|1" ]]; then
+  echo "[smoke:unit-stat-totals] Placeholder operation attribution checks failed: $placeholder_operation_checks" >&2
+  exit 1
+fi
+
+curl -fsS "$BASE_URL/v1/leaderboard/units?unit_id=$represented_unit_id&limit=10" \
+  -H "Authorization: Bearer $API_TOKEN" |
+  assert_json "data.ok === true
+    && data.leaderboard.length === 1
+    && data.leaderboard[0].operation_count === 2
+    && data.leaderboard[0].infantry_kills === 11
+    && data.leaderboard[0].total_kills === 16
+    && data.leaderboard[0].deaths === 2"
 
 echo "[smoke:unit-stat-totals] OK operation_id=$operation_id unit_id=$unit_id"

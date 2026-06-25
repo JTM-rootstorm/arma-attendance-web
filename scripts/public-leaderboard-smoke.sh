@@ -49,22 +49,25 @@ player_seed AS (
   INSERT INTO players (player_uid, last_name, raw_last_player)
   SELECT
     'public-leaderboard-smoke-' || :'stamp' || '-' || lpad(series::text, 2, '0'),
-    'Public Player Smoke ' || lpad(series::text, 2, '0'),
+    CASE
+      WHEN series = 1 THEN 'CT-01 ''Kix'' "Medic"'
+      ELSE 'Public Player Smoke ' || lpad(series::text, 2, '0')
+    END,
     '{}'::jsonb
   FROM generate_series(1, 21) AS series
   ON CONFLICT (player_uid) DO UPDATE
   SET last_name = EXCLUDED.last_name,
       deleted_at = NULL,
       updated_at = now()
-  RETURNING player_uid
+  RETURNING player_uid, last_name
 ),
 operation_player_seed AS (
   INSERT INTO operation_players (operation_id, player_uid, name_at_start, name_at_end, present_at_start, present_at_end)
   SELECT
     operation_seed.id,
     player_seed.player_uid,
-    regexp_replace(player_seed.player_uid, '^public-leaderboard-smoke-[0-9]+-', 'Public Player Smoke '),
-    regexp_replace(player_seed.player_uid, '^public-leaderboard-smoke-[0-9]+-', 'Public Player Smoke '),
+    player_seed.last_name,
+    player_seed.last_name,
     true,
     true
   FROM operation_seed
@@ -72,7 +75,10 @@ operation_player_seed AS (
   ON CONFLICT (operation_id, player_uid) DO UPDATE
   SET present_at_start = true,
       present_at_end = true,
+      name_at_start = EXCLUDED.name_at_start,
+      name_at_end = EXCLUDED.name_at_end,
       updated_at = now()
+  RETURNING operation_id, player_uid
 )
 INSERT INTO operation_player_stats (
   operation_id,
@@ -85,16 +91,18 @@ INSERT INTO operation_player_stats (
   air_kills
 )
 SELECT
-  operation_seed.id,
-  player_seed.player_uid,
-  1000000 - split_part(player_seed.player_uid, '-', 5)::int,
+  operation_player_seed.operation_id,
+  operation_player_seed.player_uid,
+  CASE
+    WHEN split_part(operation_player_seed.player_uid, '-', 5)::int = 1 THEN 2000000
+    ELSE 1000000 - split_part(operation_player_seed.player_uid, '-', 5)::int
+  END,
   0,
-  split_part(player_seed.player_uid, '-', 5)::int,
+  split_part(operation_player_seed.player_uid, '-', 5)::int,
   0,
   0,
   0
-FROM operation_seed
-CROSS JOIN player_seed
+FROM operation_player_seed
 ON CONFLICT (operation_id, player_uid) DO UPDATE
 SET infantry_kills = EXCLUDED.infantry_kills,
     vehicle_kills = EXCLUDED.vehicle_kills,
@@ -135,7 +143,7 @@ curl -fsS -D "$TMP_DIR/public-players.headers" "$BASE_URL/public/leaderboard/pla
     && data.leaderboard.length <= 20
     && data.pagination.limit === 20
     && data.leaderboard[0]?.rank === 1
-    && data.leaderboard[0]?.name === 'Public Player Smoke 01'
+    && data.leaderboard[0]?.name === 'CT-01 \\'Kix\\' \"Medic\"'
     && !data.leaderboard.some((entry) => entry.name === 'Public Player Smoke 21')
     && data.leaderboard.every((entry) => entry.player_uid === null)
     && data.leaderboard.every((entry) => !('discord_user_id' in entry) && !('steam_id' in entry) && !('raw_payload' in entry) && !('raw_stats' in entry))

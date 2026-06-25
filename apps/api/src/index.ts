@@ -7,6 +7,8 @@ import { requireCsrfForUnsafeSessionRequest } from "./auth/csrf.js";
 import { config, loadedEnvFiles } from "./config.js";
 import { getDiscordAuthPolicyDetails } from "./config/discordAuth.js";
 import { closeDbPool } from "./db/pool.js";
+import { scheduleOperationIngestQueue } from "./operations/operationIngestQueue.js";
+import { scheduleStaleOperationCleanup } from "./operations/staleOperationCleanup.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
@@ -20,6 +22,7 @@ import { registerLeaderboardRoutes } from "./routes/leaderboards.js";
 import { registerOperationRoutes } from "./routes/operations.js";
 import { registerOwnerRoutes } from "./routes/owner.js";
 import { registerPlayerRoutes } from "./routes/players.js";
+import { registerPlanetRoutes } from "./routes/planets.js";
 import { registerSquadXmlRoutes } from "./routes/squadXml.js";
 import { registerSummaryRoutes } from "./routes/summaries.js";
 import { registerUnitRoutes } from "./routes/units.js";
@@ -31,6 +34,8 @@ const app = Fastify({
     level: config.logLevel
   }
 });
+const stopStaleOperationCleanup = config.databaseUrl ? scheduleStaleOperationCleanup(app.log) : () => undefined;
+const stopOperationIngestQueue = config.databaseUrl ? scheduleOperationIngestQueue(app.log) : () => undefined;
 
 const discordAuthPolicyDetails = getDiscordAuthPolicyDetails();
 
@@ -98,6 +103,8 @@ app.setNotFoundHandler((_request, reply) =>
 );
 
 app.addHook("onClose", async () => {
+  stopOperationIngestQueue();
+  stopStaleOperationCleanup();
   await closeDbPool();
 });
 
@@ -146,6 +153,7 @@ await registerOperationRoutes(app);
 await registerOwnerRoutes(app);
 await registerIngestRequestRoutes(app);
 await registerPlayerRoutes(app);
+await registerPlanetRoutes(app);
 await registerUnitRoutes(app);
 await registerLeaderboardRoutes(app);
 await registerSquadXmlRoutes(app);

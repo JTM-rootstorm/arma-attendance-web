@@ -57,7 +57,15 @@ export const envSchema = z.object({
   INITIAL_ADMIN_DISCORD_IDS: z.string().optional(),
   ENABLE_TEST_AUTH: booleanEnv(false),
   LOG_LEVEL: logLevelSchema,
-  DATABASE_URL: z.string().optional()
+  DATABASE_URL: z.string().optional(),
+  ASYNC_DB_READ_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(4),
+  DISCORD_FETCH_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
+  DISCORD_RECONCILE_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
+  OPERATION_INGEST_QUEUE_POLL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  OPERATION_INGEST_QUEUE_SYNC_WAIT_MS: z.coerce.number().int().min(0).max(30_000).default(5000),
+  OPERATION_INGEST_QUEUE_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  OPERATION_INGEST_QUEUE_RETRY_DELAY_SECONDS: z.coerce.number().int().min(1).max(60 * 60).default(30),
+  OPERATION_INGEST_QUEUE_WORKERS: z.coerce.number().int().min(1).max(4).default(2)
 });
 
 export type ParsedEnv = z.infer<typeof envSchema>;

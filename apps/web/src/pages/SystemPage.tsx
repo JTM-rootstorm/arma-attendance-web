@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import { formatDate } from "../format";
 import type {
@@ -8,12 +8,15 @@ import type {
   MachineTokenRecord,
   MachineTokenSecretResponse,
   MachineTokensResponse,
+  Planet,
+  PlanetsResponse,
   XpRewardTier,
   XpRewardTiersResponse
 } from "../types";
 
 const trackerConfigBaseUrl = "https://arma-stats.root-storm.com";
-type SystemTab = "machineTokens" | "xpRewards";
+const planetRefreshMs = 10_000;
+type SystemTab = "machineTokens" | "xpRewards" | "planets";
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -61,8 +64,18 @@ function isValidXpAmount(value: string): boolean {
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 1_000_000;
 }
 
+function isValidPercent(value: string): boolean {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 && /^\d{1,3}(\.\d{0,3})?$/.test(value.trim());
+}
+
 function toXpAmount(value: string): number {
   return Number(value);
+}
+
+function toPercent(value: string): string {
+  return Number(value).toFixed(3);
 }
 
 export function SystemPage({
@@ -73,10 +86,15 @@ export function SystemPage({
   onRevealToken,
   onRefresh,
   xpRewardTiers,
+  planets,
   onRefreshXpRewardTiers,
   onCreateXpRewardTier,
   onUpdateXpRewardTier,
-  onDeleteXpRewardTier
+  onDeleteXpRewardTier,
+  onRefreshPlanets,
+  onCreatePlanet,
+  onUpdatePlanet,
+  onDeletePlanet
 }: {
   machineTokens: ApiResult<MachineTokensResponse>;
   createdToken: CreateMachineTokenResponse | null;
@@ -85,10 +103,45 @@ export function SystemPage({
   onRevealToken: (tokenId: string) => Promise<MachineTokenSecretResponse>;
   onRefresh: () => void;
   xpRewardTiers: ApiResult<XpRewardTiersResponse>;
+  planets: ApiResult<PlanetsResponse>;
   onRefreshXpRewardTiers: () => void;
-  onCreateXpRewardTier: (input: { mission_name_match: string; xp_amount: number }) => Promise<void>;
-  onUpdateXpRewardTier: (tierId: string, input: { mission_name_match?: string; xp_amount?: number }) => Promise<void>;
+  onCreateXpRewardTier: (input: {
+    mission_name_match: string;
+    xp_amount: number;
+    planet_progress_percent?: string;
+  }) => Promise<void>;
+  onUpdateXpRewardTier: (
+    tierId: string,
+    input: {
+      mission_name_match?: string;
+      xp_amount?: number;
+      planet_progress_percent?: string;
+    }
+  ) => Promise<void>;
   onDeleteXpRewardTier: (tierId: string) => Promise<void>;
+  onRefreshPlanets: () => void;
+  onCreatePlanet: (input: {
+    slug: string;
+    name: string;
+    description?: string | null;
+    completion_percent: string;
+    display_order: number;
+    is_active: boolean;
+    world_name_matches?: string[];
+  }) => Promise<void>;
+  onUpdatePlanet: (
+    planetId: string,
+    input: {
+      slug?: string;
+      name?: string;
+      description?: string | null;
+      completion_percent?: string;
+      display_order?: number;
+      is_active?: boolean;
+      world_name_matches?: string[];
+    }
+  ) => Promise<void>;
+  onDeletePlanet: (planetId: string) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<SystemTab>("machineTokens");
   const [name, setName] = useState("");
@@ -97,8 +150,55 @@ export function SystemPage({
   const [tokenError, setTokenError] = useState("");
   const [missionNameMatch, setMissionNameMatch] = useState("");
   const [xpAmount, setXpAmount] = useState("");
+  const [tierPlanetProgressPercent, setTierPlanetProgressPercent] = useState("0.000");
   const [xpError, setXpError] = useState("");
-  const [editingTier, setEditingTier] = useState<{ id: string; mission_name_match: string; xp_amount: string } | null>(null);
+  const [editingTier, setEditingTier] = useState<{
+    id: string;
+    mission_name_match: string;
+    xp_amount: string;
+    planet_progress_percent: string;
+  } | null>(null);
+  const [planetSlug, setPlanetSlug] = useState("");
+  const [planetName, setPlanetName] = useState("");
+  const [planetDescription, setPlanetDescription] = useState("");
+  const [planetCompletionPercent, setPlanetCompletionPercent] = useState("0.000");
+  const [planetDisplayOrder, setPlanetDisplayOrder] = useState("0");
+  const [planetWorldFilters, setPlanetWorldFilters] = useState("");
+  const [planetActive, setPlanetActive] = useState(true);
+  const [planetError, setPlanetError] = useState("");
+  const [editingPlanet, setEditingPlanet] = useState<{
+    id: string;
+    slug: string;
+    name: string;
+    description: string;
+    completion_percent: string;
+    display_order: string;
+    world_name_matches: string;
+    is_active: boolean;
+  } | null>(null);
+
+  function parseWorldNameMatches(value: string): string[] {
+    const seen = new Set<string>();
+    const matches: string[] = [];
+
+    for (const rawPart of value.split(/[\n,]+/)) {
+      const match = rawPart.trim().replace(/\s+/g, " ");
+      const key = match.toLowerCase();
+
+      if (match.length === 0 || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      matches.push(match);
+    }
+
+    return matches;
+  }
+
+  function formatWorldNameMatches(matches: string[]): string {
+    return matches.join("\n");
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -135,10 +235,12 @@ export function SystemPage({
     try {
       await onCreateXpRewardTier({
         mission_name_match: missionNameMatch.trim(),
-        xp_amount: toXpAmount(xpAmount)
+        xp_amount: toXpAmount(xpAmount),
+        planet_progress_percent: toPercent(tierPlanetProgressPercent)
       });
       setMissionNameMatch("");
       setXpAmount("");
+      setTierPlanetProgressPercent("0.000");
     } catch (error) {
       setXpError(error instanceof Error ? error.message : "XP reward tier could not be created.");
     }
@@ -149,7 +251,8 @@ export function SystemPage({
     setEditingTier({
       id: tier.id,
       mission_name_match: tier.mission_name_match,
-      xp_amount: String(tier.xp_amount)
+      xp_amount: String(tier.xp_amount),
+      planet_progress_percent: tier.planet_progress_percent
     });
   }
 
@@ -163,7 +266,8 @@ export function SystemPage({
     try {
       await onUpdateXpRewardTier(editingTier.id, {
         mission_name_match: editingTier.mission_name_match.trim(),
-        xp_amount: toXpAmount(editingTier.xp_amount)
+        xp_amount: toXpAmount(editingTier.xp_amount),
+        planet_progress_percent: toPercent(editingTier.planet_progress_percent)
       });
       setEditingTier(null);
     } catch (error) {
@@ -188,8 +292,122 @@ export function SystemPage({
     }
   }
 
-  const createXpDisabled = missionNameMatch.trim().length === 0 || !isValidXpAmount(xpAmount);
-  const saveXpDisabled = !editingTier || editingTier.mission_name_match.trim().length === 0 || !isValidXpAmount(editingTier.xp_amount);
+  async function submitPlanet(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPlanetError("");
+
+    try {
+      await onCreatePlanet({
+        slug: planetSlug.trim(),
+        name: planetName.trim(),
+        description: planetDescription.trim() || null,
+        completion_percent: toPercent(planetCompletionPercent),
+        display_order: Number(planetDisplayOrder),
+        is_active: planetActive,
+        world_name_matches: parseWorldNameMatches(planetWorldFilters)
+      });
+      setPlanetSlug("");
+      setPlanetName("");
+      setPlanetDescription("");
+      setPlanetCompletionPercent("0.000");
+      setPlanetDisplayOrder("0");
+      setPlanetWorldFilters("");
+      setPlanetActive(true);
+    } catch (error) {
+      setPlanetError(error instanceof Error ? error.message : "Planet could not be created.");
+    }
+  }
+
+  function startEditPlanet(planet: Planet) {
+    setPlanetError("");
+    setEditingPlanet({
+      id: planet.id,
+      slug: planet.slug,
+      name: planet.name,
+      description: planet.description ?? "",
+      completion_percent: planet.completion_percent,
+      display_order: String(planet.display_order),
+      world_name_matches: formatWorldNameMatches(planet.world_name_matches),
+      is_active: planet.is_active
+    });
+  }
+
+  async function saveEditPlanet() {
+    if (!editingPlanet) {
+      return;
+    }
+
+    setPlanetError("");
+
+    try {
+      await onUpdatePlanet(editingPlanet.id, {
+        slug: editingPlanet.slug.trim(),
+        name: editingPlanet.name.trim(),
+        description: editingPlanet.description.trim() || null,
+        completion_percent: toPercent(editingPlanet.completion_percent),
+        display_order: Number(editingPlanet.display_order),
+        world_name_matches: parseWorldNameMatches(editingPlanet.world_name_matches),
+        is_active: editingPlanet.is_active
+      });
+      setEditingPlanet(null);
+    } catch (error) {
+      setPlanetError(error instanceof Error ? error.message : "Planet could not be updated.");
+    }
+  }
+
+  async function deletePlanet(planet: Planet) {
+    if (!window.confirm(`Deactivate ${planet.name}?`)) {
+      return;
+    }
+
+    setPlanetError("");
+
+    try {
+      await onDeletePlanet(planet.id);
+      if (editingPlanet?.id === planet.id) {
+        setEditingPlanet(null);
+      }
+    } catch (error) {
+      setPlanetError(error instanceof Error ? error.message : "Planet could not be deactivated.");
+    }
+  }
+
+  const createXpDisabled =
+    missionNameMatch.trim().length === 0 || !isValidXpAmount(xpAmount) || !isValidPercent(tierPlanetProgressPercent);
+  const saveXpDisabled =
+    !editingTier ||
+    editingTier.mission_name_match.trim().length === 0 ||
+    !isValidXpAmount(editingTier.xp_amount) ||
+    !isValidPercent(editingTier.planet_progress_percent);
+  const createPlanetDisabled =
+    planetSlug.trim().length === 0 ||
+    planetName.trim().length === 0 ||
+    !isValidPercent(planetCompletionPercent) ||
+    !Number.isInteger(Number(planetDisplayOrder));
+  const savePlanetDisabled =
+    !editingPlanet ||
+    editingPlanet.slug.trim().length === 0 ||
+    editingPlanet.name.trim().length === 0 ||
+    !isValidPercent(editingPlanet.completion_percent) ||
+    !Number.isInteger(Number(editingPlanet.display_order));
+
+  useEffect(() => {
+    if (activeTab !== "planets") {
+      return;
+    }
+
+    void onRefreshPlanets();
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      void onRefreshPlanets();
+    }, planetRefreshMs);
+
+    return () => window.clearInterval(interval);
+  }, [activeTab, onRefreshPlanets]);
 
   return (
     <section className="view-grid system-grid">
@@ -209,6 +427,14 @@ export function SystemPage({
           onClick={() => setActiveTab("xpRewards")}
         >
           XP Rewards
+        </button>
+        <button
+          type="button"
+          className={activeTab === "planets" ? "active" : undefined}
+          aria-pressed={activeTab === "planets"}
+          onClick={() => setActiveTab("planets")}
+        >
+          Planet Management
         </button>
       </div>
 
@@ -330,7 +556,7 @@ export function SystemPage({
             )}
           </div>
         </>
-      ) : (
+      ) : activeTab === "xpRewards" ? (
         <div className="command-panel wide">
           <div className="panel-header">
             <div>
@@ -343,7 +569,7 @@ export function SystemPage({
           </div>
 
           <p className="muted-copy">
-            Configure XP rewards by standardized TCW mission name. Enter a full mission name or a partial substring. These rows are not used for automatic XP awards yet.
+            Configure automatic player XP and global planet progress by standardized TCW mission name. Enter a full mission name or a partial substring.
           </p>
 
           {xpRewardTiers.status === "error" ? <p className="error-line">{xpRewardTiers.error}</p> : null}
@@ -366,6 +592,16 @@ export function SystemPage({
               placeholder="XP amount"
               aria-label="XP amount"
             />
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.001"
+              value={tierPlanetProgressPercent}
+              onChange={(event) => setTierPlanetProgressPercent(event.target.value)}
+              placeholder="Planet progress %"
+              aria-label="Planet progress percent"
+            />
             <button type="submit" disabled={createXpDisabled}>
               Add Tier
             </button>
@@ -377,6 +613,7 @@ export function SystemPage({
                 <tr>
                   <th>Mission Name Match</th>
                   <th>XP</th>
+                  <th>Global Planet Progress</th>
                   <th>Updated</th>
                   <th>Actions</th>
                 </tr>
@@ -414,6 +651,21 @@ export function SystemPage({
                             tier.xp_amount
                           )}
                         </td>
+                        <td>
+                          {isEditing && editingTier ? (
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.001"
+                              value={editingTier.planet_progress_percent}
+                              onChange={(event) => setEditingTier({ ...editingTier, planet_progress_percent: event.target.value })}
+                              aria-label="Edit planet progress percent"
+                            />
+                          ) : (
+                            Number(tier.planet_progress_percent).toFixed(3)
+                          )}
+                        </td>
                         <td>{formatDate(tier.updated_at)}</td>
                         <td className="table-actions">
                           {isEditing ? (
@@ -439,7 +691,184 @@ export function SystemPage({
                   })
                 ) : (
                   <tr>
-                    <td colSpan={4}>{xpRewardTiers.status === "loading" ? "Loading XP reward tiers." : "No XP reward tiers configured yet."}</td>
+                    <td colSpan={5}>{xpRewardTiers.status === "loading" ? "Loading XP reward tiers." : "No XP reward tiers configured yet."}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="command-panel wide">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Campaign progress</p>
+              <h2>Planet Management</h2>
+            </div>
+            <button type="button" onClick={onRefreshPlanets}>
+              Refresh
+            </button>
+          </div>
+
+          {planets.status === "error" ? <p className="error-line">{planets.error}</p> : null}
+          {planetError ? <p className="error-line">{planetError}</p> : null}
+
+          <form className="inline-form xp-tier-form" onSubmit={(event) => void submitPlanet(event)}>
+            <input value={planetSlug} onChange={(event) => setPlanetSlug(event.target.value)} placeholder="slug" aria-label="Planet slug" />
+            <input value={planetName} onChange={(event) => setPlanetName(event.target.value)} placeholder="Name" aria-label="Planet name" />
+            <input
+              value={planetDescription}
+              onChange={(event) => setPlanetDescription(event.target.value)}
+              placeholder="Description"
+              aria-label="Planet description"
+            />
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.001"
+              value={planetCompletionPercent}
+              onChange={(event) => setPlanetCompletionPercent(event.target.value)}
+              placeholder="Completion %"
+              aria-label="Planet completion percent"
+            />
+            <input
+              type="number"
+              step="1"
+              value={planetDisplayOrder}
+              onChange={(event) => setPlanetDisplayOrder(event.target.value)}
+              placeholder="Order"
+              aria-label="Planet display order"
+            />
+            <textarea
+              rows={2}
+              value={planetWorldFilters}
+              onChange={(event) => setPlanetWorldFilters(event.target.value)}
+              placeholder="World filters"
+              aria-label="Planet world filters"
+            />
+            <label className="checkbox-control">
+              <input type="checkbox" checked={planetActive} onChange={(event) => setPlanetActive(event.target.checked)} />
+              <span>Active</span>
+            </label>
+            <button type="submit" disabled={createPlanetDisabled}>
+              Add Planet
+            </button>
+          </form>
+
+          <div className="tactical-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Slug</th>
+                  <th>Completion</th>
+                  <th>World Filters</th>
+                  <th>Active</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {planets.status === "ready" && planets.data.planets.length > 0 ? (
+                  planets.data.planets.map((planet) => {
+                    const isEditing = editingPlanet?.id === planet.id;
+
+                    return (
+                      <tr key={planet.id}>
+                        <td>
+                          {isEditing && editingPlanet ? (
+                            <input
+                              value={editingPlanet.name}
+                              onChange={(event) => setEditingPlanet({ ...editingPlanet, name: event.target.value })}
+                              aria-label="Edit planet name"
+                            />
+                          ) : (
+                            planet.name
+                          )}
+                        </td>
+                        <td>
+                          {isEditing && editingPlanet ? (
+                            <input
+                              value={editingPlanet.slug}
+                              onChange={(event) => setEditingPlanet({ ...editingPlanet, slug: event.target.value })}
+                              aria-label="Edit planet slug"
+                            />
+                          ) : (
+                            planet.slug
+                          )}
+                        </td>
+                        <td>
+                          {isEditing && editingPlanet ? (
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.001"
+                              value={editingPlanet.completion_percent}
+                              onChange={(event) => setEditingPlanet({ ...editingPlanet, completion_percent: event.target.value })}
+                              aria-label="Edit completion percent"
+                            />
+                          ) : (
+                            Number(planet.completion_percent).toFixed(3)
+                          )}
+                        </td>
+                        <td>
+                          {isEditing && editingPlanet ? (
+                            <textarea
+                              rows={2}
+                              value={editingPlanet.world_name_matches}
+                              onChange={(event) => setEditingPlanet({ ...editingPlanet, world_name_matches: event.target.value })}
+                              aria-label="Edit planet world filters"
+                            />
+                          ) : planet.world_name_matches.length > 0 ? (
+                            planet.world_name_matches.join(", ")
+                          ) : (
+                            "None"
+                          )}
+                        </td>
+                        <td>
+                          {isEditing && editingPlanet ? (
+                            <label className="checkbox-control compact">
+                              <input
+                                type="checkbox"
+                                checked={editingPlanet.is_active}
+                                onChange={(event) => setEditingPlanet({ ...editingPlanet, is_active: event.target.checked })}
+                              />
+                              <span>{editingPlanet.is_active ? "active" : "inactive"}</span>
+                            </label>
+                          ) : planet.is_active ? (
+                            "active"
+                          ) : (
+                            "inactive"
+                          )}
+                        </td>
+                        <td>{formatDate(planet.updated_at)}</td>
+                        <td className="table-actions">
+                          {isEditing ? (
+                            <>
+                              <button type="button" className="secondary" onClick={() => void saveEditPlanet()} disabled={savePlanetDisabled}>
+                                Save
+                              </button>
+                              <button type="button" className="secondary" onClick={() => setEditingPlanet(null)}>
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button type="button" className="secondary" onClick={() => startEditPlanet(planet)}>
+                              Edit
+                            </button>
+                          )}
+                          <button type="button" className="danger" onClick={() => void deletePlanet(planet)}>
+                            Deactivate
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={7}>{planets.status === "loading" ? "Loading planets." : "No planets configured yet."}</td>
                   </tr>
                 )}
               </tbody>

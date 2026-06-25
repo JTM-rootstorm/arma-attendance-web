@@ -30,6 +30,7 @@ import { getUserUnitRoles } from "../auth/units.js";
 import { config } from "../config.js";
 import {
   DiscordAuthPolicyError,
+  getAuthGuilds,
   getDiscordDisplayNamePolicy,
   getLoginGrantGuildIds,
   getLoginGuildDisplayNameOrder
@@ -54,9 +55,10 @@ import { queryDb } from "../db/pool.js";
 import { playerDiscordLinks } from "../db/schema/discord.js";
 import { operations } from "../db/schema/operations.js";
 import { operationPlayers, players } from "../db/schema/players.js";
-import { unitPlayers, unitRanks, units } from "../db/schema/units.js";
+import { playerUnitPreferences, unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 import { canonicalizeDiscordLinkedPlayer, isDiscordPlaceholderUid } from "../identity/playerCanonicalization.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const discordStartQuerySchema = z.object({
   mode: z.enum(["cookie", "jwt"]).default("cookie"),
@@ -117,12 +119,22 @@ const selfPlayerBodySchema = z.object({
   display_name: z.string().trim().min(1).max(200)
 });
 
+const representedUnitBodySchema = z.object({
+  unit_id: z.string().uuid()
+});
+
+const discordRefreshBodySchema = z.object({
+  return_to: z.string().max(1000).optional()
+});
+
 type OAuthStateRow = {
   state: string;
   provider: "discord" | "steam";
   redirect_after: string | null;
   code_verifier: string | null;
   flow_mode: "cookie" | "jwt";
+  purpose: "login" | "discord_refresh";
+  user_id: string | null;
   expires_at: Date;
   consumed_at: Date | null;
 };
@@ -134,11 +146,23 @@ type AuthLinkTicketRow = {
 
 type DiscordTokenResponse = DiscordOAuthToken;
 
+type OAuthStateInsertResult = {
+  state: string;
+  expires_at: Date;
+};
+
 type DiscordProfile = {
   id: string;
   username?: string;
   global_name?: string | null;
   avatar?: string | null;
+};
+
+type DiscordFetchedMembership = {
+  guildId: string;
+  member: DiscordCurrentGuildMember | null;
+  fetched_live: boolean;
+  used_cache: boolean;
 };
 
 class DiscordTokenExchangeError extends Error {
@@ -180,8 +204,10 @@ type AuthUserProfileRow = {
 type LinkedPlayerRow = {
   player_uid: string;
   last_name: string | null;
+  xp_total: number;
   rank: string | null;
   roster_name: string | null;
+  represented_unit_id: string | null;
   first_seen_at: Date;
   last_seen_at: Date;
 };
@@ -210,6 +236,7 @@ type SelfUnitMembershipRow = {
   rank: string | null;
   roster_name: string | null;
   roster_status: string;
+  is_represented: boolean;
 };
 
 type SelfOperationRow = {
@@ -224,6 +251,7 @@ type SelfOperationRow = {
 };
 
 type SelfSummaryRow = {
+  xp_total: number;
   operation_count: number;
   present_at_start_count: number;
   present_at_end_count: number;
@@ -281,6 +309,16 @@ function sendConflict(reply: FastifyReply, message: string) {
     ok: false,
     error: {
       code: "identity_conflict",
+      message
+    }
+  });
+}
+
+function sendForbidden(reply: FastifyReply, message = "The authenticated user does not have permission for this action.") {
+  return reply.code(403).send({
+    ok: false,
+    error: {
+      code: "forbidden",
       message
     }
   });
@@ -464,12 +502,15 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
     .select({
       player_uid: players.playerUid,
       last_name: players.lastName,
+      xp_total: players.xpTotal,
       rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
       roster_name: unitPlayers.rosterName,
+      represented_unit_id: playerUnitPreferences.representedUnitId,
       first_seen_at: players.firstSeenAt,
       last_seen_at: players.lastSeenAt
     })
     .from(players)
+    .leftJoin(playerUnitPreferences, eq(playerUnitPreferences.playerUid, players.playerUid))
     .leftJoin(
       unitPlayers,
       and(eq(unitPlayers.playerUid, players.playerUid), eq(unitPlayers.isActive, true), ne(unitPlayers.rosterStatus, "inactive"))
@@ -485,7 +526,10 @@ async function findLinkedPlayer(user: CurrentUser): Promise<LinkedPlayerRow | nu
         )
       )
     )
-    .orderBy(desc(players.lastSeenAt))
+    .orderBy(
+      sql`CASE WHEN ${playerUnitPreferences.representedUnitId} = ${unitPlayers.unitId} THEN 0 ELSE 1 END`,
+      desc(players.lastSeenAt)
+    )
     .limit(1);
 
   return rows[0] ?? null;
@@ -500,11 +544,14 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
     SELECT
       p.player_uid,
       p.last_name,
+      p.xp_total,
       COALESCE(ur.name, up.rank) AS rank,
       up.roster_name,
+      pup.represented_unit_id,
       p.first_seen_at,
       p.last_seen_at
     FROM players p
+    LEFT JOIN player_unit_preferences pup ON pup.player_uid = p.player_uid
     LEFT JOIN unit_players up
       ON up.player_uid = p.player_uid
       AND up.is_active = true
@@ -516,7 +563,7 @@ async function findLinkedPlayerWithClient(client: DbTransaction, user: CurrentUs
         ($1::text IS NOT NULL AND p.player_uid = $1)
         OR ($2::text IS NOT NULL AND pdl.discord_user_id = $2)
       )
-    ORDER BY p.last_seen_at DESC
+    ORDER BY CASE WHEN pup.represented_unit_id = up.unit_id THEN 0 ELSE 1 END, p.last_seen_at DESC
     LIMIT 1
     `,
     [steamId, discordId]
@@ -615,6 +662,80 @@ async function updateSelfPlayerName(tx: DbTransaction, user: CurrentUser, displa
   };
 }
 
+async function updateSelfRepresentedUnit(
+  tx: DbTransaction,
+  user: CurrentUser,
+  unitId: string
+): Promise<(SelfUnitMembershipRow & { player_uid: string }) | "not_linked" | "not_member"> {
+  await ensureAuthenticatedUserRosterEntry(tx, user.id);
+  const player = await findLinkedPlayerWithClient(tx, user);
+
+  if (!player) {
+    return "not_linked";
+  }
+
+  const membershipResult = await tx.query<SelfUnitMembershipRow & { player_uid: string }>(
+    `
+    SELECT
+      up.player_uid,
+      u.id AS unit_id,
+      u.unit_key,
+      u.name,
+      u.display_name,
+      u.callsign,
+      COALESCE(ur.name, up.rank) AS rank,
+      up.roster_name,
+      up.roster_status,
+      true AS is_represented
+    FROM unit_players up
+    JOIN units u ON u.id = up.unit_id
+    LEFT JOIN unit_ranks ur ON ur.id = up.rank_id
+    WHERE up.unit_id = $2
+      AND up.is_active = true
+      AND up.roster_status <> 'inactive'
+      AND u.is_active = true
+      AND u.deleted_at IS NULL
+      AND (
+        up.player_uid = $1
+        OR EXISTS (
+          SELECT 1
+          FROM player_discord_links pdl
+          WHERE up.player_uid = ('discord:' || pdl.discord_user_id)
+            AND pdl.player_uid = $1
+        )
+      )
+    LIMIT 1
+    `,
+    [player.player_uid, unitId]
+  );
+  const membership = membershipResult.rows[0];
+
+  if (!membership) {
+    return "not_member";
+  }
+
+  await tx.query(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id, updated_by_user_id)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (player_uid) DO UPDATE
+    SET represented_unit_id = EXCLUDED.represented_unit_id,
+        updated_by_user_id = EXCLUDED.updated_by_user_id,
+        updated_at = now()
+    `,
+    [player.player_uid, unitId, user.id]
+  );
+  await tx.query(
+    `
+    INSERT INTO admin_audit_events (actor_user_id, actor_label, action, target_user_id, details)
+    VALUES ($1, 'self', 'update_represented_unit', $1, $2::jsonb)
+    `,
+    [user.id, JSON.stringify({ player_uid: player.player_uid, unit_id: unitId })]
+  );
+
+  return membership;
+}
+
 function requestUserAgent(request: FastifyRequest): string | null {
   const userAgent = request.headers["user-agent"];
   return Array.isArray(userAgent) ? (userAgent[0] ?? null) : (userAgent ?? null);
@@ -696,19 +817,27 @@ async function insertOAuthState(
   provider: "discord" | "steam",
   redirectAfter: string | null,
   codeVerifier: string | null,
-  flowMode: "cookie" | "jwt" = "cookie"
-) {
+  flowMode: "cookie" | "jwt" = "cookie",
+  purpose: "login" | "discord_refresh" = "login",
+  userId: string | null = null
+): Promise<OAuthStateInsertResult> {
   const state = randomState();
 
-  await queryDb(
+  const result = await queryDb<{ expires_at: Date }>(
     `
-    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
-    VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, purpose, user_id, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, now() + interval '10 minutes')
+    RETURNING expires_at
     `,
-    [state, provider, redirectAfter, codeVerifier, flowMode]
+    [state, provider, redirectAfter, codeVerifier, flowMode, purpose, userId]
   );
 
-  return state;
+  const expiresAt = result.rows[0]?.expires_at;
+  if (!expiresAt) {
+    throw new Error("OAuth state insert returned no expiration.");
+  }
+
+  return { state, expires_at: expiresAt };
 }
 
 async function insertOAuthStateWithClient(
@@ -716,24 +845,38 @@ async function insertOAuthStateWithClient(
   provider: "discord" | "steam",
   redirectAfter: string | null,
   codeVerifier: string | null,
-  flowMode: "cookie" | "jwt" = "cookie"
-) {
+  flowMode: "cookie" | "jwt" = "cookie",
+  purpose: "login" | "discord_refresh" = "login",
+  userId: string | null = null
+): Promise<OAuthStateInsertResult> {
   const state = randomState();
 
-  await tx.query(
+  const result = await tx.query<{ expires_at: Date }>(
     `
-    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, expires_at)
-    VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
+    INSERT INTO oauth_states (state, provider, redirect_after, code_verifier, flow_mode, purpose, user_id, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, now() + interval '10 minutes')
+    RETURNING expires_at
     `,
-    [state, provider, redirectAfter, codeVerifier, flowMode]
+    [state, provider, redirectAfter, codeVerifier, flowMode, purpose, userId]
   );
 
-  return state;
+  const expiresAt = result.rows[0]?.expires_at;
+  if (!expiresAt) {
+    throw new Error("OAuth state insert returned no expiration.");
+  }
+
+  return { state, expires_at: expiresAt };
 }
 
 function appendAuthHandoff(returnTo: string, handoffCode: string): string {
   const redirectUrl = new URL(returnTo, config.publicBaseUrl);
   redirectUrl.searchParams.set("auth_handoff", handoffCode);
+  return redirectUrl.toString();
+}
+
+function appendQueryFlag(returnTo: string, key: string, value: string): string {
+  const redirectUrl = new URL(returnTo, config.publicBaseUrl);
+  redirectUrl.searchParams.set(key, value);
   return redirectUrl.toString();
 }
 
@@ -873,31 +1016,56 @@ async function fetchDiscordLoginGuildMemberships(
   discordUserId: string,
   request: FastifyRequest
 ): Promise<Array<{ guildId: string; member: DiscordCurrentGuildMember }>> {
+  return (await fetchDiscordConfiguredGuildMemberships(token, discordUserId, request, "login"))
+    .filter((membership): membership is DiscordFetchedMembership & { member: DiscordCurrentGuildMember } => membership.member !== null)
+    .map((membership) => ({ guildId: membership.guildId, member: membership.member }));
+}
+
+async function getRefreshGuildIds(): Promise<string[]> {
+  const policyGuildIds = getAuthGuilds()
+    .filter((guild) => guild.grantsLogin || guild.syncMembers)
+    .map((guild) => guild.guildId);
+  const mappedGuilds = await queryDb<{ guild_id: string }>(
+    `
+    SELECT DISTINCT guild_id
+    FROM discord_role_mappings
+    WHERE is_enabled = true
+    `
+  );
+
+  return Array.from(new Set([...policyGuildIds, ...mappedGuilds.rows.map((row) => row.guild_id)]));
+}
+
+async function fetchDiscordConfiguredGuildMemberships(
+  token: DiscordTokenResponse,
+  discordUserId: string,
+  request: FastifyRequest,
+  purpose: "login" | "refresh"
+): Promise<DiscordFetchedMembership[]> {
   if (!config.discordAuthEnabled) {
     return [];
   }
 
-  const guildIds = getLoginGrantGuildIds();
+  const guildIds = purpose === "refresh" ? await getRefreshGuildIds() : getLoginGrantGuildIds();
 
   if (guildIds.length === 0) {
-    if (config.discordAuthRequireGuild) {
+    if (purpose === "login" && config.discordAuthRequireGuild) {
       throw new DiscordAuthPolicyError("No Discord login guilds are configured.");
     }
 
     return [];
   }
 
-  const memberships: Array<{ guildId: string; member: DiscordCurrentGuildMember }> = [];
-
-  for (const guildId of guildIds) {
+  const memberships = await mapWithConcurrency(guildIds, config.discordFetchConcurrency, async (guildId) => {
     try {
       const member = await fetchCurrentUserGuildMemberWithRetry(token, guildId);
-
-      if (member) {
-        memberships.push({ guildId, member });
-      }
+      return { guildId, member, fetched_live: true, used_cache: false };
     } catch (error) {
       if (error instanceof DiscordRateLimitError) {
+        if (purpose === "refresh") {
+          throw error;
+        }
+
         const cachedMember = await getCachedDiscordGuildMember(discordUserId, guildId);
 
         if (cachedMember) {
@@ -905,8 +1073,7 @@ async function fetchDiscordLoginGuildMemberships(
             { guildId, retryAfterSeconds: error.retryAfterSeconds },
             "Using cached Discord membership snapshot after rate limit"
           );
-          memberships.push({ guildId, member: cachedMember });
-          continue;
+          return { guildId, member: cachedMember, fetched_live: false, used_cache: true };
         }
       }
 
@@ -916,9 +1083,38 @@ async function fetchDiscordLoginGuildMemberships(
 
       throw new DiscordMembershipFetchError(error instanceof Error ? error.message : "Discord membership fetch failed.");
     }
-  }
+  });
+
+  request.log.debug(
+    {
+      guildsChecked: memberships.length,
+      membershipsPresent: memberships.filter((membership) => membership.member !== null).length,
+      membershipsAbsent: memberships.filter((membership) => membership.member === null).length,
+      fetchConcurrency: config.discordFetchConcurrency,
+      purpose
+    },
+    "Fetched configured Discord guild memberships"
+  );
 
   return memberships;
+}
+
+async function upsertDiscordMemberAbsence(input: {
+  guildId: string;
+  discordUserId: string;
+  userId: string;
+  source: "oauth_refresh_absent";
+}): Promise<void> {
+  await upsertDiscordMemberSnapshot({
+    guildId: input.guildId,
+    discordUserId: input.discordUserId,
+    userId: input.userId,
+    roles: [],
+    nick: null,
+    joinedAt: null,
+    rawMember: { absent: true, source: input.source },
+    source: input.source
+  });
 }
 
 function sendDiscordGuildMembershipRequired(reply: FastifyReply) {
@@ -1001,6 +1197,81 @@ async function upsertDiscordUser(
 
   await ensureAuthenticatedUserRosterEntry(tx, userId);
   return userId;
+}
+
+async function refreshDiscordSnapshotsAndAssignments(input: {
+  userId: string;
+  profile: DiscordProfile;
+  token: DiscordTokenResponse;
+  request: FastifyRequest;
+  source: "oauth_login" | "oauth_refresh";
+  purpose: "login" | "refresh";
+  memberships?: Array<{ guildId: string; member: DiscordCurrentGuildMember }>;
+  fetchedMemberships?: DiscordFetchedMembership[];
+}): Promise<{
+  memberships_checked: number;
+  memberships_present: number;
+  memberships_absent: number;
+  reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null;
+}> {
+  const fetched =
+    input.fetchedMemberships ?? input.memberships?.map((membership) => ({
+      guildId: membership.guildId,
+      member: membership.member,
+      fetched_live: true,
+      used_cache: false
+    })) ?? (await fetchDiscordConfiguredGuildMemberships(input.token, input.profile.id, input.request, input.purpose));
+
+  let present = 0;
+  let absent = 0;
+  let reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null = null;
+
+  await mapWithConcurrency(fetched, config.asyncDbReadConcurrency, async (membership) => {
+    if (membership.member) {
+      present += 1;
+      await upsertDiscordMemberSnapshot({
+        guildId: membership.guildId,
+        discordUserId: input.profile.id,
+        userId: input.userId,
+        roles: membership.member.roles,
+        nick: membership.member.nick ?? null,
+        joinedAt: membership.member.joined_at ?? null,
+        rawMember: {
+          ...(membership.member as unknown as Record<string, unknown>),
+          fetched_live: membership.fetched_live,
+          used_cache: membership.used_cache
+        },
+        source: input.source
+      });
+      return;
+    }
+
+    if (input.purpose === "refresh") {
+      absent += 1;
+      await upsertDiscordMemberAbsence({
+        guildId: membership.guildId,
+        discordUserId: input.profile.id,
+        userId: input.userId,
+        source: "oauth_refresh_absent"
+      });
+    }
+  });
+
+  if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
+    reconciliation = await reconcileDiscordMembership({
+      userId: input.userId,
+      discordUserId: input.profile.id,
+      dryRun: false,
+      source: input.source
+    });
+  }
+
+  return {
+    memberships_checked: fetched.length,
+    memberships_present: present,
+    memberships_absent: absent,
+    reconciliation
+  };
 }
 
 function getAuthPlayerUid(identity: AuthIdentityRow): string {
@@ -1148,6 +1419,14 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
       updated_at = now()
     `,
     [unitId, playerUid, displayName]
+  );
+  await tx.query(
+    `
+    INSERT INTO player_unit_preferences (player_uid, represented_unit_id)
+    VALUES ($1, $2)
+    ON CONFLICT (player_uid) DO NOTHING
+    `,
+    [playerUid, unitId]
   );
 
   const discordIdentity = identities.find((identity) => identity.provider === "discord");
@@ -1323,7 +1602,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     try {
-      const state = await insertOAuthState(
+      const oauthState = await insertOAuthState(
         "discord",
         getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after),
         null,
@@ -1334,7 +1613,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
       authorizeUrl.searchParams.set("response_type", "code");
       authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
-      authorizeUrl.searchParams.set("state", state);
+      authorizeUrl.searchParams.set("state", oauthState.state);
 
       return reply.redirect(authorizeUrl.toString());
     } catch (error) {
@@ -1359,6 +1638,68 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const token = await exchangeDiscordCode(parsedQuery.data.code);
       const profile = await fetchDiscordProfile(token);
+
+      if (state.purpose === "discord_refresh") {
+        const returnTo = getSafeReturnTo(state.redirect_after);
+
+        if (!state.user_id) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "invalid_state"));
+        }
+
+        const user = await loadCurrentUserById(state.user_id);
+        const linkedDiscordIdentity = user?.identities.find((identity) => identity.provider === "discord") ?? null;
+
+        if (!user || !linkedDiscordIdentity) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "discord_identity_missing"));
+        }
+
+        if (linkedDiscordIdentity.provider_user_id !== profile.id) {
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "identity_mismatch"));
+        }
+
+        try {
+          const fetchedMemberships = await fetchDiscordConfiguredGuildMemberships(token, profile.id, request, "refresh");
+          const presentMemberships = fetchedMemberships
+            .filter((membership): membership is DiscordFetchedMembership & { member: DiscordCurrentGuildMember } => membership.member !== null)
+            .map((membership) => ({ guildId: membership.guildId, member: membership.member }));
+          const preferredName = choosePreferredDiscordDisplayName({
+            profile,
+            memberships: presentMemberships,
+            policy: getDiscordDisplayNamePolicy(),
+            guildOrder: getLoginGuildDisplayNameOrder()
+          });
+          const userId = await withDbTransaction(async (tx) => upsertDiscordUser(tx, profile, preferredName));
+
+          if (userId !== state.user_id) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "identity_mismatch"));
+          }
+
+          await refreshDiscordSnapshotsAndAssignments({
+            userId,
+            profile,
+            token,
+            request,
+            source: "oauth_refresh",
+            purpose: "refresh",
+            fetchedMemberships: fetchedMemberships
+          });
+
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refreshed", "1"));
+        } catch (error) {
+          request.log.error({ err: error }, "Discord refresh callback failed");
+
+          if (error instanceof DiscordRateLimitError) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "rate_limited"));
+          }
+
+          if (error instanceof DiscordMembershipFetchError) {
+            return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "membership_fetch_failed"));
+          }
+
+          return reply.redirect(appendQueryFlag(returnTo, "discord_refresh_error", "refresh_failed"));
+        }
+      }
+
       const memberships = await fetchDiscordLoginGuildMemberships(token, profile.id, request);
       const preferredName = choosePreferredDiscordDisplayName({
         profile,
@@ -1386,28 +1727,22 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         return nextUserId;
       });
 
-      for (const membership of memberships) {
-        await upsertDiscordMemberSnapshot({
-          guildId: membership.guildId,
-          discordUserId: profile.id,
+      if (config.discordAuthEnabled) {
+        const refreshResult = await refreshDiscordSnapshotsAndAssignments({
           userId,
-          roles: membership.member.roles,
-          nick: membership.member.nick ?? null,
-          joinedAt: membership.member.joined_at ?? null,
-          rawMember: membership.member as unknown as Record<string, unknown>,
-          source: "oauth_login"
-        });
-      }
-
-      if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
-        const reconciliation = await reconcileDiscordMembership({
-          userId,
-          discordUserId: profile.id,
-          dryRun: false,
-          source: "oauth_login"
+          profile,
+          token,
+          request,
+          source: "oauth_login",
+          purpose: "login",
+          memberships
         });
 
-        if (reconciliation.denied) {
+        if (config.discordAuthReconcileOnLogin && refreshResult.reconciliation?.denied) {
+          return sendDiscordGuildMembershipRequired(reply);
+        }
+
+        if (refreshResult.memberships_present === 0 && config.discordAuthRequireGuild) {
           return sendDiscordGuildMembershipRequired(reply);
         }
       }
@@ -1473,6 +1808,64 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       }
 
       return sendProviderFailure(reply);
+    }
+  });
+
+  app.post("/v1/me/discord/refresh", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = discordRefreshBodySchema.safeParse(request.body ?? {});
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    const discordIdentity = user.identities.find((identity) => identity.provider === "discord");
+
+    if (!discordIdentity) {
+      return reply.code(409).send({
+        ok: false,
+        error: {
+          code: "discord_identity_missing",
+          message: "Link Discord before refreshing Discord roles."
+        }
+      });
+    }
+
+    if (!config.discordClientId || !config.discordRedirectUri) {
+      return sendAuthUnavailable(reply, "Discord OAuth is not configured.");
+    }
+
+    try {
+      const flowMode = user.session_id === "jwt" ? "jwt" : "cookie";
+      const oauthState = await insertOAuthState(
+        "discord",
+        getSafeReturnTo(parsedBody.data.return_to),
+        null,
+        flowMode,
+        "discord_refresh",
+        user.id
+      );
+      const authorizeUrl = new URL("https://discord.com/api/oauth2/authorize");
+      authorizeUrl.searchParams.set("client_id", config.discordClientId);
+      authorizeUrl.searchParams.set("redirect_uri", config.discordRedirectUri);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("scope", config.discordAuthEnabled ? "identify guilds.members.read" : "identify");
+      authorizeUrl.searchParams.set("state", oauthState.state);
+
+      return {
+        ok: true,
+        mode: flowMode,
+        discord_refresh_url: authorizeUrl.toString(),
+        expires_at: oauthState.expires_at
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Discord refresh OAuth");
+      return sendAuthUnavailable(reply);
     }
   });
 
@@ -1662,6 +2055,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         `
         SELECT
           COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          $2::int AS xp_total,
           COUNT(*) FILTER (WHERE op.present_at_start = true)::int AS present_at_start_count,
           COUNT(*) FILTER (WHERE op.present_at_end = true)::int AS present_at_end_count,
           COALESCE(SUM(ops.infantry_kills), 0)::int AS infantry_kills,
@@ -1679,10 +2073,11 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           AND ops.player_uid = op.player_uid
         WHERE op.player_uid = $1
         `,
-        [player.player_uid]
+        [player.player_uid, player.xp_total]
       );
 
       const summary = summaryResult.rows[0] ?? {
+        xp_total: player.xp_total,
         operation_count: 0,
         present_at_start_count: 0,
         present_at_end_count: 0,
@@ -1705,11 +2100,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           callsign: units.callsign,
           rank: sql<string | null>`COALESCE(${unitRanks.name}, ${unitPlayers.rank})`,
           roster_name: unitPlayers.rosterName,
-          roster_status: unitPlayers.rosterStatus
+          roster_status: unitPlayers.rosterStatus,
+          is_represented: sql<boolean>`COALESCE(${playerUnitPreferences.representedUnitId} = ${unitPlayers.unitId}, false)`
         })
         .from(unitPlayers)
         .innerJoin(units, eq(units.id, unitPlayers.unitId))
         .leftJoin(unitRanks, eq(unitRanks.id, unitPlayers.rankId))
+        .leftJoin(playerUnitPreferences, eq(playerUnitPreferences.playerUid, unitPlayers.playerUid))
         .where(
           and(
             eq(unitPlayers.playerUid, player.player_uid),
@@ -1726,7 +2123,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         link_state: linkState,
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
+          xp_total: player.xp_total,
           rank: membershipRows[0]?.rank ?? player.rank,
+          represented_unit_id: membershipRows.find((membership) => membership.is_represented)?.unit_id ?? null,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         },
@@ -1737,7 +2136,8 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           callsign: membership.callsign,
           rank: membership.rank,
           roster_name: membership.roster_name,
-          roster_status: membership.roster_status
+          roster_status: membership.roster_status,
+          is_represented: membership.is_represented
         })),
         summary,
         scoreboard_totals: {
@@ -1788,12 +2188,64 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         linked_player: {
           display_name: player.roster_name ?? player.last_name,
           rank: player.rank,
+          represented_unit_id: player.represented_unit_id,
           first_seen_at: player.first_seen_at,
           last_seen_at: player.last_seen_at
         }
       };
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update self player");
+      return reply.code(503).send({
+        ok: false,
+        error: { code: "database_unavailable", message: "Database is not available." }
+      });
+    }
+  });
+
+  app.patch("/v1/me/player/represented-unit", async (request, reply) => {
+    const user = await requireUser(request, reply);
+
+    if (!user) {
+      return;
+    }
+
+    const parsedBody = representedUnitBodySchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      return sendValidationFailed(reply);
+    }
+
+    try {
+      const membership = await withDbTransaction((tx) => updateSelfRepresentedUnit(tx, user, parsedBody.data.unit_id));
+
+      if (membership === "not_linked") {
+        return reply.code(404).send({
+          ok: false,
+          error: {
+            code: "player_not_found",
+            message: "Player was not found."
+          }
+        });
+      }
+
+      if (membership === "not_member") {
+        return sendForbidden(reply, "You can only represent an active battalion membership.");
+      }
+
+      return {
+        ok: true,
+        represented_unit: {
+          unit_id: membership.unit_id,
+          unit_key: membership.unit_key,
+          name: membership.display_name ?? membership.name,
+          callsign: membership.callsign,
+          rank: membership.rank,
+          roster_name: membership.roster_name,
+          roster_status: membership.roster_status
+        }
+      };
+    } catch (error) {
+      request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to update represented unit");
       return reply.code(503).send({
         ok: false,
         error: { code: "database_unavailable", message: "Database is not available." }
@@ -2037,7 +2489,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     }
 
     const state = await insertOAuthState("steam", getSafeReturnTo(parsedQuery.data.return_to ?? parsedQuery.data.redirect_after), user.id);
-    return reply.redirect(steamOpenIdUrl(state));
+    return reply.redirect(steamOpenIdUrl(state.state));
   });
 
   app.post("/auth/steam/link-ticket", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -2104,7 +2556,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         });
       }
 
-      return reply.redirect(steamOpenIdUrl(state));
+      return reply.redirect(steamOpenIdUrl(state.state));
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start Steam ticket link");
       return reply.code(503).send({

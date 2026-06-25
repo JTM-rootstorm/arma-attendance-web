@@ -35,7 +35,8 @@ export function IdentityPage({
   onLoginDiscord,
   onLogout,
   onRefreshMe,
-  onRefreshAdminUsers
+  onRefreshAdminUsers,
+  onAdminUsersPageChange
 }: {
   me: ApiResult<MeResponse>;
   adminUsers: ApiResult<AdminUsersResponse>;
@@ -43,12 +44,19 @@ export function IdentityPage({
   onLogout: () => void;
   onRefreshMe: () => void;
   onRefreshAdminUsers: () => void;
+  onAdminUsersPageChange: (offset: number) => void;
 }) {
   const currentUser = me.status === "ready" ? me.data.user : null;
   const users = adminUsers.status === "ready" ? adminUsers.data.users : [];
   const steamIdentity = currentUser?.identities.find((identity) => identity.provider === "steam") ?? null;
   const discordIdentity = currentUser?.identities.find((identity) => identity.provider === "discord") ?? null;
   const canAdmin = hasAdminRole(currentUser);
+  const adminPagination = adminUsers.status === "ready" ? adminUsers.data.pagination : null;
+  const adminOffset = adminPagination?.offset ?? 0;
+  const adminLimit = adminPagination?.limit ?? 50;
+  const adminTotal = adminPagination?.total ?? users.length;
+  const canPageBack = adminOffset > 0;
+  const canPageForward = adminOffset + users.length < adminTotal;
   const [selectedUserId, setSelectedUserId] = useState("");
   const [selectedRole, setSelectedRole] = useState<(typeof manageableRoles)[number]>("viewer");
   const [message, setMessage] = useState("");
@@ -161,6 +169,31 @@ export function IdentityPage({
       {canAdmin ? (
         <CommandPanel title="Admin Users" eyebrow="Role management" wide actions={<button type="button" onClick={onRefreshAdminUsers}>Refresh</button>}>
           <DataMessage result={adminUsers} />
+          {adminPagination ? (
+            <div className="pagination-bar">
+              <span>
+                {adminTotal === 0 ? "0 users" : `${adminOffset + 1}-${adminOffset + users.length} of ${adminTotal}`}
+              </span>
+              <div className="table-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!canPageBack}
+                  onClick={() => onAdminUsersPageChange(Math.max(0, adminOffset - adminLimit))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!canPageForward}
+                  onClick={() => onAdminUsersPageChange(adminOffset + adminLimit)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
           <form className="filters identity-role-form" onSubmit={(event) => void mutateRole(event, "grant")}>
             <select value={selectedUser?.id ?? ""} onChange={(event) => setSelectedUserId(event.target.value)} aria-label="Admin user">
               {users.map((user) => (

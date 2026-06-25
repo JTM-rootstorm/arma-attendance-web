@@ -58,6 +58,8 @@ export const oauthStates = pgTable("oauth_states", {
   redirectAfter: text("redirect_after"),
   codeVerifier: text("code_verifier"),
   flowMode: text("flow_mode").notNull().default("cookie"),
+  purpose: text("purpose").notNull().default("login"),
+  userId: uuid("user_id").references(() => appUsers.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   consumedAt: timestamp("consumed_at", { withTimezone: true })

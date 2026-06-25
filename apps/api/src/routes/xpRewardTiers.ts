@@ -8,6 +8,8 @@ import { getSafeDbErrorDetails } from "../db/errors.js";
 import { adminAuditEvents } from "../db/schema/auth.js";
 import { xpRewardTiers } from "../db/schema/xpRewardTiers.js";
 
+const planetProgressPercentPattern = /^(?:100(?:\.000)?|(?:\d|[1-9]\d)(?:\.\d{1,3})?)$/;
+
 const tierParamsSchema = z.object({
   tier_id: z.string().uuid()
 });
@@ -17,22 +19,44 @@ const listXpRewardTiersQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0)
 });
 
+const planetProgressPercentSchema = z.union([z.string(), z.number()]).transform((value, ctx) => {
+  const raw = typeof value === "number" ? value.toFixed(3) : value.trim();
+
+  if (!planetProgressPercentPattern.test(raw)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Expected a percentage from 0.000 through 100.000."
+    });
+    return z.NEVER;
+  }
+
+  return Number(raw).toFixed(3);
+});
+
 const createXpRewardTierSchema = z.object({
   mission_name_match: z.string().trim().min(1).max(200),
-  xp_amount: z.coerce.number().int().min(1).max(1_000_000)
+  xp_amount: z.coerce.number().int().min(1).max(1_000_000),
+  planet_progress_percent: planetProgressPercentSchema.default("0.000")
 });
 
 const updateXpRewardTierSchema = z
   .object({
     mission_name_match: z.string().trim().min(1).max(200).optional(),
-    xp_amount: z.coerce.number().int().min(1).max(1_000_000).optional()
+    xp_amount: z.coerce.number().int().min(1).max(1_000_000).optional(),
+    planet_progress_percent: planetProgressPercentSchema.optional()
   })
-  .refine((value) => value.mission_name_match !== undefined || value.xp_amount !== undefined);
+  .refine(
+    (value) =>
+      value.mission_name_match !== undefined ||
+      value.xp_amount !== undefined ||
+      value.planet_progress_percent !== undefined
+  );
 
 type XpRewardTierRow = {
   id: string;
   mission_name_match: string;
   xp_amount: number;
+  planet_progress_percent: string;
   created_at: Date;
   updated_at: Date;
 };
@@ -84,16 +108,18 @@ function serializeXpRewardTier(row: XpRewardTierRow) {
     id: row.id,
     mission_name_match: row.mission_name_match,
     xp_amount: row.xp_amount,
+    planet_progress_percent: Number(row.planet_progress_percent).toFixed(3),
     created_at: row.created_at,
     updated_at: row.updated_at
   };
 }
 
-function tierReturningColumns() {
+function tierBaseReturningColumns() {
   return {
     id: xpRewardTiers.id,
     mission_name_match: xpRewardTiers.missionNameMatch,
     xp_amount: xpRewardTiers.xpAmount,
+    planet_progress_percent: xpRewardTiers.planetProgressPercent,
     created_at: xpRewardTiers.createdAt,
     updated_at: xpRewardTiers.updatedAt
   };
@@ -110,7 +136,7 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
     try {
       const db = getDrizzleDb();
       const rows = await db
-        .select(tierReturningColumns())
+        .select(tierBaseReturningColumns())
         .from(xpRewardTiers)
         .orderBy(asc(xpRewardTiers.missionNameMatch), desc(xpRewardTiers.createdAt))
         .limit(parsedQuery.data.limit)
@@ -152,9 +178,10 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
           .values({
             missionNameMatch: parsedBody.data.mission_name_match,
             xpAmount: parsedBody.data.xp_amount,
+            planetProgressPercent: parsedBody.data.planet_progress_percent,
             createdByUserId: actor.id
           })
-          .returning(tierReturningColumns());
+          .returning(tierBaseReturningColumns());
 
         if (!row) {
           throw new Error("XP reward tier insert returned no rows.");
@@ -167,7 +194,8 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
           details: {
             tier_id: row.id,
             mission_name_match: row.mission_name_match,
-            xp_amount: row.xp_amount
+            xp_amount: row.xp_amount,
+            planet_progress_percent: row.planet_progress_percent
           }
         });
 
@@ -205,6 +233,7 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
         const updateValues: {
           missionNameMatch?: string;
           xpAmount?: number;
+          planetProgressPercent?: string;
           updatedAt: Date | ReturnType<typeof sql>;
         } = {
           updatedAt: sql`now()`
@@ -218,11 +247,15 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
           updateValues.xpAmount = parsedBody.data.xp_amount;
         }
 
+        if (parsedBody.data.planet_progress_percent !== undefined) {
+          updateValues.planetProgressPercent = parsedBody.data.planet_progress_percent;
+        }
+
         const [row] = await tx
           .update(xpRewardTiers)
           .set(updateValues)
           .where(eq(xpRewardTiers.id, parsedParams.data.tier_id))
-          .returning(tierReturningColumns());
+          .returning(tierBaseReturningColumns());
 
         if (!row) {
           return null;
@@ -235,7 +268,8 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
           details: {
             tier_id: row.id,
             mission_name_match: row.mission_name_match,
-            xp_amount: row.xp_amount
+            xp_amount: row.xp_amount,
+            planet_progress_percent: row.planet_progress_percent
           }
         });
 
@@ -279,7 +313,17 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
     try {
       const db = getDrizzleDb();
       const tier = await db.transaction(async (tx) => {
-        const [row] = await tx.delete(xpRewardTiers).where(eq(xpRewardTiers.id, parsedParams.data.tier_id)).returning(tierReturningColumns());
+        const [selectedRow] = await tx
+          .select(tierBaseReturningColumns())
+          .from(xpRewardTiers)
+          .where(eq(xpRewardTiers.id, parsedParams.data.tier_id))
+          .limit(1);
+
+        if (!selectedRow) {
+          return null;
+        }
+
+        const [row] = await tx.delete(xpRewardTiers).where(eq(xpRewardTiers.id, parsedParams.data.tier_id)).returning(tierBaseReturningColumns());
 
         if (!row) {
           return null;
@@ -292,11 +336,12 @@ export async function registerXpRewardTierRoutes(app: FastifyInstance) {
           details: {
             tier_id: row.id,
             mission_name_match: row.mission_name_match,
-            xp_amount: row.xp_amount
+            xp_amount: row.xp_amount,
+            planet_progress_percent: row.planet_progress_percent
           }
         });
 
-        return row;
+        return selectedRow;
       });
 
       if (!tier) {

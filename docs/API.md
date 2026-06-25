@@ -128,12 +128,21 @@ POST /auth/jwt/refresh
 POST /auth/jwt/logout
 GET  /v1/me
 GET  /v1/me/player
+PATCH /v1/me/player
+PATCH /v1/me/player/represented-unit
+POST /v1/me/discord/refresh
 GET  /v1/me/operations
 GET  /v1/me/operations/:operation_id
 DELETE /v1/me/identities/steam
 ```
 
 See [`docs/auth/JWT_AUTH.md`](auth/JWT_AUTH.md) for JWT handoff details.
+
+`PATCH /v1/me/player` lets an authenticated player update their linked player display name with `display_name`. Session-cookie requests must include a valid CSRF token when `CSRF_ENABLED=true`; JWT bearer requests use the normal authenticated API flow.
+
+`PATCH /v1/me/player/represented-unit` lets an authenticated player select which active battalion membership they represent with `unit_id`. New operation-player unit attribution is snapshotted from that selection when operation attendance is ingested, so later representation changes do not move older operation stats.
+
+`POST /v1/me/discord/refresh` starts a user-initiated Discord OAuth refresh for the currently authenticated user. It accepts optional `return_to`, returns `discord_refresh_url` and `expires_at`, and never stores Discord OAuth tokens. The callback verifies that the Discord account still matches the linked identity, refreshes configured guild membership snapshots including absences, reconciles Discord-derived unit memberships, and redirects back with `discord_refreshed=1` or `discord_refresh_error=<code>`.
 
 ## Admin and system
 

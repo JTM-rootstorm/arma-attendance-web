@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { eq, sql } from "drizzle-orm";
 
-import { reconcileDiscordMembership } from "../../discord/membershipResolver.js";
-import { getDrizzleDb } from "../../db/drizzle.js";
+import { reconcileDiscordUsersWithConcurrency } from "../../discord/membershipResolver.js";
 import { getSafeDbErrorDetails } from "../../db/errors.js";
 import { queryDb } from "../../db/pool.js";
-import { discordGuilds, discordMemberSnapshots } from "../../db/schema/discord.js";
+import { withDbTransaction } from "../../db/transactions.js";
 import { sendDatabaseUnavailable, sendValidationFailed } from "../../http/responses.js";
 import { guildExists, guildParamsSchema, memberSnapshotBodySchema, memberSnapshotQuerySchema, requireAnyDiscordAdmin } from "./shared.js";
+
+const memberSnapshotChunkSize = 250;
 
 export async function registerDiscordMemberSnapshotRoutes(app: FastifyInstance) {
   app.get("/v1/discord/guilds/:guild_id/member-snapshots", async (request, reply) => {
@@ -76,56 +76,90 @@ export async function registerDiscordMemberSnapshotRoutes(app: FastifyInstance) 
       }
 
       const members = parsedBody.data.members;
-      const db = getDrizzleDb();
+      await withDbTransaction(async (tx) => {
+        for (let offset = 0; offset < members.length; offset += memberSnapshotChunkSize) {
+          const chunk = members.slice(offset, offset + memberSnapshotChunkSize).map((member) => ({
+            discord_user_id: member.discord_user_id,
+            roles: member.roles,
+            nick: member.nick ?? null,
+            joined_at: member.joined_at ?? null,
+            raw_member: member.raw_member ?? member
+          }));
 
-      await db.transaction(async (tx) => {
-        for (const member of members) {
-          await tx
-            .insert(discordMemberSnapshots)
-            .values({
-              guildId,
-              discordUserId: member.discord_user_id,
-              roleIds: member.roles,
-              nick: member.nick ?? null,
-              joinedAt: member.joined_at ? new Date(member.joined_at) : null,
-              memberPayload: member.raw_member ?? member,
-              source: "bot_snapshot",
-              lastSeenAt: sql`now()`
-            })
-            .onConflictDoUpdate({
-              target: [discordMemberSnapshots.guildId, discordMemberSnapshots.discordUserId],
-              set: {
-                userId: sql`COALESCE(excluded.user_id, ${discordMemberSnapshots.userId}, (SELECT user_id FROM user_identities WHERE provider = 'discord' AND provider_user_id = excluded.discord_user_id ORDER BY last_seen_at DESC LIMIT 1))`,
-                roleIds: sql`excluded.role_ids`,
-                nick: sql`excluded.nick`,
-                joinedAt: sql`excluded.joined_at`,
-                memberPayload: sql`excluded.member_payload`,
-                source: sql`excluded.source`,
-                lastSeenAt: sql`now()`,
-                lastError: null,
-                updatedAt: sql`now()`
-              }
-            });
-        }
-
-        await tx
-          .update(discordGuilds)
-          .set({ lastMemberSyncAt: sql`now()`, updatedAt: sql`now()` })
-          .where(eq(discordGuilds.guildId, guildId));
-      });
-
-      const reconciled = [];
-      if (parsedBody.data.reconcile) {
-        for (const discordUserId of new Set(members.map((member) => member.discord_user_id))) {
-          reconciled.push(
-            await reconcileDiscordMembership({
-              discordUserId,
-              dryRun: false,
-              source: "bot_snapshot"
-            })
+          await tx.query(
+            `
+            WITH incoming AS (
+              SELECT *
+              FROM jsonb_to_recordset($2::jsonb) AS member(
+                discord_user_id text,
+                roles jsonb,
+                nick text,
+                joined_at timestamptz,
+                raw_member jsonb
+              )
+            )
+            INSERT INTO discord_member_snapshots (
+              guild_id,
+              discord_user_id,
+              role_ids,
+              nick,
+              joined_at,
+              member_payload,
+              source,
+              last_seen_at
+            )
+            SELECT
+              $1,
+              incoming.discord_user_id,
+              COALESCE(incoming.roles, '[]'::jsonb),
+              incoming.nick,
+              incoming.joined_at,
+              COALESCE(incoming.raw_member, '{}'::jsonb),
+              'bot_snapshot',
+              now()
+            FROM incoming
+            ON CONFLICT (guild_id, discord_user_id) DO UPDATE SET
+              user_id = COALESCE(
+                excluded.user_id,
+                discord_member_snapshots.user_id,
+                (
+                  SELECT user_id
+                  FROM user_identities
+                  WHERE provider = 'discord'
+                    AND provider_user_id = excluded.discord_user_id
+                  ORDER BY last_seen_at DESC
+                  LIMIT 1
+                )
+              ),
+              role_ids = excluded.role_ids,
+              nick = excluded.nick,
+              joined_at = excluded.joined_at,
+              member_payload = excluded.member_payload,
+              source = excluded.source,
+              last_seen_at = now(),
+              last_error = NULL,
+              updated_at = now()
+            `,
+            [guildId, JSON.stringify(chunk)]
           );
         }
-      }
+
+        await tx.query(
+          `
+          UPDATE discord_guilds
+          SET last_member_sync_at = now(), updated_at = now()
+          WHERE guild_id = $1
+          `,
+          [guildId]
+        );
+      });
+
+      const reconciled = parsedBody.data.reconcile
+        ? await reconcileDiscordUsersWithConcurrency(
+            members.map((member) => member.discord_user_id),
+            "bot_snapshot"
+          )
+        : [];
 
       return { ok: true, guild_id: guildId, snapshots_upserted: parsedBody.data.members.length, reconciled };
     } catch (error) {

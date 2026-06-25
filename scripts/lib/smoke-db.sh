@@ -37,6 +37,14 @@ award_totals AS (
   JOIN target_operations target ON target.id = oxa.operation_id
   GROUP BY oxa.player_uid
 ),
+planet_award_totals AS (
+  SELECT
+    oppa.planet_id,
+    SUM(oppa.progress_percent)::numeric(6,3) AS progress_percent
+  FROM operation_planet_progress_awards oppa
+  JOIN target_operations target ON target.id = oppa.operation_id
+  GROUP BY oppa.planet_id
+),
 updated_players AS (
   UPDATE players p
   SET
@@ -45,6 +53,15 @@ updated_players AS (
   FROM award_totals
   WHERE p.player_uid = award_totals.player_uid
   RETURNING p.player_uid
+),
+updated_planets AS (
+  UPDATE planets p
+  SET
+    completion_percent = greatest(0.000, p.completion_percent - planet_award_totals.progress_percent)::numeric(6,3),
+    updated_at = now()
+  FROM planet_award_totals
+  WHERE p.id = planet_award_totals.planet_id
+  RETURNING p.id
 ),
 deleted_operations AS (
   DELETE FROM operations o

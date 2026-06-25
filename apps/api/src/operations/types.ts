@@ -1,5 +1,5 @@
 import type { NormalizationSummary } from "../normalization/operationAttendance.js";
-import type { OperationXpAwardSummary } from "../xp/operationXpAwards.js";
+import type { OperationPlanetProgressAwardSummary, OperationXpAwardSummary } from "../xp/operationXpAwards.js";
 
 export type OperationStatus = "started" | "finished" | "failed" | "abandoned";
 export type OperationOutcome = "success" | "failed";
@@ -11,8 +11,10 @@ export type OperationIngestResponse = {
   outcome?: OperationOutcome;
   accepted: true;
   idempotent: boolean;
+  queued?: boolean;
   normalized?: NormalizationSummary;
   xp_award?: OperationXpAwardSummary;
+  planet_progress_award?: OperationPlanetProgressAwardSummary;
 };
 
 export type OperationRow = {
@@ -100,6 +102,8 @@ export type OperationDeleteResult = {
   ingest_requests_deleted: number;
   xp_awards_reverted_count: number;
   xp_awards_reverted_total: number;
+  planet_progress_reverted_count: number;
+  planet_progress_reverted_total: string;
 };
 
 export class OperationRouteError extends Error {

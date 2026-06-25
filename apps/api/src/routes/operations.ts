@@ -14,7 +14,12 @@ import {
   getOperationUnit,
   listOperations
 } from "../operations/operationQueries.js";
-import { finishOperationIngest, startOperationIngest } from "../operations/operationIngest.js";
+import {
+  drainOperationIngestQueue,
+  enqueueFinishOperationIngest,
+  enqueueStartOperationIngest,
+  waitForOperationIngestResponse
+} from "../operations/operationIngestQueue.js";
 import { OperationRouteError } from "../operations/types.js";
 import { redactAttendance, redactOperation } from "../privacy/redaction.js";
 import { sendDatabaseUnavailable, sendForbidden, sendValidationFailed } from "../http/responses.js";
@@ -37,6 +42,12 @@ function sendOperationNotFound(reply: FastifyReply) {
       code: "operation_not_found",
       message: "Operation was not found."
     }
+  });
+}
+
+function kickOperationIngestQueue(requestLog: FastifyInstance["log"]) {
+  void drainOperationIngestQueue(requestLog).catch((error) => {
+    requestLog.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to drain operation ingest queue");
   });
 }
 
@@ -68,7 +79,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await startOperationIngest(parsed.data);
+      const enqueued = await enqueueStartOperationIngest(parsed.data);
+      if (!enqueued.enqueued) {
+        return enqueued.response;
+      }
+
+      kickOperationIngestQueue(request.log);
+      return await waitForOperationIngestResponse(enqueued.requestId, enqueued.response);
     } catch (error) {
       request.log.error({ dbError: getSafeDbErrorDetails(error) }, "Failed to start operation ingest");
       return sendDatabaseUnavailable(reply);
@@ -84,7 +101,13 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await finishOperationIngest(parsedParams.data.operation_id, parsedBody.data);
+      const enqueued = await enqueueFinishOperationIngest(parsedParams.data.operation_id, parsedBody.data);
+      if (!enqueued.enqueued) {
+        return enqueued.response;
+      }
+
+      kickOperationIngestQueue(request.log);
+      return await waitForOperationIngestResponse(enqueued.requestId, enqueued.response);
     } catch (error) {
       if (error instanceof OperationRouteError) {
         return sendOperationRouteError(reply, error);

@@ -128,7 +128,7 @@ const allowedRawSqlFiles: AllowlistEntry[] = [
   {
     pattern: /^apps\/api\/src\/normalization\/operationUnits\.ts$/,
     category: "normalization",
-    reason: "operation-unit attribution from primary operation unit and active participant roster membership"
+    reason: "operation-player unit attribution from represented unit snapshots and primary operation fallback"
   },
   {
     pattern: /^apps\/api\/src\/xp\/operationXpAwards\.ts$/,
