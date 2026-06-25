@@ -58,6 +58,7 @@ import { operationPlayers, players } from "../db/schema/players.js";
 import { playerUnitPreferences, unitPlayers, unitRanks, units } from "../db/schema/units.js";
 import { withDbTransaction, type DbTransaction } from "../db/transactions.js";
 import { canonicalizeDiscordLinkedPlayer, isDiscordPlaceholderUid } from "../identity/playerCanonicalization.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const discordStartQuerySchema = z.object({
   mode: z.enum(["cookie", "jwt"]).default("cookie"),
@@ -1055,12 +1056,10 @@ async function fetchDiscordConfiguredGuildMemberships(
     return [];
   }
 
-  const memberships: DiscordFetchedMembership[] = [];
-
-  for (const guildId of guildIds) {
+  const memberships = await mapWithConcurrency(guildIds, config.discordFetchConcurrency, async (guildId) => {
     try {
       const member = await fetchCurrentUserGuildMemberWithRetry(token, guildId);
-      memberships.push({ guildId, member, fetched_live: true, used_cache: false });
+      return { guildId, member, fetched_live: true, used_cache: false };
     } catch (error) {
       if (error instanceof DiscordRateLimitError) {
         if (purpose === "refresh") {
@@ -1074,8 +1073,7 @@ async function fetchDiscordConfiguredGuildMemberships(
             { guildId, retryAfterSeconds: error.retryAfterSeconds },
             "Using cached Discord membership snapshot after rate limit"
           );
-          memberships.push({ guildId, member: cachedMember, fetched_live: false, used_cache: true });
-          continue;
+          return { guildId, member: cachedMember, fetched_live: false, used_cache: true };
         }
       }
 
@@ -1085,7 +1083,18 @@ async function fetchDiscordConfiguredGuildMemberships(
 
       throw new DiscordMembershipFetchError(error instanceof Error ? error.message : "Discord membership fetch failed.");
     }
-  }
+  });
+
+  request.log.debug(
+    {
+      guildsChecked: memberships.length,
+      membershipsPresent: memberships.filter((membership) => membership.member !== null).length,
+      membershipsAbsent: memberships.filter((membership) => membership.member === null).length,
+      fetchConcurrency: config.discordFetchConcurrency,
+      purpose
+    },
+    "Fetched configured Discord guild memberships"
+  );
 
   return memberships;
 }
@@ -1217,7 +1226,7 @@ async function refreshDiscordSnapshotsAndAssignments(input: {
   let absent = 0;
   let reconciliation: Awaited<ReturnType<typeof reconcileDiscordMembership>> | null = null;
 
-  for (const membership of fetched) {
+  await mapWithConcurrency(fetched, config.asyncDbReadConcurrency, async (membership) => {
     if (membership.member) {
       present += 1;
       await upsertDiscordMemberSnapshot({
@@ -1234,7 +1243,7 @@ async function refreshDiscordSnapshotsAndAssignments(input: {
         },
         source: input.source
       });
-      continue;
+      return;
     }
 
     if (input.purpose === "refresh") {
@@ -1246,7 +1255,7 @@ async function refreshDiscordSnapshotsAndAssignments(input: {
         source: "oauth_refresh_absent"
       });
     }
-  }
+  });
 
   if (config.discordAuthEnabled && config.discordAuthReconcileOnLogin) {
     reconciliation = await reconcileDiscordMembership({

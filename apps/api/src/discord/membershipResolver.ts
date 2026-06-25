@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { getDiscordAuthPolicy } from "../config/discordAuth.js";
-import { queryDb } from "../db/pool.js";
+import { getDbPool, queryDb } from "../db/pool.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { ensureDiscordPlaceholderPlayerForReconcile } from "./playerAssignment.js";
 
 export type DiscordRoleClaimType =
@@ -473,15 +474,22 @@ function serializeUnitMembershipClaimSet(claimSet: UnitMembershipClaimSet) {
 async function deactivateDiscordGrantsForDeniedIdentity(
   targetUserId: string | null,
   playerUid: string | null
-): Promise<string[]> {
+): Promise<{ deactivatedUnitIds: string[]; deletedGrantCount: number }> {
+  let deletedGrantCount = 0;
+
   if (targetUserId) {
-    await queryDb("DELETE FROM unit_user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
-    await queryDb("DELETE FROM unit_memberships WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
-    await queryDb("DELETE FROM user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+    const unitRoleDelete = await queryDb("DELETE FROM unit_user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+    const unitMembershipDelete = await queryDb("DELETE FROM unit_memberships WHERE user_id = $1 AND grant_source = 'discord'", [
+      targetUserId
+    ]);
+    const appRoleDelete = await queryDb("DELETE FROM user_roles WHERE user_id = $1 AND grant_source = 'discord'", [targetUserId]);
+    deletedGrantCount += unitRoleDelete.rowCount ?? 0;
+    deletedGrantCount += unitMembershipDelete.rowCount ?? 0;
+    deletedGrantCount += appRoleDelete.rowCount ?? 0;
   }
 
   if (!playerUid) {
-    return [];
+    return { deactivatedUnitIds: [], deletedGrantCount };
   }
 
   const result = await queryDb<{ unit_id: string }>(
@@ -500,7 +508,7 @@ async function deactivateDiscordGrantsForDeniedIdentity(
     [playerUid]
   );
 
-  return result.rows.map((row) => row.unit_id);
+  return { deactivatedUnitIds: result.rows.map((row) => row.unit_id), deletedGrantCount };
 }
 
 async function applyDiscordUnitMemberships(
@@ -723,12 +731,24 @@ async function auditChange(
   );
 }
 
-export async function reconcileDiscordMembership(
-  options: ReconcileDiscordMembershipOptions
+async function withDiscordReconcileLock<T>(lockKey: string, callback: () => Promise<T>): Promise<T> {
+  const client = await getDbPool().connect();
+
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtext($1))", [`discord-reconcile:${lockKey}`]);
+    return await callback();
+  } finally {
+    await client.query("SELECT pg_advisory_unlock(hashtext($1))", [`discord-reconcile:${lockKey}`]);
+    client.release();
+  }
+}
+
+async function reconcileDiscordMembershipWithIdentity(
+  options: ReconcileDiscordMembershipOptions,
+  identity: PlayerIdentityRow
 ): Promise<ReconcileDiscordMembershipResult> {
   const dryRun = options.dryRun ?? true;
   const source = options.source ?? "discord_reconcile";
-  const identity = await findIdentity(options);
   const targetUserId = options.userId ?? identity.user_id;
   const claims = await loadClaims(options, identity.discord_user_id);
   const denyClaims = claims.filter((claim) => claim.claimType === "deny_login");
@@ -764,8 +784,11 @@ export async function reconcileDiscordMembership(
 
   if (denyWinner) {
     if (!dryRun) {
-      deactivatedUnitIds = await deactivateDiscordGrantsForDeniedIdentity(targetUserId ?? null, identity.player_uid);
-      applied.push("discord_grants_revoked");
+      const revoked = await deactivateDiscordGrantsForDeniedIdentity(targetUserId ?? null, identity.player_uid);
+      deactivatedUnitIds = revoked.deactivatedUnitIds;
+      if (deactivatedUnitIds.length > 0 || revoked.deletedGrantCount > 0) {
+        applied.push("discord_grants_revoked");
+      }
       await auditChange(
         targetUserId ?? null,
         identity.player_uid,
@@ -907,6 +930,35 @@ export async function reconcileDiscordMembership(
     represented_unit_id: representedUnitId,
     deactivated_unit_ids: deactivatedUnitIds
   };
+}
+
+export async function reconcileDiscordMembership(
+  options: ReconcileDiscordMembershipOptions
+): Promise<ReconcileDiscordMembershipResult> {
+  const dryRun = options.dryRun ?? true;
+  const identity = await findIdentity(options);
+
+  if (dryRun) {
+    return reconcileDiscordMembershipWithIdentity(options, identity);
+  }
+
+  const lockKey = identity.discord_user_id ?? identity.player_uid ?? options.userId ?? "unknown";
+  return withDiscordReconcileLock(lockKey, () => reconcileDiscordMembershipWithIdentity(options, identity));
+}
+
+export async function reconcileDiscordUsersWithConcurrency(
+  discordUserIds: readonly string[],
+  source: ReconcileDiscordMembershipOptions["source"] = "discord_reconcile"
+): Promise<ReconcileDiscordMembershipResult[]> {
+  const uniqueDiscordUserIds = Array.from(new Set(discordUserIds));
+
+  return mapWithConcurrency(uniqueDiscordUserIds, config.discordReconcileConcurrency, (discordUserId) =>
+    reconcileDiscordMembership({
+      discordUserId,
+      dryRun: false,
+      source
+    })
+  );
 }
 
 export function discordAuthRequiresGuild(): boolean {

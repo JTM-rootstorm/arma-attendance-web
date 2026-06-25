@@ -64,43 +64,53 @@ export async function registerDiscordRoleActionRoutes(app: FastifyInstance) {
       return sendValidationFailed(reply);
     }
 
-    let updated = 0;
-    let failedToMatch = 0;
-
     try {
-      for (const result of parsedBody.data.results) {
-        const values = [
-          parsedParams.data.guild_id,
-          parsedBody.data.evaluation_id,
-          result.audit_id ?? null,
-          result.player_uid ?? null,
-          result.discord_user_id ?? null,
-          result.role_id,
-          result.action,
-          result.status,
-          result.error_message ?? null
-        ];
-        const updateResult = await queryDb(
-          `
-          UPDATE discord_role_action_audits
-          SET status = $8, error_message = $9, reported_at = now()
-          WHERE guild_id = $1
-            AND evaluation_id = $2
-            AND ($3::uuid IS NULL OR id = $3::uuid)
-            AND ($4::text IS NULL OR player_uid = $4)
-            AND ($5::text IS NULL OR discord_user_id = $5)
-            AND role_id = $6
-            AND action = $7
-          `,
-          values
-        );
-
-        if ((updateResult.rowCount ?? 0) > 0) {
-          updated += updateResult.rowCount ?? 0;
-        } else {
-          failedToMatch += 1;
-        }
-      }
+      const result = await queryDb<{ updated: number; failed_to_match: number }>(
+        `
+        WITH input AS (
+          SELECT
+            ord,
+            NULLIF(value->>'audit_id', '')::uuid AS audit_id,
+            NULLIF(value->>'player_uid', '') AS player_uid,
+            NULLIF(value->>'discord_user_id', '') AS discord_user_id,
+            value->>'role_id' AS role_id,
+            value->>'action' AS action,
+            value->>'status' AS status,
+            NULLIF(value->>'error_message', '') AS error_message
+          FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS item(value, ord)
+        ),
+        matches AS (
+          SELECT DISTINCT i.ord, audit.id, i.status, i.error_message
+          FROM input i
+          JOIN discord_role_action_audits audit
+            ON audit.guild_id = $1
+            AND audit.evaluation_id = $2::uuid
+            AND (i.audit_id IS NULL OR audit.id = i.audit_id)
+            AND (i.player_uid IS NULL OR audit.player_uid = i.player_uid)
+            AND (i.discord_user_id IS NULL OR audit.discord_user_id = i.discord_user_id)
+            AND audit.role_id = i.role_id
+            AND audit.action = i.action
+        ),
+        updated AS (
+          UPDATE discord_role_action_audits audit
+          SET status = matches.status,
+              error_message = matches.error_message,
+              reported_at = now()
+          FROM matches
+          WHERE audit.id = matches.id
+          RETURNING matches.ord
+        )
+        SELECT
+          (SELECT COUNT(*)::int FROM updated) AS updated,
+          (
+            (SELECT COUNT(*)::int FROM input)
+            - (SELECT COUNT(DISTINCT ord)::int FROM updated)
+          ) AS failed_to_match
+        `,
+        [parsedParams.data.guild_id, parsedBody.data.evaluation_id, JSON.stringify(parsedBody.data.results)]
+      );
+      const updated = result.rows[0]?.updated ?? 0;
+      const failedToMatch = result.rows[0]?.failed_to_match ?? parsedBody.data.results.length;
 
       return { ok: true, updated, failed_to_match: failedToMatch };
     } catch (error) {

@@ -58,9 +58,13 @@ export function buildRuntimeConfig(env: ParsedEnv) {
     enableTestAuth: env.ENABLE_TEST_AUTH,
     logLevel: env.LOG_LEVEL,
     databaseUrl: env.DATABASE_URL,
+    asyncDbReadConcurrency: env.ASYNC_DB_READ_CONCURRENCY,
+    discordFetchConcurrency: env.DISCORD_FETCH_CONCURRENCY,
+    discordReconcileConcurrency: env.DISCORD_RECONCILE_CONCURRENCY,
     operationIngestQueuePollMs: env.OPERATION_INGEST_QUEUE_POLL_MS,
     operationIngestQueueSyncWaitMs: env.OPERATION_INGEST_QUEUE_SYNC_WAIT_MS,
     operationIngestQueueMaxAttempts: env.OPERATION_INGEST_QUEUE_MAX_ATTEMPTS,
-    operationIngestQueueRetryDelaySeconds: env.OPERATION_INGEST_QUEUE_RETRY_DELAY_SECONDS
+    operationIngestQueueRetryDelaySeconds: env.OPERATION_INGEST_QUEUE_RETRY_DELAY_SECONDS,
+    operationIngestQueueWorkers: env.OPERATION_INGEST_QUEUE_WORKERS
   } as const;
 }

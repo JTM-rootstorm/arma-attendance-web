@@ -21,6 +21,7 @@ import {
 } from "./ingestRequests.js";
 import { completeQueuedFinishOperationIngest, completeQueuedStartOperationIngest } from "./operationIngest.js";
 import { OperationRouteError, type OperationIngestResponse, type OperationOutcome, type OperationStatus } from "./types.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 
 type OperationIngestJobKind = "start" | "finish";
 type OperationIngestJobStatus = "pending" | "processing" | "completed" | "failed";
@@ -239,7 +240,7 @@ export async function enqueueFinishOperationIngest(
   });
 }
 
-async function claimNextOperationIngestJob(): Promise<OperationIngestJob | null> {
+async function claimNextOperationIngestJob(workerSlot: number): Promise<OperationIngestJob | null> {
   const result = await queryDb<OperationIngestJob>(
     `
     WITH next_job AS (
@@ -252,7 +253,10 @@ async function claimNextOperationIngestJob(): Promise<OperationIngestJob | null>
           SELECT 1
           FROM operation_ingest_jobs earlier
           WHERE earlier.operation_id = q.operation_id
-            AND earlier.created_at < q.created_at
+            AND (
+              earlier.created_at < q.created_at
+              OR (earlier.created_at = q.created_at AND earlier.id < q.id)
+            )
             AND earlier.status IN ('pending', 'processing')
         )
       ORDER BY q.created_at ASC, q.id ASC
@@ -270,7 +274,7 @@ async function claimNextOperationIngestJob(): Promise<OperationIngestJob | null>
     WHERE q.id = next_job.id
     RETURNING q.id, q.request_id, q.operation_id, q.kind, q.payload, q.attempt_count
     `,
-    [workerId, config.operationIngestQueueMaxAttempts]
+    [`${workerId}:${workerSlot}`, config.operationIngestQueueMaxAttempts]
   );
 
   return result.rows[0] ?? null;
@@ -342,6 +346,47 @@ async function markOperationIngestJobFailed(job: OperationIngestJob, error: unkn
   });
 }
 
+async function drainOperationIngestQueueWorker(workerSlot: number, log?: FastifyBaseLogger): Promise<void> {
+  for (;;) {
+    const job = await claimNextOperationIngestJob(workerSlot);
+
+    if (!job) {
+      return;
+    }
+
+    try {
+      log?.debug(
+        {
+          workerSlot,
+          queueWorkerId: workerId,
+          operationIngestJobId: job.id,
+          requestId: job.request_id,
+          operationId: job.operation_id,
+          kind: job.kind
+        },
+        "Processing queued operation ingest job"
+      );
+      await completeOperationIngestJob(job);
+      await markOperationIngestJobCompleted(job);
+    } catch (error) {
+      log?.error(
+        {
+          err: error,
+          dbError: getSafeDbErrorDetails(error),
+          workerSlot,
+          queueWorkerId: workerId,
+          operationIngestJobId: job.id,
+          requestId: job.request_id,
+          operationId: job.operation_id,
+          kind: job.kind
+        },
+        "Failed to process queued operation ingest job"
+      );
+      await markOperationIngestJobFailed(job, error);
+    }
+  }
+}
+
 export async function drainOperationIngestQueue(log?: FastifyBaseLogger): Promise<void> {
   if (drainPromise) {
     return drainPromise;
@@ -349,31 +394,10 @@ export async function drainOperationIngestQueue(log?: FastifyBaseLogger): Promis
 
   drainPromise = (async () => {
     try {
-      for (;;) {
-        const job = await claimNextOperationIngestJob();
-
-        if (!job) {
-          return;
-        }
-
-        try {
-          await completeOperationIngestJob(job);
-          await markOperationIngestJobCompleted(job);
-        } catch (error) {
-          log?.error(
-            {
-              err: error,
-              dbError: getSafeDbErrorDetails(error),
-              operationIngestJobId: job.id,
-              requestId: job.request_id,
-              operationId: job.operation_id,
-              kind: job.kind
-            },
-            "Failed to process queued operation ingest job"
-          );
-          await markOperationIngestJobFailed(job, error);
-        }
-      }
+      const workerSlots = Array.from({ length: config.operationIngestQueueWorkers }, (_, index) => index + 1);
+      await mapWithConcurrency(workerSlots, config.operationIngestQueueWorkers, (workerSlot) =>
+        drainOperationIngestQueueWorker(workerSlot, log)
+      );
     } finally {
       drainPromise = null;
     }

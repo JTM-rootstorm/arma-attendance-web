@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import type { QueryResultRow } from "pg";
 
+import { config } from "../config.js";
 import { queryDb } from "../db/pool.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import type {
   DiscordAttendanceRuleRow,
   DiscordEvaluationResult,
@@ -21,6 +23,7 @@ type PlayerScoreRow = QueryResultRow & {
 
 type AuditInsertRow = {
   id: string;
+  ord: number;
 };
 
 function toNumber(value: string | number | null): number | null {
@@ -116,43 +119,160 @@ async function getPlayerScores(rule: DiscordAttendanceRuleRow): Promise<PlayerSc
   return result.rows;
 }
 
-async function persistAuditAction(
+type RuleEvaluation = {
+  actions: DiscordRoleAction[];
+  skipped: DiscordSkippedAction[];
+  evaluatedPlayers: string[];
+};
+
+async function evaluateDiscordRoleRule(rule: DiscordAttendanceRuleRow): Promise<RuleEvaluation> {
+  const [eligibleOperationCount, playerScores] = await mapWithConcurrency(
+    ["eligible_operation_count", "player_scores"] as const,
+    2,
+    async (task) => {
+      if (task === "eligible_operation_count") {
+        return getEligibleOperationCount(rule);
+      }
+
+      return getPlayerScores(rule);
+    }
+  );
+  const eligibleCount = eligibleOperationCount as number;
+  const scores = playerScores as PlayerScoreRow[];
+  const actions: DiscordRoleAction[] = [];
+  const skipped: DiscordSkippedAction[] = [];
+  const evaluatedPlayers = new Set<string>();
+
+  for (const player of scores) {
+    evaluatedPlayers.add(player.player_uid);
+    const score = {
+      attendance_points: player.attended_count,
+      operation_count: player.attended_count,
+      attendance_percent: eligibleCount === 0 ? 0 : roundPercent((player.attended_count / eligibleCount) * 100)
+    };
+    const qualifies = meetsRule(rule, score);
+
+    if (qualifies && !player.discord_user_id) {
+      skipped.push({
+        action: "skip",
+        rule_id: rule.id,
+        rule_name: rule.name,
+        role_id: rule.role_id,
+        role_name: rule.role_name,
+        player_uid: player.player_uid,
+        player_name: player.player_name,
+        discord_user_id: null,
+        discord_display_name: null,
+        score,
+        reason: `missing Discord link for rule ${rule.name}`
+      });
+      continue;
+    }
+
+    if (qualifies && player.discord_user_id) {
+      actions.push({
+        action: "grant",
+        rule_id: rule.id,
+        rule_name: rule.name,
+        role_id: rule.role_id,
+        role_name: rule.role_name,
+        player_uid: player.player_uid,
+        player_name: player.player_name,
+        discord_user_id: player.discord_user_id,
+        discord_display_name: player.discord_display_name,
+        score,
+        reason: `meets rule ${rule.name}`
+      });
+      continue;
+    }
+
+    if (!qualifies && rule.grant_mode === "grant_and_revoke_preview" && player.discord_user_id) {
+      actions.push({
+        action: "revoke_preview",
+        rule_id: rule.id,
+        rule_name: rule.name,
+        role_id: rule.role_id,
+        role_name: rule.role_name,
+        player_uid: player.player_uid,
+        player_name: player.player_name,
+        discord_user_id: player.discord_user_id,
+        discord_display_name: player.discord_display_name,
+        score,
+        reason: `does not meet rule ${rule.name}; revoke is preview-only`
+      });
+    }
+  }
+
+  return { actions, skipped, evaluatedPlayers: Array.from(evaluatedPlayers) };
+}
+
+async function persistAuditActions(
   guildId: string,
   evaluationId: string,
-  action: DiscordRoleAction | DiscordSkippedAction
-): Promise<string> {
+  auditActions: Array<DiscordRoleAction | DiscordSkippedAction>
+): Promise<string[]> {
+  if (auditActions.length === 0) {
+    return [];
+  }
+
+  const payloads = auditActions.map((action, index) => ({ ...action, __audit_order: index }));
   const result = await queryDb<AuditInsertRow>(
     `
-    INSERT INTO discord_role_action_audits (
-      guild_id,
-      rule_id,
-      player_uid,
-      discord_user_id,
-      role_id,
-      action,
-      status,
-      reason,
-      evaluation_id,
-      payload
+    WITH input AS (
+      SELECT value AS payload, ord
+      FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS item(value, ord)
+    ),
+    inserted AS (
+      INSERT INTO discord_role_action_audits (
+        guild_id,
+        rule_id,
+        player_uid,
+        discord_user_id,
+        role_id,
+        action,
+        status,
+        reason,
+        evaluation_id,
+        payload
+      )
+      SELECT
+        $1,
+        (payload->>'rule_id')::uuid,
+        payload->>'player_uid',
+        payload->>'discord_user_id',
+        payload->>'role_id',
+        payload->>'action',
+        CASE WHEN payload->>'action' = 'skip' THEN 'skipped' ELSE 'planned' END,
+        payload->>'reason',
+        $2::uuid,
+        payload
+      FROM input
+      ORDER BY ord
+      RETURNING id, payload
+    ),
+    ordered AS (
+      SELECT id, (payload->>'__audit_order')::int AS ord
+      FROM inserted
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-    RETURNING id
+    SELECT ordered.id, ordered.ord
+    FROM ordered
+    ORDER BY ordered.ord
     `,
-    [
-      guildId,
-      action.rule_id,
-      action.player_uid,
-      action.discord_user_id,
-      action.role_id,
-      action.action,
-      action.action === "skip" ? "skipped" : "planned",
-      action.reason,
-      evaluationId,
-      JSON.stringify(action)
-    ]
+    [guildId, evaluationId, JSON.stringify(payloads)]
   );
 
-  return result.rows[0]?.id ?? "";
+  const ids = result.rows.map((row) => row.id);
+
+  await queryDb(
+    `
+    UPDATE discord_role_action_audits
+    SET payload = payload - '__audit_order'
+    WHERE id = ANY($1::uuid[])
+    `,
+    [ids]
+  );
+
+  return ids;
 }
 
 export async function evaluateDiscordRoleActions(
@@ -179,78 +299,25 @@ export async function evaluateDiscordRoleActions(
   const skipped: DiscordSkippedAction[] = [];
   const evaluatedPlayers = new Set<string>();
 
-  for (const rule of rulesResult.rows) {
-    const eligibleOperationCount = await getEligibleOperationCount(rule);
-    const playerScores = await getPlayerScores(rule);
+  const ruleEvaluations = await mapWithConcurrency(rulesResult.rows, config.asyncDbReadConcurrency, evaluateDiscordRoleRule);
 
-    for (const player of playerScores) {
-      evaluatedPlayers.add(player.player_uid);
-      const score = {
-        attendance_points: player.attended_count,
-        operation_count: player.attended_count,
-        attendance_percent: eligibleOperationCount === 0 ? 0 : roundPercent((player.attended_count / eligibleOperationCount) * 100)
-      };
-      const qualifies = meetsRule(rule, score);
-
-      if (qualifies && !player.discord_user_id) {
-        skipped.push({
-          action: "skip",
-          rule_id: rule.id,
-          rule_name: rule.name,
-          role_id: rule.role_id,
-          role_name: rule.role_name,
-          player_uid: player.player_uid,
-          player_name: player.player_name,
-          discord_user_id: null,
-          discord_display_name: null,
-          score,
-          reason: `missing Discord link for rule ${rule.name}`
-        });
-        continue;
-      }
-
-      if (qualifies && player.discord_user_id) {
-        actions.push({
-          action: "grant",
-          rule_id: rule.id,
-          rule_name: rule.name,
-          role_id: rule.role_id,
-          role_name: rule.role_name,
-          player_uid: player.player_uid,
-          player_name: player.player_name,
-          discord_user_id: player.discord_user_id,
-          discord_display_name: player.discord_display_name,
-          score,
-          reason: `meets rule ${rule.name}`
-        });
-        continue;
-      }
-
-      if (!qualifies && rule.grant_mode === "grant_and_revoke_preview" && player.discord_user_id) {
-        actions.push({
-          action: "revoke_preview",
-          rule_id: rule.id,
-          rule_name: rule.name,
-          role_id: rule.role_id,
-          role_name: rule.role_name,
-          player_uid: player.player_uid,
-          player_name: player.player_name,
-          discord_user_id: player.discord_user_id,
-          discord_display_name: player.discord_display_name,
-          score,
-          reason: `does not meet rule ${rule.name}; revoke is preview-only`
-        });
-      }
+  for (const ruleEvaluation of ruleEvaluations) {
+    actions.push(...ruleEvaluation.actions);
+    skipped.push(...ruleEvaluation.skipped);
+    for (const playerUid of ruleEvaluation.evaluatedPlayers) {
+      evaluatedPlayers.add(playerUid);
     }
   }
 
   if (persist) {
-    for (const action of actions) {
-      action.audit_id = await persistAuditAction(guildId, evaluationId, action);
-    }
+    const persisted = await persistAuditActions(guildId, evaluationId, [...actions, ...skipped]);
 
-    for (const skip of skipped) {
-      skip.audit_id = await persistAuditAction(guildId, evaluationId, skip);
+    for (const [index, auditId] of persisted.entries()) {
+      if (index < actions.length) {
+        actions[index]!.audit_id = auditId;
+      } else {
+        skipped[index - actions.length]!.audit_id = auditId;
+      }
     }
   }
 
