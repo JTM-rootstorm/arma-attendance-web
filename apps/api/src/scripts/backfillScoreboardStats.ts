@@ -43,7 +43,11 @@ async function main() {
         VALUES ($1, $2, $3::jsonb)
         ON CONFLICT (player_uid) DO UPDATE
         SET
-          last_name = COALESCE(EXCLUDED.last_name, players.last_name),
+          last_name = CASE
+            WHEN players.last_name IS NULL OR btrim(players.last_name) = ''
+            THEN EXCLUDED.last_name
+            ELSE players.last_name
+          END,
           last_seen_at = now(),
           raw_last_player = EXCLUDED.raw_last_player,
           updated_at = now()

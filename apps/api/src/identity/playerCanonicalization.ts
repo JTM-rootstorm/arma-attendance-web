@@ -53,7 +53,11 @@ export async function canonicalizeDiscordLinkedPlayer(
     VALUES ($1, $2, $3::jsonb)
     ON CONFLICT (player_uid) DO UPDATE
     SET
-      last_name = COALESCE(players.last_name, EXCLUDED.last_name),
+      last_name = CASE
+        WHEN players.last_name IS NULL OR btrim(players.last_name) = ''
+        THEN EXCLUDED.last_name
+        ELSE players.last_name
+      END,
       deleted_at = NULL,
       updated_at = now()
     `,
