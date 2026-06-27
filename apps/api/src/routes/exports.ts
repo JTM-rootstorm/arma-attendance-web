@@ -263,7 +263,7 @@ export async function registerExportRoutes(app: FastifyInstance) {
           p.last_name,
           p.first_seen_at,
           p.last_seen_at,
-          COUNT(DISTINCT op.operation_id)::int AS operation_count,
+          COUNT(DISTINCT o.id)::int AS operation_count,
           COALESCE(SUM(ops.infantry_kills), 0)::int AS total_infantry_kills,
           COALESCE(SUM(ops.soft_vehicle_kills), 0)::int AS total_soft_vehicle_kills,
           COALESCE(SUM(ops.armor_kills), 0)::int AS total_armor_kills,
@@ -272,8 +272,11 @@ export async function registerExportRoutes(app: FastifyInstance) {
           COALESCE(SUM(ops.deaths), 0)::int AS total_deaths
         FROM players p
         LEFT JOIN operation_players op ON op.player_uid = p.player_uid
+        LEFT JOIN operations o
+          ON o.id = op.operation_id
+          AND o.status = 'finished'
         LEFT JOIN operation_player_stats ops
-          ON ops.operation_id = op.operation_id
+          ON ops.operation_id = o.id
           AND ops.player_uid = op.player_uid
         ${whereClause}
         GROUP BY p.player_uid

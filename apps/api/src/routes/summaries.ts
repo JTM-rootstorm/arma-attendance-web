@@ -228,9 +228,9 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COUNT(*)::int AS operations_total,
           COUNT(*) FILTER (WHERE status = 'started')::int AS operations_started,
           COUNT(*) FILTER (WHERE status = 'finished')::int AS operations_finished,
-          COUNT(DISTINCT p_summary.player_uid)::int AS players_total,
-          COUNT(op.player_uid)::int AS attendance_rows_total,
-          COUNT(ops.player_uid)::int AS stats_rows_total,
+          COUNT(DISTINCT p_summary.player_uid) FILTER (WHERE fo.status = 'finished')::int AS players_total,
+          COUNT(op.player_uid) FILTER (WHERE fo.status = 'finished')::int AS attendance_rows_total,
+          COUNT(ops.player_uid) FILTER (WHERE fo.status = 'finished')::int AS stats_rows_total,
           MAX(fo.started_at) AS last_operation_at
         FROM filtered_operations fo
         LEFT JOIN operation_players op ON op.operation_id = fo.id
@@ -274,7 +274,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         FROM operation_players op
         JOIN operations o ON o.id = op.operation_id
         JOIN players p ON p.player_uid = op.player_uid
-        ${whereClause ? `${whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at")} AND p.deleted_at IS NULL` : "WHERE p.deleted_at IS NULL"}
+        ${whereClause ? `${whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at")} AND o.status = 'finished' AND p.deleted_at IS NULL` : "WHERE o.status = 'finished' AND p.deleted_at IS NULL"}
         GROUP BY p.player_uid
         ORDER BY operation_count DESC, p.last_seen_at DESC, p.player_uid
         LIMIT 10
@@ -291,7 +291,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         FROM operation_player_stats ops
         JOIN operations o ON o.id = ops.operation_id
         JOIN players p ON p.player_uid = ops.player_uid
-        ${whereClause ? `${whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at")} AND p.deleted_at IS NULL` : "WHERE p.deleted_at IS NULL"}
+        ${whereClause ? `${whereClause.replaceAll("server_key", "o.server_key").replaceAll("started_at", "o.started_at")} AND o.status = 'finished' AND p.deleted_at IS NULL` : "WHERE o.status = 'finished' AND p.deleted_at IS NULL"}
         GROUP BY p.player_uid
         ORDER BY ai_kills DESC, p.last_seen_at DESC, p.player_uid
         LIMIT 10
@@ -534,6 +534,9 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
           COALESCE(SUM(ops.all_vehicle_kills), 0)::int AS all_vehicle_kills,
           COALESCE(SUM(ops.scoreboard_score), 0)::int AS scoreboard_score
         FROM operation_players op
+        JOIN operations o
+          ON o.id = op.operation_id
+          AND o.status = 'finished'
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
           AND ops.player_uid = op.player_uid
@@ -558,6 +561,7 @@ export async function registerSummaryRoutes(app: FastifyInstance) {
         FROM operation_players op
         JOIN operations o ON o.id = op.operation_id
         WHERE op.player_uid = $1
+          AND o.status = 'finished'
         ORDER BY o.started_at DESC
         LIMIT 10
         `,

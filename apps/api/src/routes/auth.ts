@@ -2068,6 +2068,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           COALESCE(SUM(ops.armor_kills), 0)::int AS armor_kills,
           COALESCE(SUM(ops.air_kills), 0)::int AS air_kills
         FROM operation_players op
+        JOIN operations o
+          ON o.id = op.operation_id
+          AND o.status = 'finished'
         LEFT JOIN operation_player_stats ops
           ON ops.operation_id = op.operation_id
           AND ops.player_uid = op.player_uid

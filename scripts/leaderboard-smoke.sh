@@ -118,12 +118,35 @@ operation_b AS (
   SELECT unit_b.id, 'leaderboard-smoke', 'finished', :'unit_b_key', 'Leaderboard Bravo', 'VR', now(), now() FROM unit_b
   RETURNING id
 ),
+unfinished_operation AS (
+  INSERT INTO operations (unit_id, server_key, status, mission_uid, mission_name, world_name, started_at)
+  SELECT unit_a.id, 'leaderboard-smoke', 'started', :'unit_a_key' || '-unfinished', 'Leaderboard Unfinished', 'VR', now() FROM unit_a
+  RETURNING id
+),
 operation_players_seed AS (
   INSERT INTO operation_players (operation_id, player_uid, name_at_start, name_at_end, present_at_start, present_at_end)
   SELECT operation_a.id, :'player_a_one', 'Alpha One', 'Alpha One', true, true FROM operation_a
   UNION ALL SELECT operation_a.id, :'player_a_two', 'Alpha Two', 'Alpha Two', true, true FROM operation_a
   UNION ALL SELECT operation_b.id, :'player_b_one', 'Bravo One', 'Bravo One', true, true FROM operation_b
   UNION ALL SELECT operation_b.id, :'player_b_two', 'Bravo Two', 'Bravo Two', true, true FROM operation_b
+  UNION ALL SELECT unfinished_operation.id, :'player_a_one', 'Alpha One', NULL, true, false FROM unfinished_operation
+  RETURNING operation_id, player_uid
+),
+operation_player_units_seed AS (
+  INSERT INTO operation_player_units (operation_id, player_uid, unit_id, source)
+  SELECT operation_players_seed.operation_id,
+         operation_players_seed.player_uid,
+         CASE
+           WHEN operation_players_seed.player_uid IN (:'player_a_one', :'player_a_two') THEN unit_a.id
+           ELSE unit_b.id
+         END,
+         'participant_roster'
+  FROM operation_players_seed
+  CROSS JOIN unit_a
+  CROSS JOIN unit_b
+  ON CONFLICT (operation_id, player_uid) DO UPDATE
+  SET unit_id = EXCLUDED.unit_id,
+      source = EXCLUDED.source
 )
 INSERT INTO operation_player_stats (
   operation_id,
@@ -138,7 +161,8 @@ INSERT INTO operation_player_stats (
 SELECT operation_a.id, :'player_a_one', 20, 8, 2, 3, 4, 1 FROM operation_a
 UNION ALL SELECT operation_a.id, :'player_a_two', 12, 3, 1, 1, 2, 0 FROM operation_a
 UNION ALL SELECT operation_b.id, :'player_b_one', 5, 2, 3, 1, 1, 0 FROM operation_b
-UNION ALL SELECT operation_b.id, :'player_b_two', 2, 1, 1, 0, 1, 0 FROM operation_b;
+UNION ALL SELECT operation_b.id, :'player_b_two', 2, 1, 1, 0, 1, 0 FROM operation_b
+UNION ALL SELECT unfinished_operation.id, :'player_a_one', 900, 900, 90, 900, 900, 900 FROM unfinished_operation;
 SQL
 
 echo "[smoke:leaderboard] Checking ranking and formula..."
@@ -162,7 +186,7 @@ printf "%s" "$leaderboard_response" | assert_json "
 
 echo "[smoke:leaderboard] Checking player operation counts still count personal attendance..."
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_one/summary" |
-  assert_json 'data.ok === true && data.summary.operation_count === 1'
+  assert_json 'data.ok === true && data.summary.operation_count === 1 && data.summary.infantry_kills === 20'
 curl -fsS -b "$OWNER_COOKIE_JAR" "$BASE_URL/v1/players/$player_a_two/summary" |
   assert_json 'data.ok === true && data.summary.operation_count === 1'
 
