@@ -53,6 +53,7 @@ import type {
 } from "./types";
 
 const adminUsersPageSize = 50;
+const finishedOperationsPageSize = 50;
 const autoRefreshMs = 60_000;
 
 const BattalionPage = lazy(() => import("./pages/BattalionPage").then((module) => ({ default: module.BattalionPage })));
@@ -103,6 +104,8 @@ export function App() {
   const [summary, setSummary] = useState<ApiResult<DashboardSummaryResponse>>(emptyResult);
   const [dataQuality, setDataQuality] = useState<ApiResult<DataQualityResponse>>(emptyResult);
   const [operations, setOperations] = useState<ApiResult<OperationsResponse>>(emptyResult);
+  const [finishedOperations, setFinishedOperations] = useState<ApiResult<OperationsResponse>>(emptyResult);
+  const [finishedOperationsOffset, setFinishedOperationsOffset] = useState(0);
   const [operationDetail, setOperationDetail] = useState<ApiResult<OperationDetailResponse>>(emptyResult);
   const [operationSummary, setOperationSummary] = useState<ApiResult<OperationSummaryResponse>>(emptyResult);
   const [operationAttendance, setOperationAttendance] = useState<ApiResult<OperationAttendanceResponse>>(emptyResult);
@@ -353,6 +356,60 @@ export function App() {
     }
   }, [canViewOperations, operationFilters]);
 
+  const loadFinishedOperations = useCallback(async () => {
+    if (!canViewOperations) {
+      setFinishedOperations(emptyResult);
+      return;
+    }
+
+    setFinishedOperations({ status: "loading", data: null, error: null });
+
+    const { status, ...baseFilters } = operationFilters;
+    if (status === "started") {
+      setFinishedOperations({
+        status: "ready",
+        data: {
+          ok: true,
+          operations: [],
+          pagination: {
+            limit: finishedOperationsPageSize,
+            offset: 0,
+            count: 0
+          }
+        },
+        error: null
+      });
+      return;
+    }
+
+    const finishedParams =
+      status.length > 0
+        ? {
+            ...baseFilters,
+            status,
+            limit: String(finishedOperationsPageSize),
+            offset: String(finishedOperationsOffset)
+          }
+        : {
+            ...baseFilters,
+            status_group: "finished",
+            limit: String(finishedOperationsPageSize),
+            offset: String(finishedOperationsOffset)
+          };
+
+    try {
+      setFinishedOperations({
+        status: "ready",
+        data: await apiFetch<OperationsResponse>("/v1/operations", {
+          params: finishedParams
+        }),
+        error: null
+      });
+    } catch (error) {
+      setFinishedOperations(errorResult(error, "Finished operations failed."));
+    }
+  }, [canViewOperations, finishedOperationsOffset, operationFilters]);
+
   const loadPlayers = useCallback(async () => {
     if (!canViewRoster) {
       setPlayers(emptyResult);
@@ -402,6 +459,11 @@ export function App() {
     },
     [canViewOperations]
   );
+
+  const updateOperationFilters = useCallback((filters: typeof operationFilters) => {
+    setFinishedOperationsOffset(0);
+    setOperationFilters(filters);
+  }, []);
 
   const loadPlayerDetail = useCallback(
     async (playerUid: string) => {
@@ -483,6 +545,10 @@ export function App() {
   }, [loadMyStats]);
 
   useEffect(() => {
+    void loadFinishedOperations();
+  }, [loadFinishedOperations]);
+
+  useEffect(() => {
     if (!sessionUser) {
       return;
     }
@@ -543,6 +609,7 @@ export function App() {
         void loadDataQuality();
       } else if (view === "operations") {
         void loadOperations();
+        void loadFinishedOperations();
         if (selectedOperationId) {
           void loadOperationDetail(selectedOperationId);
         }
@@ -560,6 +627,7 @@ export function App() {
   }, [
     loadAdminUsers,
     loadDataQuality,
+    loadFinishedOperations,
     loadMyStats,
     loadOperationDetail,
     loadOperations,
@@ -823,14 +891,19 @@ export function App() {
     ) : view === "operations" && canViewOperations ? (
       <OperationsPage
         operations={operations}
+        finishedOperations={finishedOperations}
         operationDetail={operationDetail}
         operationSummary={operationSummary}
         operationAttendance={operationAttendance}
         selectedOperationId={selectedOperationId}
         operationFilters={operationFilters}
-        onFiltersChange={setOperationFilters}
+        onFiltersChange={updateOperationFilters}
         onSelectOperation={setSelectedOperationId}
-        onRefresh={() => void loadOperations()}
+        onRefresh={() => {
+          void loadOperations();
+          void loadFinishedOperations();
+        }}
+        onFinishedPageChange={setFinishedOperationsOffset}
         canExport={canExportViews}
         canDeleteOperations={canDeleteOperationRows}
         onDeleteOperation={deleteOperation}

@@ -76,6 +76,10 @@ export async function listOperations(
   if (query.status) {
     values.push(query.status);
     where.push(`o.status = $${values.length}`);
+  } else if (query.status_group === "active") {
+    where.push("o.status = 'started'");
+  } else if (query.status_group === "finished") {
+    where.push("o.status <> 'started'");
   }
 
   if (query.mission_uid) {

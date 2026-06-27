@@ -119,6 +119,7 @@ function AttendanceTable({ rows }: { rows: OperationAttendanceResponse["attendan
 
 export function OperationsPage({
   operations,
+  finishedOperations,
   operationDetail,
   operationSummary,
   operationAttendance,
@@ -127,12 +128,14 @@ export function OperationsPage({
   onFiltersChange,
   onSelectOperation,
   onRefresh,
+  onFinishedPageChange,
   canExport,
   canDeleteOperations,
   onDeleteOperation,
   onExportAttendance
 }: {
   operations: ApiResult<OperationsResponse>;
+  finishedOperations: ApiResult<OperationsResponse>;
   operationDetail: ApiResult<OperationDetailResponse>;
   operationSummary: ApiResult<OperationSummaryResponse>;
   operationAttendance: ApiResult<OperationAttendanceResponse>;
@@ -141,6 +144,7 @@ export function OperationsPage({
   onFiltersChange: (filters: { server_key: string; status: string; mission_uid: string }) => void;
   onSelectOperation: (operationId: string) => void;
   onRefresh: () => void;
+  onFinishedPageChange: (offset: number) => void;
   canExport: boolean;
   canDeleteOperations: boolean;
   onDeleteOperation: (operationId: string) => Promise<void>;
@@ -152,7 +156,16 @@ export function OperationsPage({
   const isDetailOpen = selectedOperationId.length > 0;
   const operationRows = operations.status === "ready" ? operations.data.operations : [];
   const inProgressOperations = operationRows.filter((operation) => operation.status === "started");
-  const finishedOperations = operationRows.filter((operation) => operation.status !== "started");
+  const finishedRows = finishedOperations.status === "ready" ? finishedOperations.data.operations : [];
+  const finishedPagination = finishedOperations.status === "ready" ? finishedOperations.data.pagination : null;
+  const finishedOffset = finishedPagination?.offset ?? 0;
+  const finishedLimit = finishedPagination?.limit ?? 50;
+  const canPageFinishedBack = finishedOffset > 0;
+  const canPageFinishedForward = Boolean(finishedPagination && finishedPagination.count === finishedLimit);
+  const finishedRangeLabel =
+    finishedPagination && finishedRows.length > 0
+      ? `${finishedOffset + 1}-${finishedOffset + finishedRows.length}`
+      : "0";
 
   return (
     <div className="view-grid">
@@ -203,9 +216,33 @@ export function OperationsPage({
                   <div className="panel-heading slim">
                     <h3>Finished Operations</h3>
                   </div>
+                  <DataMessage result={finishedOperations} />
+                  {finishedPagination ? (
+                    <div className="pagination-bar">
+                      <span>{finishedRangeLabel} finished operations</span>
+                      <div className="table-actions">
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={!canPageFinishedBack}
+                          onClick={() => onFinishedPageChange(Math.max(0, finishedOffset - finishedLimit))}
+                        >
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={!canPageFinishedForward}
+                          onClick={() => onFinishedPageChange(finishedOffset + finishedLimit)}
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <OperationsTable
                     label="Finished operations"
-                    operations={finishedOperations}
+                    operations={finishedRows}
                     emptyMessage="No finished operations."
                     selectedId={selectedOperationId}
                     onSelect={onSelectOperation}

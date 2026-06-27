@@ -882,6 +882,10 @@ tbody tr.selected {
   grid-template-columns: minmax(12rem, 1fr) auto;
 }
 
+.filters.machine-token-filter {
+  grid-template-columns: minmax(12rem, 24rem);
+}
+
 .filters.discord-link-form {
   grid-template-columns: repeat(3, minmax(8rem, 1fr)) auto;
 }
@@ -1385,6 +1389,7 @@ pre {
   .inline-form,
   .filters,
   .filters.roster-filter,
+  .filters.machine-token-filter,
   .filters.discord-link-form,
   .filters.discord-rule-form,
   .filters.discord-role-form,
