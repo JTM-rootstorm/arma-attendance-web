@@ -19,6 +19,7 @@
 | `apps/api/src/routes/discord.ts` | discord hybrid | Discord route registrar | permanent |
 | `apps/api/src/routes/discord/*.ts` | discord hybrid | Discord admin CRUD, sync, role action, and audit route modules | candidate for narrower helper extraction |
 | `apps/api/src/routes/auth.ts` | auth/session bridge | OAuth and synthetic auth bridge with provider-state, self-stat aggregates, and audit transactions | candidate for future conversion |
+| `apps/api/src/routes/bot.ts` | bot reporting | bot-authenticated player lookup, stat aggregates, and attended operation projections | candidate for future conversion |
 | `apps/api/src/routes/admin.ts` | admin/user search | admin multi-filter search, role transactions, audit writes, and player-name reset projections | candidate for future conversion |
 | `apps/api/src/auth/csrf.ts` | auth/session bridge | CSRF token compatibility path | candidate for future conversion |
 | `apps/api/src/auth/operationAccess.ts` | auth/session bridge | operation visibility bridge joining identities to attendance | candidate for future conversion |

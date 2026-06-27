@@ -50,6 +50,7 @@
     "smoke:discord": "bash scripts/discord-smoke.sh",
     "smoke:discord-refresh": "bash scripts/discord-refresh-smoke.sh",
     "smoke:discord-bot-assignment": "node scripts/smoke-discord-bot-assignment.mjs",
+    "smoke:bot-player-stats": "bash scripts/bot-player-stats-smoke.sh",
     "smoke:discord-auth-policy": "bash scripts/discord-auth-policy-smoke.sh",
     "smoke:discord-auth-policy-loader": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/discord-auth-policy-loader-smoke.ts",
     "smoke:discord-display-name": "pnpm --filter @arma-attendance/api exec tsx ../../scripts/discord-display-name-smoke.ts",

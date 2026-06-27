@@ -131,6 +131,7 @@ Discord bot-facing endpoints accept `API_TOKEN`; if `BOT_API_TOKEN` is set, they
 - `POST /v1/discord/guilds/sync`
 - `POST /v1/discord/guilds/:guild_id/member-snapshots`
 - `POST /v1/discord/reconcile`
+- `GET /v1/bot/player-stats`
 - `GET /v1/discord/guilds/:guild_id/role-actions`
 - `POST /v1/discord/guilds/:guild_id/role-action-results`
 

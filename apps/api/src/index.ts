@@ -11,6 +11,7 @@ import { scheduleOperationIngestQueue } from "./operations/operationIngestQueue.
 import { scheduleStaleOperationCleanup } from "./operations/staleOperationCleanup.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerBotRoutes } from "./routes/bot.js";
 import { registerDataQualityRoutes } from "./routes/dataQuality.js";
 import { registerDebugRoutes } from "./routes/debug.js";
 import { registerDiscordRoutes } from "./routes/discord.js";
@@ -143,6 +144,7 @@ app.addHook("preHandler", async (request, reply) => {
 await registerHealthRoutes(app);
 await registerHealthDbRoutes(app);
 await registerAuthRoutes(app);
+await registerBotRoutes(app);
 await registerAdminRoutes(app);
 await registerDebugRoutes(app);
 await registerSummaryRoutes(app);

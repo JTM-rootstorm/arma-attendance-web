@@ -196,9 +196,12 @@ POST /v1/discord/guilds/:guild_id/role-action-results
 GET  /v1/discord/guilds/:guild_id/role-action-audits
 POST /v1/discord/reconcile
 GET  /v1/discord/assignment-audits
+GET  /v1/bot/player-stats
 ```
 
 `POST /v1/discord/player-assignments` is the Discord-bot write path for unit assignment. It accepts `discord_user_id` as the preferred identifier, `player_uid` as an optional override, and `unit_id` or `unit_key` as the target unit. Bot-created placeholder players use `player_uid = discord:<discord_user_id>` and are linked through `player_discord_links` so later Discord OAuth login attaches to the same player object. The endpoint accepts `api` and `bot` machine tokens, not `arma_server` ingest tokens.
+
+`GET /v1/bot/player-stats` is the Discord-bot read path for player stats and attended operations. It accepts exactly one query identifier, `steam_id` or `discord_user_id`, plus optional `limit` and `offset` pagination for `attended_operations`. Discord lookup resolves `player_discord_links` first and falls back to bot-created placeholder players such as `discord:<discord_user_id>`. The response includes the resolved player display name, rank, represented battalion, battalion memberships, Discord links, finished-operation stat aggregates, and attended finished operations. The endpoint accepts `api` and `bot` machine tokens, not `arma_server` ingest tokens.
 
 Machine tokens created through `POST /v1/system/machine-tokens` may include optional `scopes`. When omitted, the API assigns defaults for the token kind. Bot tokens default to Discord guild/member sync, assignment writes, and role-action reporting scopes.
 
