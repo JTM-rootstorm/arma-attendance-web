@@ -551,7 +551,6 @@ export function App() {
       } else if (view === "admin") {
         void loadAdminUsers();
       } else if (view === "system") {
-        void loadMachineTokens();
         void loadXpRewardTiers();
         void loadPlanets();
       }
@@ -561,7 +560,6 @@ export function App() {
   }, [
     loadAdminUsers,
     loadDataQuality,
-    loadMachineTokens,
     loadMyStats,
     loadOperationDetail,
     loadOperations,
