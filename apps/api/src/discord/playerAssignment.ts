@@ -207,7 +207,13 @@ async function upsertPlayer(tx: DrizzleTransaction, playerUid: string, displayNa
     .onConflictDoUpdate({
       target: players.playerUid,
       set: {
-        lastName: sql`COALESCE(${players.lastName}, excluded.last_name)`,
+        lastName: sql`
+          CASE
+            WHEN ${players.lastName} IS NULL OR btrim(${players.lastName}) = ''
+            THEN excluded.last_name
+            ELSE ${players.lastName}
+          END
+        `,
         deletedAt: null,
         updatedAt: sql`now()`
       }
@@ -444,7 +450,13 @@ async function upsertAssignment(
       target: [unitPlayers.unitId, unitPlayers.playerUid],
       set: {
         rank: sql`COALESCE(excluded.rank, ${unitPlayers.rank})`,
-        rosterName: sql`COALESCE(excluded.roster_name, ${unitPlayers.rosterName})`,
+        rosterName: sql`
+          CASE
+            WHEN ${unitPlayers.rosterName} IS NULL OR btrim(${unitPlayers.rosterName}) = ''
+            THEN excluded.roster_name
+            ELSE ${unitPlayers.rosterName}
+          END
+        `,
         isActive: sql`excluded.is_active`,
         rosterStatus: sql`excluded.roster_status`,
         assignmentSource: "discord",

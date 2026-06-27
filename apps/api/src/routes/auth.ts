@@ -1369,8 +1369,7 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
     ON CONFLICT (player_uid) DO UPDATE
     SET
       last_name = CASE
-        WHEN players.raw_last_player->>'source' = 'auth'
-          OR players.last_name IS NULL
+        WHEN players.last_name IS NULL
           OR btrim(players.last_name) = ''
         THEN EXCLUDED.last_name
         ELSE players.last_name
@@ -1407,7 +1406,6 @@ async function ensureAuthenticatedUserRosterEntry(tx: DbTransaction, userId: str
       roster_name = CASE
         WHEN unit_players.roster_name IS NULL
           OR btrim(unit_players.roster_name) = ''
-          OR unit_players.assignment_source IN ('auth', 'auth-default')
         THEN EXCLUDED.roster_name
         ELSE unit_players.roster_name
       END,

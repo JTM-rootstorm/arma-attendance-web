@@ -1039,7 +1039,13 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           .onConflictDoUpdate({
             target: players.playerUid,
             set: {
-              lastName: sql`COALESCE(${players.lastName}, excluded.last_name)`,
+              lastName: sql`
+                CASE
+                  WHEN ${players.lastName} IS NULL OR btrim(${players.lastName}) = ''
+                  THEN excluded.last_name
+                  ELSE ${players.lastName}
+                END
+              `,
               deletedAt: null,
               updatedAt: sql`now()`
             }
