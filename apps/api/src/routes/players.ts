@@ -163,9 +163,12 @@ export async function registerPlayerRoutes(app: FastifyInstance) {
           p.first_seen_at,
           p.last_seen_at,
           p.raw_last_player,
-          COUNT(op.operation_id)::int AS operation_count
+          COUNT(o.id)::int AS operation_count
         FROM players p
         LEFT JOIN operation_players op ON op.player_uid = p.player_uid
+        LEFT JOIN operations o
+          ON o.id = op.operation_id
+          AND o.status = 'finished'
         ${whereClause}
         GROUP BY p.player_uid
         ORDER BY p.last_seen_at DESC, p.player_uid

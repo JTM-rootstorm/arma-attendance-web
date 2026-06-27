@@ -9,6 +9,7 @@ import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { queryDb } from "../db/pool.js";
 import { adminAuditEvents, appUsers } from "../db/schema/auth.js";
+import { operations } from "../db/schema/operations.js";
 import { operationPlayers, players } from "../db/schema/players.js";
 import { unitPlayers, unitRanks, unitRosterAssignments, unitSquads, unitUserRoles, units } from "../db/schema/units.js";
 
@@ -986,10 +987,11 @@ export async function registerUnitRoutes(app: FastifyInstance) {
           player_uid: players.playerUid,
           last_name: players.lastName,
           last_seen_at: players.lastSeenAt,
-          operation_count: countDistinct(operationPlayers.operationId).mapWith(Number)
+          operation_count: countDistinct(operations.id).mapWith(Number)
         })
         .from(players)
         .leftJoin(operationPlayers, eq(operationPlayers.playerUid, players.playerUid))
+        .leftJoin(operations, and(eq(operations.id, operationPlayers.operationId), eq(operations.status, "finished")))
         .where(and(...where))
         .groupBy(players.playerUid)
         .orderBy(desc(players.lastSeenAt), asc(players.playerUid))

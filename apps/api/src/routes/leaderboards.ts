@@ -182,7 +182,10 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
       JOIN operation_player_units opu ON opu.unit_id = au.unit_id
       LEFT JOIN player_discord_links pdl
         ON opu.player_uid = ('discord:' || pdl.discord_user_id)
-      JOIN operations o ON o.id = opu.operation_id ${operationWhereClause}
+      JOIN operations o
+        ON o.id = opu.operation_id
+        AND o.status = 'finished'
+        ${operationWhereClause}
     ),
     normalized_stats AS (
       SELECT
@@ -200,6 +203,9 @@ async function getUnitLeaderboardPayload(query: UnitLeaderboardQuery, revealSens
         ops.air_kills,
         ops.deaths
       FROM operation_player_stats ops
+      JOIN operations o
+        ON o.id = ops.operation_id
+        AND o.status = 'finished'
       LEFT JOIN player_discord_links pdl
         ON ops.player_uid = ('discord:' || pdl.discord_user_id)
     ),
@@ -325,6 +331,9 @@ async function getPublicPlayerLeaderboardPayload(query: PublicPlayerLeaderboardQ
         ops.air_kills,
         ops.deaths
       FROM operation_player_stats ops
+      JOIN operations o
+        ON o.id = ops.operation_id
+        AND o.status = 'finished'
       LEFT JOIN player_discord_links pdl
         ON ops.player_uid = ('discord:' || pdl.discord_user_id)
     ),

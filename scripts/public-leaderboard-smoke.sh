@@ -45,6 +45,11 @@ WITH operation_seed AS (
   VALUES ('public-leaderboard-smoke', 'finished', 'public-leaderboard-smoke-' || :'stamp', 'Public Leaderboard Smoke', 'VR', now(), now())
   RETURNING id
 ),
+unfinished_operation_seed AS (
+  INSERT INTO operations (server_key, status, mission_uid, mission_name, world_name, started_at)
+  VALUES ('public-leaderboard-smoke', 'started', 'public-leaderboard-smoke-unfinished-' || :'stamp', 'Public Leaderboard Unfinished Smoke', 'VR', now())
+  RETURNING id
+),
 player_seed AS (
   INSERT INTO players (player_uid, last_name, raw_last_player)
   SELECT
@@ -72,6 +77,17 @@ operation_player_seed AS (
     true
   FROM operation_seed
   CROSS JOIN player_seed
+  UNION ALL
+  SELECT
+    unfinished_operation_seed.id,
+    player_seed.player_uid,
+    player_seed.last_name,
+    NULL,
+    true,
+    false
+  FROM unfinished_operation_seed
+  CROSS JOIN player_seed
+  WHERE split_part(player_seed.player_uid, '-', 5)::int = 1
   ON CONFLICT (operation_id, player_uid) DO UPDATE
   SET present_at_start = true,
       present_at_end = true,
@@ -94,6 +110,7 @@ SELECT
   operation_player_seed.operation_id,
   operation_player_seed.player_uid,
   CASE
+    WHEN operation_player_seed.operation_id = (SELECT id FROM unfinished_operation_seed) THEN 3000000
     WHEN split_part(operation_player_seed.player_uid, '-', 5)::int = 1 THEN 2000000
     ELSE 1000000 - split_part(operation_player_seed.player_uid, '-', 5)::int
   END,
@@ -144,6 +161,8 @@ curl -fsS -D "$TMP_DIR/public-players.headers" "$BASE_URL/public/leaderboard/pla
     && data.pagination.limit === 20
     && data.leaderboard[0]?.rank === 1
     && data.leaderboard[0]?.name === 'CT-01 \\'Kix\\' \"Medic\"'
+    && data.leaderboard[0]?.operation_count === 1
+    && data.leaderboard[0]?.infantry_kills === 2000000
     && !data.leaderboard.some((entry) => entry.name === 'Public Player Smoke 21')
     && data.leaderboard.every((entry) => entry.player_uid === null)
     && data.leaderboard.every((entry) => !('discord_user_id' in entry) && !('steam_id' in entry) && !('raw_payload' in entry) && !('raw_stats' in entry))
