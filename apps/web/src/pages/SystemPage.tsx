@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { formatDate } from "../format";
 import type {
@@ -145,6 +145,7 @@ export function SystemPage({
 }) {
   const [activeTab, setActiveTab] = useState<SystemTab>("machineTokens");
   const [name, setName] = useState("");
+  const [tokenNameFilter, setTokenNameFilter] = useState("");
   const [tokenKind, setTokenKind] = useState<MachineTokenKind>("arma_server");
   const [visibleToken, setVisibleToken] = useState<{ record: MachineTokenRecord; token: string } | null>(null);
   const [tokenError, setTokenError] = useState("");
@@ -158,6 +159,20 @@ export function SystemPage({
     xp_amount: string;
     planet_progress_percent: string;
   } | null>(null);
+
+  const filteredMachineTokens = useMemo(() => {
+    if (machineTokens.status !== "ready") {
+      return [];
+    }
+
+    const needle = tokenNameFilter.trim().toLowerCase();
+
+    if (needle.length === 0) {
+      return machineTokens.data.tokens;
+    }
+
+    return machineTokens.data.tokens.filter((token) => token.name.toLowerCase().includes(needle));
+  }, [machineTokens, tokenNameFilter]);
   const [planetSlug, setPlanetSlug] = useState("");
   const [planetName, setPlanetName] = useState("");
   const [planetDescription, setPlanetDescription] = useState("");
@@ -476,6 +491,14 @@ export function SystemPage({
             <p className="muted-copy">
               Base44 integration tokens are for server-side Base44 automations only. Do not paste this token into browser/client-side code.
             </p>
+            <form className="filters machine-token-filter" onSubmit={(event) => event.preventDefault()}>
+              <input
+                value={tokenNameFilter}
+                onChange={(event) => setTokenNameFilter(event.target.value)}
+                placeholder="Filter by token name"
+                aria-label="Filter machine tokens by name"
+              />
+            </form>
 
             <div className="tactical-table">
               <table>
@@ -490,8 +513,8 @@ export function SystemPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {machineTokens.status === "ready" && machineTokens.data.tokens.length > 0 ? (
-                    machineTokens.data.tokens.map((token) => (
+                  {machineTokens.status === "ready" && filteredMachineTokens.length > 0 ? (
+                    filteredMachineTokens.map((token) => (
                       <tr key={token.id}>
                         <td>{token.name}</td>
                         <td>{token.token_kind}</td>
@@ -531,7 +554,13 @@ export function SystemPage({
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6}>{machineTokens.status === "loading" ? "Loading tokens." : "No DB-backed machine tokens."}</td>
+                      <td colSpan={6}>
+                        {machineTokens.status === "loading"
+                          ? "Loading tokens."
+                          : tokenNameFilter.trim().length > 0
+                            ? "No machine tokens match that name."
+                            : "No DB-backed machine tokens."}
+                      </td>
                     </tr>
                   )}
                 </tbody>

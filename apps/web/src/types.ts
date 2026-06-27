@@ -79,6 +79,11 @@ export type DashboardSummaryResponse = {
 export type OperationsResponse = {
   ok: true;
   operations: OperationListItem[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+  };
 };
 
 export type OperationDetailResponse = {
