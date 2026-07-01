@@ -22,7 +22,7 @@ import {
 } from "../operations/operationIngestQueue.js";
 import { OperationRouteError } from "../operations/types.js";
 import { redactAttendance, redactOperation } from "../privacy/redaction.js";
-import { sendDatabaseUnavailable, sendForbidden, sendValidationFailed } from "../http/responses.js";
+import { logValidationFailed, sendDatabaseUnavailable, sendForbidden, sendValidationFailed } from "../http/responses.js";
 import { operationFinishBodySchema, operationListQuerySchema, operationParamsSchema, operationStartBodySchema } from "./operations/schemas.js";
 
 function sendOperationRouteError(reply: FastifyReply, error: OperationRouteError) {
@@ -60,6 +60,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsedQuery = operationListQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
+      logValidationFailed(request.log, "GET /v1/operations", [parsedQuery.error]);
       return sendValidationFailed(reply);
     }
 
@@ -75,6 +76,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsed = operationStartBodySchema.safeParse(request.body);
 
     if (!parsed.success) {
+      logValidationFailed(request.log, "POST /v1/operations/start", [parsed.error]);
       return sendValidationFailed(reply);
     }
 
@@ -97,6 +99,14 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsedBody = operationFinishBodySchema.safeParse(request.body);
 
     if (!parsedParams.success || !parsedBody.success) {
+      logValidationFailed(
+        request.log,
+        "POST /v1/operations/:operation_id/finish",
+        [
+          ...(!parsedParams.success ? [parsedParams.error] : []),
+          ...(!parsedBody.success ? [parsedBody.error] : [])
+        ]
+      );
       return sendValidationFailed(reply);
     }
 
@@ -132,6 +142,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
+      logValidationFailed(request.log, "GET /v1/operations/:operation_id/payloads", [parsedParams.error]);
       return sendValidationFailed(reply);
     }
 
@@ -169,6 +180,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
+      logValidationFailed(request.log, "DELETE /v1/operations/:operation_id", [parsedParams.error]);
       return sendValidationFailed(reply);
     }
 
@@ -197,6 +209,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
+      logValidationFailed(request.log, "GET /v1/operations/:operation_id/attendance", [parsedParams.error]);
       return sendValidationFailed(reply);
     }
 
@@ -277,6 +290,7 @@ export async function registerOperationRoutes(app: FastifyInstance) {
     const parsedParams = operationParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
+      logValidationFailed(request.log, "GET /v1/operations/:operation_id", [parsedParams.error]);
       return sendValidationFailed(reply);
     }
 

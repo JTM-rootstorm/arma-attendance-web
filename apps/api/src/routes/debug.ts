@@ -6,6 +6,7 @@ import { requireBearerToken } from "../auth.js";
 import { getDrizzleDb } from "../db/drizzle.js";
 import { getSafeDbErrorDetails } from "../db/errors.js";
 import { debugPokes } from "../db/schema/operations.js";
+import { logValidationFailed } from "../http/responses.js";
 
 const pokeBodySchema = z
   .object({
@@ -13,13 +14,14 @@ const pokeBodySchema = z
     message: z.string().max(500).optional(),
     server_key: z.string().max(128).optional()
   })
-  .strict();
+  .passthrough();
 
 export async function registerDebugRoutes(app: FastifyInstance) {
   app.post("/v1/debug/poke", { preHandler: requireBearerToken }, async (request, reply) => {
     const parsed = pokeBodySchema.safeParse(request.body);
 
     if (!parsed.success) {
+      logValidationFailed(request.log, "POST /v1/debug/poke", [parsed.error]);
       return reply.code(400).send({
         ok: false,
         error: {

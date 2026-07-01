@@ -1,28 +1,34 @@
 import { z } from "zod";
 
-export const missionSchema = z
-  .object({
-    mission_uid: z.string().max(200).optional(),
-    mission_name: z.string().max(300).optional(),
-    world_name: z.string().max(200).optional()
+const trimmedString = (maxLength: number) => z.string().trim().min(1).max(maxLength);
+const optionalTrimmedString = (maxLength: number) => z.string().trim().max(maxLength).optional();
+const optionalPayloadVersion = z.coerce.number().int().positive().optional();
+
+export const missionSchema = z.preprocess(
+  (value) => (value === null ? undefined : value),
+  z.object({
+    mission_uid: optionalTrimmedString(200),
+    mission_name: optionalTrimmedString(300),
+    world_name: optionalTrimmedString(200)
   })
   .passthrough()
-  .optional();
+  .optional()
+);
 
 export const operationStartBodySchema = z
   .object({
-    request_id: z.string().min(1).max(200),
-    server_key: z.string().min(1).max(128),
-    payload_version: z.number().int().positive().optional(),
+    request_id: trimmedString(200),
+    server_key: trimmedString(128),
+    payload_version: optionalPayloadVersion,
     mission: missionSchema
   })
   .passthrough();
 
 export const operationFinishBodySchema = z
   .object({
-    request_id: z.string().min(1).max(200),
-    server_key: z.string().min(1).max(128),
-    payload_version: z.number().int().positive().optional(),
+    request_id: trimmedString(200),
+    server_key: trimmedString(128),
+    payload_version: optionalPayloadVersion,
     outcome: z.enum(["success", "failed"]).default("success"),
     mission: missionSchema
   })

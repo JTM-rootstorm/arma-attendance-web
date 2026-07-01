@@ -7,6 +7,8 @@ SERVER_KEY="${SERVER_KEY:-ops-smoke}"
 STAMP="$(date +%Y%m%d%H%M%S)"
 START_REQUEST_ID="${START_REQUEST_ID:-$SERVER_KEY:$STAMP:start}"
 FINISH_REQUEST_ID="${FINISH_REQUEST_ID:-$SERVER_KEY:$STAMP:finish}"
+COMPAT_START_REQUEST_ID="${COMPAT_START_REQUEST_ID:-$SERVER_KEY:$STAMP:compat-start}"
+COMPAT_FINISH_REQUEST_ID="${COMPAT_FINISH_REQUEST_ID:-$SERVER_KEY:$STAMP:compat-finish}"
 MISSION_UID="${MISSION_UID:-$SERVER_KEY-$STAMP}"
 
 if [[ -z "$API_TOKEN" ]]; then
@@ -73,6 +75,40 @@ curl -fsS -X POST "$BASE_URL/v1/operations/start" \
       \"mission_name\": \"Operation Smoke Test\",
       \"world_name\": \"VR\"
     }
+  }" | print_json
+
+echo "[smoke:operations] Starting operation with Arma compatibility envelope..."
+compat_start_response="$(
+  curl -fsS -X POST "$BASE_URL/v1/operations/start" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"request_id\": \" $COMPAT_START_REQUEST_ID \",
+      \"server_key\": \" $SERVER_KEY \",
+      \"payload_version\": \"1\",
+      \"mission\": null,
+      \"players\": []
+    }"
+)"
+
+printf '%s\n' "$compat_start_response" | print_json
+compat_operation_id="$(printf '%s\n' "$compat_start_response" | extract_operation_id)"
+
+if [[ -z "$compat_operation_id" || "$compat_operation_id" == "null" ]]; then
+  echo "[smoke:operations] Missing operation_id from compatibility start response." >&2
+  exit 1
+fi
+
+echo "[smoke:operations] Finishing operation with Arma compatibility envelope..."
+curl -fsS -X POST "$BASE_URL/v1/operations/$compat_operation_id/finish" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"request_id\": \" $COMPAT_FINISH_REQUEST_ID \",
+    \"server_key\": \" $SERVER_KEY \",
+    \"payload_version\": \"1\",
+    \"mission\": null,
+    \"players\": []
   }" | print_json
 
 echo "[smoke:operations] Finishing operation..."
