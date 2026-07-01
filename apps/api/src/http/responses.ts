@@ -1,4 +1,23 @@
-import type { FastifyReply } from "fastify";
+import type { FastifyBaseLogger, FastifyReply } from "fastify";
+import type { ZodError } from "zod";
+
+function getValidationIssues(error: ZodError) {
+  return error.issues.map((issue) => ({
+    path: issue.path.length > 0 ? issue.path.map(String).join(".") : "(root)",
+    code: issue.code,
+    message: issue.message
+  }));
+}
+
+export function logValidationFailed(log: FastifyBaseLogger, route: string, errors: ZodError[]) {
+  log.warn(
+    {
+      route,
+      validationIssues: errors.flatMap(getValidationIssues)
+    },
+    "Request validation failed"
+  );
+}
 
 export function sendValidationFailed(reply: FastifyReply) {
   return reply.code(400).send({
